@@ -1,0 +1,18 @@
+# systemd 服務範例（放 /etc/systemd/system/patchweb.service，改路徑後啟用）
+#   cp patchweb.service.example /etc/systemd/system/patchweb.service
+#   systemctl daemon-reload && systemctl enable --now patchweb
+# 實際部署路徑／主機 IP 屬內網識別，見本機（非公開）部署筆記。
+[Unit]
+Description=CL_WebVuln 弱點彙總網頁版
+After=network.target
+
+[Service]
+Type=simple
+User=patchweb
+WorkingDirectory=/opt/patchweb/src/APP
+Environment=WEBVULN_DB_URL=sqlite:////opt/patchweb/data/vuln.db
+ExecStart=/opt/patchweb/.venv/bin/python -m uvicorn webvuln.main:app --host 0.0.0.0 --port 3100
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
