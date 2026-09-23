@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>國泰證券弱點彙總（網頁版）</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">🛡️ 國泰證券弱點彙總 <span class="ver" id="ver"></span></div>
+    <div class="filters">
+      <label>部門
+        <select id="dept"><option value="全部">全部部門</option></select>
+      </label>
+      <input id="kw" type="search" placeholder="查詢：主機／負責人／弱點／Plugin ID（空格分隔多字）">
+      <button id="btn-search" class="btn">查詢</button>
+      <label class="upload">匯入 JSON<input id="file" type="file" accept=".json" hidden></label>
+    </div>
+  </header>
+
+  <main class="container">
+    <div id="banner" class="banner hidden"></div>
+
+    <section class="kpi-row" id="kpi"></section>
+
+    <div class="two-col">
+      <section class="card">
+        <h3>到期時間帶（互斥，相加＝未結案）</h3>
+        <div id="bands" class="chips"></div>
+      </section>
+      <section class="card">
+        <h3>嚴重度（未結案）</h3>
+        <div id="severity" class="chips"></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <div class="detail-head">
+        <h3 id="detail-title">明細</h3>
+        <div>
+          <button id="btn-csv" class="btn btn-sm">匯出 CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="detail">
+          <thead><tr>
+            <th data-k="host">主機</th><th data-k="owner">負責人</th><th data-k="severity">嚴重度</th>
+            <th data-k="name">弱點</th><th data-k="plugin_id">Plugin ID</th>
+            <th data-k="effective_due">到期日</th><th data-k="overdue_days">逾期天數</th>
+            <th data-k="stage">處置階段</th><th data-k="department">部門</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted" id="detail-count"></p>
+    </section>
+  </main>
+
+  <footer class="app-footer">純唯讀查詢 · 資料來自最新匯入快照 · 國泰證券 資訊架構部</footer>
+  <script src="/app.js"></script>
+</body>
+</html>

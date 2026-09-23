@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from . import importer, query
 from .db import SessionLocal, init_db
 from .schemas import ImportIn, ImportResult
+
+_FRONTEND = Path(__file__).resolve().parents[1] / "frontend"
 
 
 @asynccontextmanager
@@ -63,3 +67,8 @@ def api_findings(
 ):
     return query.find(db, department=department, status=status, owner=owner,
                       severity=severity, band=band, keyword=keyword, sheet_key=sheet_key)
+
+
+# 靜態前端掛在最後（/api/* 先比對到，其餘落到這裡）
+if _FRONTEND.exists():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND), html=True), name="frontend")
