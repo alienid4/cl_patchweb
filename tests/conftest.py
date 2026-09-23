@@ -21,3 +21,25 @@ def session(engine) -> Session:
         yield s
     finally:
         s.close()
+
+
+@pytest.fixture
+def client(engine):
+    """TestClient，DB 依賴覆寫成測試用 engine（不碰真實 DB）。"""
+    from fastapi.testclient import TestClient
+
+    from webvuln import main as m
+
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+
+    def _get_db():
+        db = factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    m.app.dependency_overrides[m.get_db] = _get_db
+    with TestClient(m.app) as c:
+        yield c
+    m.app.dependency_overrides.clear()
