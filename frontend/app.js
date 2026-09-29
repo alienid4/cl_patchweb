@@ -220,6 +220,67 @@ function csv() {
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "findings.csv"; a.click();
 }
 
+// ── Excel 匯入（沿用單機版解析：window.MultiSheet）──
+function isoLocal(d) {
+  if (!d) return null;
+  if (typeof d === "string") return d.slice(0, 10) || null;
+  if (d instanceof Date && !isNaN(d)) {
+    const m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${m}-${day}`;
+  }
+  return null;
+}
+// raw 裡若有 Date 物件(cellDates 解析)，轉成 yyyy/mm/dd 再送，否則 JSON 會變 UTC ISO，
+// 原封匯出就顯示成怪字串而非來源原貌。其餘型別原樣保留。
+function cleanRaw(raw) {
+  if (!raw || typeof raw !== "object") return raw;
+  const out = {};
+  for (const k in raw) {
+    const v = raw[k];
+    out[k] = (v instanceof Date && !isNaN(v))
+      ? `${v.getFullYear()}/${String(v.getMonth() + 1).padStart(2, "0")}/${String(v.getDate()).padStart(2, "0")}`
+      : v;
+  }
+  return out;
+}
+function recToFinding(r) {
+  return {
+    sheet_key: r.sheet, plugin_id: r.pluginId || null, name: r.name || null, host: r.host || null,
+    severity: (r.severity && r.severity !== "Unknown") ? r.severity : null,
+    severity_raw: r.severityRaw || null,
+    department: r.unit || null,
+    owner: (r.owner && r.owner !== "(未指定)") ? r.owner : null,
+    remediation_due: isoLocal(r.fixDeadline || r.otherDue),
+    first_extension_due: isoLocal(r.firstExtension),
+    exception_due: isoLocal(r.exceptionApproval),
+    // 結案分類沿用單機版已驗證的 bucket（open/closed/other），不讓後端重判（如「結案中」=未結）
+    close_status: r.closeBucket === "closed" ? "已結案" : r.closeBucket === "other" ? "其他" : "未結案",
+    close_date: isoLocal(r.closeDate),
+    remark: r.remark || null,
+    raw: cleanRaw(r.raw) || null,
+  };
+}
+async function uploadXlsx(file) {
+  if (!window.MultiSheet) { alert("解析元件未載入"); return; }
+  let sheets;
+  try { sheets = window.MultiSheet.parseWorkbook(await file.arrayBuffer()); }
+  catch (e) { alert("Excel 解析失敗：" + e.message); return; }
+  if (!sheets.length) { alert("找不到「數字-」開頭的弱點工作表"); return; }
+  const findings = [], sheet_columns = {}, warns = [];
+  sheets.forEach(s => {
+    sheet_columns[s.name] = s.headers;               // 原始欄序（供原封匯出 1:1）
+    s.records.forEach(r => findings.push(recToFinding(r)));
+    (s.warnings || []).forEach(w => warns.push(w));
+  });
+  if (warns.length && !confirm("解析提醒：\n- " + warns.join("\n- ") + "\n\n仍要匯入嗎？")) return;
+  const payload = { source_file: file.name, findings, sheet_columns };
+  const rp = await fetch("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  if (!rp.ok) { alert("匯入失敗：" + rp.status); return; }
+  const b = await rp.json();
+  alert(`匯入成功：${b.row_count} 筆（${sheets.length} 張表，batch ${b.batch_id}）`);
+  await loadDepts(); await refresh();
+}
+
 async function uploadJson(file) {
   const text = await file.text();
   let payload; try { payload = JSON.parse(text); } catch { alert("不是有效的 JSON"); return; }
@@ -252,6 +313,7 @@ $("#btn-search").onclick = () => drill({ status: "未結案" }, "查詢結果");
 $("#kw").addEventListener("keydown", e => { if (e.key === "Enter") drill({ status: "未結案" }, "查詢結果"); });
 $("#btn-csv").onclick = csv;
 $("#file").addEventListener("change", e => { if (e.target.files[0]) uploadJson(e.target.files[0]); });
+$("#xlsx").addEventListener("change", e => { if (e.target.files[0]) { uploadXlsx(e.target.files[0]); e.target.value = ""; } });
 $("#btn-export").onclick = () => { window.location = "/api/export"; };
 $("#btn-login").onclick = openLogin;
 $("#btn-logout").onclick = doLogout;

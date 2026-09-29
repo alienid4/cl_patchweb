@@ -27,6 +27,7 @@
     </div>
     <input id="kw" type="search" placeholder="查詢：主機／負責人／弱點／Plugin ID（空格分隔多字）">
     <button id="btn-search" class="btn">查詢</button>
+    <label class="upload">匯入 Excel<input id="xlsx" type="file" accept=".xlsx,.xls" hidden></label>
     <label class="upload">匯入 JSON<input id="file" type="file" accept=".json" hidden></label>
   </div>
 
@@ -147,6 +148,11 @@
     </div>
   </div>
 
+  <!-- 沿用單機版已驗證的 Excel 解析（民國年/多表/嚴重度），避免在後端重寫重生 bug（決策 import-v1-upload） -->
+  <script src="/vendor/xlsx.full.min.js"></script>
+  <script src="/vendor/utils.js"></script>
+  <script src="/vendor/profiles.js"></script>
+  <script src="/vendor/sheets.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
