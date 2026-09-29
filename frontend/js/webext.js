@@ -173,14 +173,14 @@
       var r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: user.value.trim(), password: pass.value }) });
       if (!r.ok) { var e = await r.json().catch(function () { return {}; }); err.textContent = e.detail || '登入失敗'; err.style.display = 'block'; return; }
-      UI.closeModal(); await refreshMe(); renderCases(); UI.toast('已登入', 'success');
+      UI.closeModal(); await refreshMe(); refreshGov(); UI.toast('已登入', 'success');
     }
     submit.addEventListener('click', doLogin);
     pass.addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
     UI.openModal('登入', body, { footer: submit });
     setTimeout(function () { user.focus(); }, 0);
   }
-  async function doLogout() { await fetch('/api/logout', { method: 'POST' }); await refreshMe(); renderCases(); UI.toast('已登出', 'info'); }
+  async function doLogout() { await fetch('/api/logout', { method: 'POST' }); await refreshMe(); refreshGov(); UI.toast('已登出', 'info'); }
 
   // ---- 承辦管線 ----
   async function transition(id, to, rerender) {
@@ -188,7 +188,6 @@
     if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('失敗：' + (e.detail || r.status), 'error'); return; }
     UI.toast('已更新狀態', 'success'); if (rerender) rerender();
   }
-  function renderCases(host) { return renderCasesInto(host || document.getElementById('webext-cases')); }
   async function renderCasesInto(host) {
     if (!host) return;
     host.innerHTML = '';
@@ -242,8 +241,44 @@
     host.appendChild(table);
   }
 
+  // ---- 缺口示警（行動線／缺口／新鮮度＋最急 Top） ----
+  async function renderGapsInto(host) {
+    if (!host) return;
+    host.innerHTML = '';
+    var s, top;
+    try {
+      s = await jget('/api/summary');
+      top = await jget('/api/findings?' + new URLSearchParams({ status: '未結案', should_apply: 'true' }));
+    } catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
+    host.appendChild(group('行動線與缺口示警', [
+      card(s.should_apply, '應提申請未提', true),
+      card(s.gaps.no_owner, '無人負責', true),
+      card(s.gaps.no_due, '無到期日', true),
+      card(s.due_soon, '近期到期(30天)', true),
+      card(s.overdue, '已逾期', true),
+      card((s.freshness.days_ago == null ? '—' : s.freshness.days_ago), '資料距今(天)'),
+    ]));
+    top.sort(function (a, b) { return (b.overdue_days == null ? -1e9 : b.overdue_days) - (a.overdue_days == null ? -1e9 : a.overdue_days); });
+    if (top.length) {
+      host.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '最急（應提申請未提，前 10）' })]));
+      var table = U.el('table', { class: 'tracking-table' });
+      table.appendChild(U.el('thead', {}, [U.el('tr', {}, ['負責人', '弱點', '嚴重度', '主機', '逾期天數', '部門'].map(function (h) { return U.el('th', { text: h }); }))]));
+      var tb = U.el('tbody');
+      top.slice(0, 10).forEach(function (r) {
+        tb.appendChild(U.el('tr', {}, [
+          U.el('td', { text: r.owner || '未指派' }), U.el('td', { text: r.name || r.plugin_id || '' }),
+          U.el('td', { text: r.severity || '' }), U.el('td', { text: r.host || '' }),
+          U.el('td', { text: (r.overdue_days != null && r.overdue_days > 0) ? String(r.overdue_days) : '—' }),
+          U.el('td', { text: r.department || '' }),
+        ]));
+      });
+      table.appendChild(tb); host.appendChild(table);
+    } else {
+      host.appendChild(U.el('p', { class: 'empty-hint', text: '目前無「應提申請未提」的急件。' }));
+    }
+  }
+
   // ---- 結案統計 ----
-  function renderCloseStat(host) { return renderCloseInto(host || document.getElementById('webext-closestat')); }
   async function renderCloseInto(host) {
     if (!host) return;
     host.innerHTML = '';
@@ -264,25 +299,76 @@
     host.appendChild(U.el('p', { class: 'empty-hint', text: '「本期新結案」＝上期未結、這期變已結（快照比對）；「承辦聲稱未確認」＝承辦標完成但來源仍未結，可能自行浮報。' }));
   }
 
+  // ===== 左側第二大項「承辦管線」（與「總覽」並列，綠色），底下放全部新功能 =====
+  // 新功能小項：render=渲染進主區；action=直接動作(如下載)不切畫面
+  var GOV_ITEMS = [
+    { key: 'gaps', label: '缺口示警', render: renderGapsInto },
+    { key: 'cases', label: '申請流程管線', render: renderCasesInto },
+    { key: 'closestat', label: '結案統計', render: renderCloseInto },
+    { key: 'export', label: '原封匯出（Excel）', action: function () { window.location = '/api/export'; } },
+  ];
+
+  var currentGov = null;
+  function hideWebextView() {
+    var v = document.getElementById('webext-view'); if (v) v.classList.add('hidden');
+    currentGov = null;
+    document.querySelectorAll('#sheet-nav .webext-navitem').forEach(function (b) { b.classList.remove('active'); });
+  }
+  function refreshGov() {  // 重繪目前開著的承辦小項（登入狀態改變時用）
+    var v = document.getElementById('webext-view');
+    if (currentGov && v && !v.classList.contains('hidden')) currentGov.render(document.getElementById('webext-view-body'));
+  }
+  function showWebextView(item, btn) {
+    // 蓋掉原本兩個檢視（原檔用 .hidden 切換，這裡比照）
+    var sum = document.getElementById('summary-view'); if (sum) sum.classList.add('hidden');
+    var sv = document.getElementById('sheet-view'); if (sv) sv.classList.add('hidden');
+    var v = document.getElementById('webext-view'); if (v) v.classList.remove('hidden');
+    document.getElementById('webext-view-title').textContent = item.label;
+    currentGov = item;
+    // 原本 nav 的 active 拿掉，改點亮我的小項
+    document.querySelectorAll('#sheet-nav .sheet-item').forEach(function (b) { b.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    item.render(document.getElementById('webext-view-body'));
+  }
+
+  function injectNavGroup() {
+    var nav = document.getElementById('sheet-nav');
+    if (!nav || nav.querySelector('.webext-navgroup')) return;      // 已注入就不重複
+    if (!nav.querySelector('.nav-summary')) return;                  // 原本 nav 還沒建好，等下次
+    // 原本每個項目（總覽＋各表）被點時，隱藏我的檢視、還原原本流程
+    nav.querySelectorAll('.sheet-item:not(.webext-navitem)').forEach(function (b) {
+      if (!b._webextHooked) { b._webextHooked = true; b.addEventListener('click', hideWebextView); }
+    });
+    // 大項標頭（綠色，比照 nav-summary 風格）
+    var head = U.el('button', { class: 'sheet-item nav-summary webext-navgroup', title: '承辦管線（新功能）' },
+      [U.el('span', { class: 'sheet-name', text: '承辦管線' })]);
+    nav.appendChild(head);
+    // 小項
+    GOV_ITEMS.forEach(function (item) {
+      var b = U.el('button', { class: 'sheet-item webext-navitem', title: item.label },
+        [U.el('span', { class: 'sheet-name', text: '　• ' + item.label })]);
+      b.addEventListener('click', function () {
+        if (item.action) { item.action(); return; }
+        showWebextView(item, b);
+      });
+      nav.appendChild(b);
+    });
+    // 點大項標頭＝開第一個小項
+    head.addEventListener('click', function () { showWebextView(GOV_ITEMS[0], null); });
+  }
+
   function wireNewFeatures() {
     var lb = document.getElementById('webext-login-btn');
     if (lb) lb.addEventListener('click', function () { me.authenticated ? doLogout() : openLogin(); });
-    var ex = document.getElementById('webext-export');
-    if (ex) ex.addEventListener('click', function () { window.location = '/api/export'; });
-    // 「其他功能」選單直接開（總覽首頁也能看，不必先選表）
-    var oc = document.getElementById('webext-open-cases');
-    if (oc) oc.addEventListener('click', function () {
-      var box = U.el('div'); UI.openModal('承辦申請管線', box); renderCasesInto(box);
-    });
-    var ocs = document.getElementById('webext-open-close');
-    if (ocs) ocs.addEventListener('click', function () {
-      var box = U.el('div'); UI.openModal('結案統計', box); renderCloseInto(box);
-    });
-    // 點新分頁時才渲染（lazy），main.js 的 switchTab 已負責顯示/隱藏面板
-    var cb = document.querySelector('.tab-btn[data-tab="cases"]');
-    if (cb) cb.addEventListener('click', renderCases);
-    var sb = document.querySelector('.tab-btn[data-tab="closestat"]');
-    if (sb) sb.addEventListener('click', renderCloseStat);
+    injectNavGroup();
+    // main.js 會在載入資料/切部門時重建 #sheet-nav → 用 observer 重新注入我的大項
+    var nav = document.getElementById('sheet-nav');
+    if (nav && window.MutationObserver) {
+      new MutationObserver(function () {
+        // 原本重建 nav(換部門/結案狀態)會清掉我的大項→此時收起我的檢視、還原原本流程，再重新注入
+        if (!nav.querySelector('.webext-navgroup')) { hideWebextView(); injectNavGroup(); }
+      }).observe(nav, { childList: true });
+    }
     refreshMe();
   }
 
