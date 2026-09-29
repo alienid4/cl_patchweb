@@ -213,6 +213,63 @@ def ranking_by_department(session: Session, today: Optional[dt.date] = None) -> 
                     None, today or dt.date.today())
 
 
+def vuln_key(f: Finding) -> tuple:
+    """穩定識別鍵：sheet+plugin+正規化 host（跨快照追同一弱點；host 去空白轉小寫）。"""
+    host = (f.host or "").strip().lower()
+    return ((f.sheet_key or ""), (f.plugin_id or ""), host)
+
+
+def _two_latest_batches(session: Session):
+    bs = session.execute(
+        select(ImportBatch).order_by(ImportBatch.imported_at.desc(), ImportBatch.id.desc()).limit(2)
+    ).scalars().all()
+    return (bs[0] if bs else None, bs[1] if len(bs) > 1 else None)
+
+
+def close_stats(session: Session, department: Optional[str] = None,
+                today: Optional[dt.date] = None) -> dict:
+    """結案統計：本期新結案（上期未結、這期已結）＋依結案人。來源(Excel)確認為準。
+
+    「承辦聲稱但來源未確認(可疑)」需承辦疊加層(W3)才算得出，這裡先回 0/空並標註。
+    """
+    latest, prev = _two_latest_batches(session)
+    if not latest:
+        return {"new_closed": 0, "by_closer": [], "source_confirmed": 0,
+                "claimed_unconfirmed": 0, "note": "尚無匯入"}
+
+    def _rows(b):
+        if not b:
+            return {}
+        q = select(Finding).where(Finding.batch_id == b.id)
+        if department and department != "全部":
+            q = q.where(Finding.department == department)
+        return {vuln_key(f): f for f in session.execute(q).scalars().all()}
+
+    cur = _rows(latest)
+    old = _rows(prev)
+
+    newly_closed = []
+    for k, f in cur.items():
+        was_open = (k in old) and (old[k].close_status == CLOSE_OPEN)
+        if f.close_status == CLOSE_DONE and (was_open or (k not in old)):
+            # 上期未結→這期已結，或這期才出現就已結案
+            newly_closed.append(f)
+
+    by_closer: dict = defaultdict(int)
+    for f in newly_closed:
+        by_closer[(f.owner or "").strip() or "— 未指派"] += 1
+
+    return {
+        "new_closed": len(newly_closed),
+        "source_confirmed": len(newly_closed),   # 皆為來源 Excel 確認
+        "claimed_unconfirmed": 0,                # 待 W3 承辦疊加層
+        "by_closer": sorted(({"name": k, "closed": v} for k, v in by_closer.items()),
+                            key=lambda r: -r["closed"]),
+        "prev_batch": prev.id if prev else None,
+        "latest_batch": latest.id,
+    }
+
+
 def sla(session: Session, department: Optional[str] = None,
         today: Optional[dt.date] = None) -> list[dict]:
     """各嚴重度 SLA 達成率（未結案中未逾期比率，政策天數見設定）。"""

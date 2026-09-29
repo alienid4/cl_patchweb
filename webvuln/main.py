@@ -86,6 +86,12 @@ def api_sla(department: str | None = None, db: Session = Depends(get_db)):
     return query.sla(db, department=department)
 
 
+@app.get("/api/close-stats")
+def api_close_stats(department: str | None = None, db: Session = Depends(get_db)):
+    """結案統計：本期新結案(快照 delta)＋依結案人。來源 Excel 確認為準。"""
+    return query.close_stats(db, department=department)
+
+
 # 靜態前端掛在最後（/api/* 先比對到，其餘落到這裡）
 if _FRONTEND.exists():
     app.mount("/", StaticFiles(directory=str(_FRONTEND), html=True), name="frontend")
