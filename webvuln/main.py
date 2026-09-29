@@ -4,11 +4,13 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from urllib.parse import quote
+
+from fastapi import Depends, FastAPI, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from . import importer, query
+from . import export, importer, query
 from .db import SessionLocal, init_db
 from .schemas import ImportIn, ImportResult
 
@@ -90,6 +92,19 @@ def api_sla(department: str | None = None, db: Session = Depends(get_db)):
 def api_close_stats(department: str | None = None, db: Session = Depends(get_db)):
     """結案統計：本期新結案(快照 delta)＋依結案人。來源 Excel 確認為準。"""
     return query.close_stats(db, department=department)
+
+
+@app.get("/api/export")
+def api_export(batch_id: int | None = None, db: Session = Depends(get_db)):
+    """原封匯出 xlsx：欄位與來源 1:1，缺值標『無原始資料』，另附管理摘要頁。"""
+    wb, filename = export.build_workbook(db, batch_id=batch_id)
+    data = export.to_bytes(wb)
+    disp = f"attachment; filename*=UTF-8''{quote(filename)}"
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": disp},
+    )
 
 
 # 靜態前端掛在最後（/api/* 先比對到，其餘落到這裡）
