@@ -9,21 +9,40 @@
 <body>
   <header class="app-header">
     <div class="brand">🛡️ 國泰證券弱點彙總 <span class="ver" id="ver"></span></div>
-    <div class="filters">
-      <label>部門
-        <select id="dept"><option value="全部">全部部門</option></select>
-      </label>
-      <input id="kw" type="search" placeholder="查詢：主機／負責人／弱點／Plugin ID（空格分隔多字）">
-      <button id="btn-search" class="btn">查詢</button>
-      <label class="upload">匯入 JSON<input id="file" type="file" accept=".json" hidden></label>
+    <div class="head-right">
+      <span class="fresh" id="fresh">—</span>
+      <span class="user-chip hidden" id="userchip"></span>
+      <button id="btn-login" class="btn">登入</button>
+      <button id="btn-logout" class="btn hidden">登出</button>
     </div>
   </header>
+
+  <div class="filters">
+    <label>部門
+      <select id="dept"><option value="全部">全部部門</option></select>
+    </label>
+    <div class="view-toggle" role="tablist">
+      <button class="vt active" data-view="manager">管理人視圖</button>
+      <button class="vt" data-view="supervisor">主管視圖</button>
+    </div>
+    <input id="kw" type="search" placeholder="查詢：主機／負責人／弱點／Plugin ID（空格分隔多字）">
+    <button id="btn-search" class="btn">查詢</button>
+    <label class="upload">匯入 JSON<input id="file" type="file" accept=".json" hidden></label>
+  </div>
 
   <main class="container">
     <div id="banner" class="banner hidden"></div>
 
-    <section class="kpi-row" id="kpi"></section>
+    <!-- ① 首屏：一句話 + Top3 + 紅數字 -->
+    <section class="sec" id="sec-home">
+      <span class="lbl">① 首屏 · 30 秒看完</span>
+      <div class="oneline" id="oneline">載入中…</div>
+      <div class="top3" id="top3"></div>
+      <div class="nums" id="rednums"></div>
+    </section>
 
+    <!-- KPI + 分帶 + 嚴重度 -->
+    <section class="kpi-row" id="kpi"></section>
     <div class="two-col">
       <section class="card">
         <h3>到期時間帶（互斥，相加＝未結案）</h3>
@@ -35,12 +54,59 @@
       </section>
     </div>
 
+    <!-- 主管視圖：SLA -->
+    <section class="card view-supervisor hidden" id="sec-sla">
+      <h3>SLA 達成率（各嚴重度政策天數）</h3>
+      <div class="table-wrap"><table id="sla">
+        <thead><tr><th>嚴重度</th><th>政策(天)</th><th>未結</th><th>逾期</th><th>達成率</th></tr></thead>
+        <tbody></tbody></table></div>
+    </section>
+
+    <!-- 排行榜 -->
+    <section class="card" id="sec-rank">
+      <div class="detail-head">
+        <h3>負責人數量排行榜（依逾期多寡）</h3>
+        <div class="rank-toggle">
+          <button class="rt active" data-by="owner">負責人</button>
+          <button class="rt" data-by="department">部門</button>
+        </div>
+      </div>
+      <div class="table-wrap"><table id="rank">
+        <thead><tr><th>#</th><th>名稱</th><th>未結案</th><th>已逾期</th><th>應提申請未提</th><th>高風險</th><th>結案率</th></tr></thead>
+        <tbody></tbody></table></div>
+      <p class="muted"><a href="#" id="rank-expand">展開全部</a></p>
+    </section>
+
+    <!-- ④ 申請管線 -->
+    <section class="card" id="sec-pipeline">
+      <h3>申請流程管線（承辦案件卡在哪關）</h3>
+      <div class="pipe" id="pipe"></div>
+      <p class="muted" id="pipe-hint"></p>
+    </section>
+
+    <!-- ⑤ 結案統計 -->
+    <section class="card" id="sec-close">
+      <h3>結案統計（含「有人自行結案」）</h3>
+      <div class="rep" id="closerep"></div>
+      <div class="table-wrap"><table id="closetbl">
+        <thead><tr><th>結案人</th><th>本期結案</th></tr></thead><tbody></tbody></table></div>
+      <p class="muted">「本期新結案」＝上期未結、這期變已結（快照比對）。「承辦聲稱未確認」＝承辦標完成但來源 Excel 仍未結，可能自行浮報。</p>
+    </section>
+
+    <!-- ③ 報告 / 匯出 -->
+    <section class="card" id="sec-report">
+      <h3>報告 / 匯出</h3>
+      <div class="report-actions">
+        <button id="btn-export" class="btn">下載原封匯出（Excel，欄序 1:1）</button>
+        <span class="muted">缺值標「無原始資料」，含管理摘要分頁。每週報表 Email 待主機上線（W9）。</span>
+      </div>
+    </section>
+
+    <!-- 明細 / 下鑽 -->
     <section class="card">
       <div class="detail-head">
         <h3 id="detail-title">明細</h3>
-        <div>
-          <button id="btn-csv" class="btn btn-sm">匯出 CSV</button>
-        </div>
+        <div><button id="btn-csv" class="btn btn-sm">匯出 CSV</button></div>
       </div>
       <div class="table-wrap">
         <table id="detail">
@@ -48,16 +114,39 @@
             <th data-k="host">主機</th><th data-k="owner">負責人</th><th data-k="severity">嚴重度</th>
             <th data-k="name">弱點</th><th data-k="plugin_id">Plugin ID</th>
             <th data-k="effective_due">到期日</th><th data-k="overdue_days">逾期天數</th>
-            <th data-k="stage">處置階段</th><th data-k="department">部門</th>
+            <th data-k="action_line">行動線</th><th data-k="stage">處置階段</th><th data-k="department">部門</th>
           </tr></thead>
           <tbody></tbody>
         </table>
       </div>
       <p class="muted" id="detail-count"></p>
     </section>
+
+    <!-- 承辦案件（管線點選後顯示，登入後可推進） -->
+    <section class="card hidden" id="sec-cases">
+      <div class="detail-head"><h3 id="cases-title">承辦案件</h3></div>
+      <div class="table-wrap"><table id="cases">
+        <thead><tr><th>主機</th><th>Plugin</th><th>負責人</th><th>部門</th><th>狀態</th><th>來源</th><th>操作</th></tr></thead>
+        <tbody></tbody></table></div>
+    </section>
   </main>
 
-  <footer class="app-footer">純唯讀查詢 · 資料來自最新匯入快照 · 國泰證券 資訊架構部</footer>
+  <footer class="app-footer">資料來自最新匯入快照 · 讀取免登入、寫入需登入 · 國泰證券 資訊架構部</footer>
+
+  <!-- 登入 modal -->
+  <div class="modal hidden" id="login-modal">
+    <div class="modal-box">
+      <h3>登入</h3>
+      <label>帳號<input id="li-user" autocomplete="username"></label>
+      <label>密碼<input id="li-pass" type="password" autocomplete="current-password"></label>
+      <p class="err hidden" id="li-err"></p>
+      <div class="modal-actions">
+        <button class="btn" id="li-cancel">取消</button>
+        <button class="btn btn-primary" id="li-submit">登入</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
 </body>
 </html>
