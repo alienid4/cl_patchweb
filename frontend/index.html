@@ -31,6 +31,9 @@
       </div>
 
       <div class="header-actions">
+        <!-- [網頁版加] 登入（寫入功能用），風格沿用原本 .btn -->
+        <span id="webext-user" class="webext-user hidden"></span>
+        <button id="webext-login-btn" class="btn btn-ghost">登入</button>
         <div class="more-menu">
           <button id="more-btn" class="btn btn-ghost hidden">其他功能 ▾</button>
           <div id="more-dropdown" class="more-dropdown hidden">
@@ -43,6 +46,8 @@
             <button id="autoimport-btn" class="more-item">自動匯入設定</button>
             <button id="reload-btn" class="more-item">重新選擇檔案</button>
             <button id="clear-btn" class="more-item">清除暫存資料</button>
+            <div class="more-divider"></div>
+            <button id="webext-export" class="more-item">原封匯出（Excel，欄序 1:1）</button>
           </div>
         </div>
       </div>
@@ -94,6 +99,9 @@
         <button class="tab-btn" data-tab="matrix">交叉分析</button>
         <button class="tab-btn" data-tab="stats">例外／展延統計</button>
         <button class="tab-btn" data-tab="search">查詢</button>
+        <!-- [網頁版加] 新分頁：承辦管線 / 結案統計（switchTab 通用，零改原碼） -->
+        <button class="tab-btn" data-tab="cases">承辦管線</button>
+        <button class="tab-btn" data-tab="closestat">結案統計</button>
       </nav>
 
       <!-- TAB1 Dashboard（子分頁：點選切換，免下拉） -->
@@ -169,6 +177,18 @@
           <h3>查詢</h3>
         </div>
         <div id="search-body" class="search-body"></div>
+      </div>
+
+      <!-- [網頁版加] 承辦管線 -->
+      <div id="tab-cases" class="tab-panel">
+        <div class="panel-head"><h3>承辦申請管線</h3></div>
+        <div id="webext-cases"></div>
+      </div>
+
+      <!-- [網頁版加] 結案統計 -->
+      <div id="tab-closestat" class="tab-panel">
+        <div class="panel-head"><h3>結案統計</h3></div>
+        <div id="webext-closestat"></div>
       </div>
 
       </div><!-- /#sheet-view -->

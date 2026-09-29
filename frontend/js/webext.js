@@ -118,8 +118,158 @@
     });
   }
 
+  /* ===================== 新功能（加法，風格沿用原本）===================== */
+  var U = global.Utils, UI = global.UI;
+  var me = { authenticated: false };
+  var PIPE = ['未申請', '待主管', '待資安', '核准', '完成', '退回補件'];
+  var NEXT = { '未申請': ['待主管'], '待主管': ['待資安', '退回補件'], '待資安': ['核准', '退回補件'],
+    '核准': ['完成'], '退回補件': ['待主管'], '完成': [] };
+  function canWrite() { return me.authenticated && (me.role === 'admin' || me.role === '承辦'); }
+  async function jget(u) { var r = await fetch(u); if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); }
+
+  function card(value, label, danger) {
+    var c = U.el('div', { class: 'metric-card' }, [
+      U.el('div', { class: 'metric-value', text: String(value) }),
+      U.el('div', { class: 'metric-label', text: label }),
+    ]);
+    if (danger && value && value !== '0') c.querySelector('.metric-value').style.color = '#c0392b';
+    return c;
+  }
+  function group(title, cards) {
+    var wrap = U.el('div', { class: 'metric-group' }, [U.el('div', { class: 'metric-group-title', text: title })]);
+    var cs = U.el('div', { class: 'metric-cards' });
+    cards.forEach(function (c) { cs.appendChild(c); });
+    wrap.appendChild(cs);
+    return wrap;
+  }
+
+  // ---- 登入 ----
+  async function refreshMe() {
+    try { me = await jget('/api/me'); } catch (e) { me = { authenticated: false }; }
+    var span = document.getElementById('webext-user');
+    var btn = document.getElementById('webext-login-btn');
+    if (!span || !btn) return;
+    if (me.authenticated) {
+      span.textContent = (me.display_name || me.username) + '（' + me.role + '）';
+      span.classList.remove('hidden'); btn.textContent = '登出';
+    } else {
+      span.classList.add('hidden'); btn.textContent = '登入';
+    }
+  }
+  function openLogin() {
+    var user = U.el('input', { type: 'text', id: 'wx-user', placeholder: '帳號', autocomplete: 'username' });
+    var pass = U.el('input', { type: 'password', id: 'wx-pass', placeholder: '密碼', autocomplete: 'current-password' });
+    var err = U.el('p', { class: 'empty-hint', style: 'color:#c0392b;display:none' });
+    [user, pass].forEach(function (i) { i.style.cssText = 'display:block;width:100%;margin:6px 0;padding:8px;border:1px solid #e3e6ea;border-radius:6px'; });
+    var body = U.el('div', {}, [U.el('label', { text: '帳號' }), user, U.el('label', { text: '密碼' }), pass, err]);
+    var submit = U.el('button', { class: 'btn btn-primary', text: '登入' });
+    async function doLogin() {
+      var r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: user.value.trim(), password: pass.value }) });
+      if (!r.ok) { var e = await r.json().catch(function () { return {}; }); err.textContent = e.detail || '登入失敗'; err.style.display = 'block'; return; }
+      UI.closeModal(); await refreshMe(); renderCases(); UI.toast('已登入', 'success');
+    }
+    submit.addEventListener('click', doLogin);
+    pass.addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+    UI.openModal('登入', body, { footer: submit });
+    setTimeout(function () { user.focus(); }, 0);
+  }
+  async function doLogout() { await fetch('/api/logout', { method: 'POST' }); await refreshMe(); renderCases(); UI.toast('已登出', 'info'); }
+
+  // ---- 承辦管線 ----
+  async function transition(id, to) {
+    var r = await fetch('/api/cases/' + id + '/transition', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: to }) });
+    if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('失敗：' + (e.detail || r.status), 'error'); return; }
+    UI.toast('已更新狀態', 'success'); renderCases();
+  }
+  async function renderCases() {
+    var host = document.getElementById('webext-cases'); if (!host) return;
+    host.innerHTML = '';
+    var s, cases;
+    try { s = await jget('/api/summary'); cases = await jget('/api/cases'); }
+    catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
+    // 行動線 / 缺口 / 新鮮度
+    host.appendChild(group('行動線與缺口示警', [
+      card(s.should_apply, '應提申請未提', true),
+      card(s.gaps.no_owner, '無人負責', true),
+      card(s.gaps.no_due, '無到期日', true),
+      card((s.freshness.days_ago == null ? '—' : s.freshness.days_ago), '資料距今(天)'),
+    ]));
+    // 管線關卡
+    var cnt = {}; PIPE.forEach(function (k) { cnt[k] = 0; });
+    var suspect = 0, orphan = 0;
+    cases.forEach(function (c) { if (c.status in cnt) cnt[c.status]++; if (c.suspect) suspect++; if (c.is_orphan) orphan++; });
+    host.appendChild(group('申請流程管線', PIPE.map(function (k) {
+      return card(cnt[k], k, k === '未申請' || k === '退回補件');
+    })));
+    var hint = U.el('div', { class: 'scope-info' }, [U.el('span', {
+      html: '可疑聲稱 <b>' + suspect + '</b>　·　來源已消失 <b>' + orphan + '</b>　·　'
+        + (me.authenticated ? '（登入身分：' + (me.display_name || me.username) + '，可推進狀態）' : '（登入後可推進狀態）') })]);
+    host.appendChild(hint);
+    // 案件表
+    if (!cases.length) { host.appendChild(U.el('p', { class: 'empty-hint', text: '無案件。' })); return; }
+    var table = U.el('table', { class: 'tracking-table' });
+    var thead = U.el('tr', {}, ['主機', 'Plugin', '負責人', '部門', '狀態', '來源', '操作'].map(function (h) { return U.el('th', { text: h }); }));
+    table.appendChild(U.el('thead', {}, [thead]));
+    var tb = U.el('tbody');
+    cases.slice(0, 300).forEach(function (c) {
+      var ops = U.el('td');
+      if (canWrite()) {
+        (NEXT[c.status] || []).forEach(function (to) {
+          var b = U.el('button', { class: 'btn btn-sm', text: '→' + to, style: 'margin:1px' });
+          b.addEventListener('click', function () { transition(c.id, to); });
+          ops.appendChild(b);
+        });
+        if (!(NEXT[c.status] || []).length) ops.textContent = '—';
+      } else { ops.textContent = ''; }
+      var stTxt = c.status + (c.suspect ? '（可疑）' : '') + (c.is_orphan ? '（已消失）' : '');
+      tb.appendChild(U.el('tr', {}, [
+        U.el('td', { text: c.host || '' }), U.el('td', { text: c.plugin_id || '' }),
+        U.el('td', { text: c.owner || '未指派' }), U.el('td', { text: c.department || '' }),
+        U.el('td', { text: stTxt }), U.el('td', { text: c.source_closed ? '已結' : '未結' }), ops,
+      ]));
+    });
+    table.appendChild(tb);
+    host.appendChild(table);
+  }
+
+  // ---- 結案統計 ----
+  async function renderCloseStat() {
+    var host = document.getElementById('webext-closestat'); if (!host) return;
+    host.innerHTML = '';
+    var s;
+    try { s = await jget('/api/close-stats'); } catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料。' })); return; }
+    host.appendChild(group('結案統計（快照比對）', [
+      card(s.new_closed, '本期新結案'),
+      card(s.source_confirmed, '來源(Excel)確認'),
+      card(s.claimed_unconfirmed, '承辦聲稱未確認(可疑)', true),
+    ]));
+    if (s.by_closer && s.by_closer.length) {
+      var table = U.el('table', { class: 'tracking-table' });
+      table.appendChild(U.el('thead', {}, [U.el('tr', {}, [U.el('th', { text: '結案人' }), U.el('th', { text: '本期結案' })])]));
+      var tb = U.el('tbody');
+      s.by_closer.forEach(function (r) { tb.appendChild(U.el('tr', {}, [U.el('td', { text: r.name }), U.el('td', { text: String(r.closed) })])); });
+      table.appendChild(tb); host.appendChild(table);
+    }
+    host.appendChild(U.el('p', { class: 'empty-hint', text: '「本期新結案」＝上期未結、這期變已結（快照比對）；「承辦聲稱未確認」＝承辦標完成但來源仍未結，可能自行浮報。' }));
+  }
+
+  function wireNewFeatures() {
+    var lb = document.getElementById('webext-login-btn');
+    if (lb) lb.addEventListener('click', function () { me.authenticated ? doLogout() : openLogin(); });
+    var ex = document.getElementById('webext-export');
+    if (ex) ex.addEventListener('click', function () { window.location = '/api/export'; });
+    // 點新分頁時才渲染（lazy），main.js 的 switchTab 已負責顯示/隱藏面板
+    var cb = document.querySelector('.tab-btn[data-tab="cases"]');
+    if (cb) cb.addEventListener('click', renderCases);
+    var sb = document.querySelector('.tab-btn[data-tab="closestat"]');
+    if (sb) sb.addEventListener('click', renderCloseStat);
+    refreshMe();
+  }
+
   function start() {
     wirePersist();
+    wireNewFeatures();
     loadFromServer();  // 有伺服器資料就自動載入；沒有則維持原本上傳畫面
   }
 
