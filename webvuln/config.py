@@ -39,3 +39,9 @@ SEVERITY_LEAD_DAYS: dict = _parse_sev_lead(_SEV_LEAD_ENV)
 
 def lead_days(severity) -> int:
     return SEVERITY_LEAD_DAYS.get(severity, APPLICATION_LEAD_DAYS)
+
+
+# SLA 政策天數（各嚴重度應在幾天內修補）。可用 env WEBVULN_SLA_DAYS 覆寫，如 "Critical:7,High:30"。
+_DEFAULT_SLA = {"Critical": 7, "High": 30, "Medium": 90, "Low": 180}
+_sla_env = _parse_sev_lead(os.environ.get("WEBVULN_SLA_DAYS", ""))
+SLA_POLICY_DAYS: dict = {**_DEFAULT_SLA, **_sla_env}

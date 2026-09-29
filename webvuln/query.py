@@ -12,7 +12,9 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .config import lead_days
+from collections import defaultdict
+
+from .config import SLA_POLICY_DAYS, lead_days
 from .logic import CLOSE_DONE, CLOSE_OPEN, SEVERITIES, STAGE_ORIGINAL, overdue_days
 from .models import Finding, ImportBatch
 
@@ -167,3 +169,64 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         }
 
     return [row(f) for f in fs]
+
+
+def _is_overdue(f: Finding, today: dt.date) -> bool:
+    od = overdue_days(f.effective_due, today)
+    return od is not None and od > 0
+
+
+def _ranking(session: Session, key_fn, department: Optional[str], today: dt.date) -> list[dict]:
+    fs = _latest_findings(session, department)
+    agg: dict = defaultdict(lambda: {"unresolved": 0, "overdue": 0, "should_apply": 0,
+                                     "high_risk": 0, "closed": 0})
+    for f in fs:
+        a = agg[key_fn(f)]
+        if f.close_status == CLOSE_OPEN:
+            a["unresolved"] += 1
+            if _is_overdue(f, today):
+                a["overdue"] += 1
+            if should_apply(f, today):
+                a["should_apply"] += 1
+            if f.severity in HIGH_RISK:
+                a["high_risk"] += 1
+        elif f.close_status == CLOSE_DONE:
+            a["closed"] += 1
+    rows = []
+    for name, a in agg.items():
+        total = a["unresolved"] + a["closed"]
+        rows.append({"name": name, **a,
+                     "close_rate": round(a["closed"] / total * 100, 1) if total else 0.0})
+    rows.sort(key=lambda r: (-r["overdue"], -r["unresolved"]))
+    return rows
+
+
+def ranking_by_owner(session: Session, department: Optional[str] = None,
+                     today: Optional[dt.date] = None) -> list[dict]:
+    """負責人數量排行榜（依逾期多寡）。"""
+    return _ranking(session, lambda f: (f.owner or "").strip() or "— 未指派",
+                    department, today or dt.date.today())
+
+
+def ranking_by_department(session: Session, today: Optional[dt.date] = None) -> list[dict]:
+    return _ranking(session, lambda f: (f.department or "").strip() or "— 未填",
+                    None, today or dt.date.today())
+
+
+def sla(session: Session, department: Optional[str] = None,
+        today: Optional[dt.date] = None) -> list[dict]:
+    """各嚴重度 SLA 達成率（未結案中未逾期比率，政策天數見設定）。"""
+    today = today or dt.date.today()
+    open_ = [f for f in _latest_findings(session, department) if f.close_status == CLOSE_OPEN]
+    out = []
+    for sev in SEVERITIES:
+        items = [f for f in open_ if f.severity == sev]
+        od = [f for f in items if _is_overdue(f, today)]
+        out.append({
+            "severity": sev,
+            "policy_days": SLA_POLICY_DAYS.get(sev),
+            "unresolved": len(items),
+            "overdue": len(od),
+            "met_rate": round((len(items) - len(od)) / len(items) * 100, 1) if items else 100.0,
+        })
+    return out

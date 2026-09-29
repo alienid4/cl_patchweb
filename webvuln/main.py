@@ -73,6 +73,19 @@ def api_findings(
                       only_should_apply=should_apply, no_owner=no_owner, no_due=no_due)
 
 
+@app.get("/api/ranking")
+def api_ranking(by: str = "owner", department: str | None = None, db: Session = Depends(get_db)):
+    """負責人/部門排行榜（依逾期多寡）。by=owner|department。"""
+    if by == "department":
+        return query.ranking_by_department(db)
+    return query.ranking_by_owner(db, department=department)
+
+
+@app.get("/api/sla")
+def api_sla(department: str | None = None, db: Session = Depends(get_db)):
+    return query.sla(db, department=department)
+
+
 # 靜態前端掛在最後（/api/* 先比對到，其餘落到這裡）
 if _FRONTEND.exists():
     app.mount("/", StaticFiles(directory=str(_FRONTEND), html=True), name="frontend")
