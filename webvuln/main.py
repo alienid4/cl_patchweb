@@ -6,11 +6,12 @@ from pathlib import Path
 
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Response
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from . import export, importer, query
+from . import cases, config, export, importer, query
 from .db import SessionLocal, init_db
 from .schemas import ImportIn, ImportResult
 
@@ -92,6 +93,32 @@ def api_sla(department: str | None = None, db: Session = Depends(get_db)):
 def api_close_stats(department: str | None = None, db: Session = Depends(get_db)):
     """結案統計：本期新結案(快照 delta)＋依結案人。來源 Excel 確認為準。"""
     return query.close_stats(db, department=department)
+
+
+@app.get("/api/cases")
+def api_cases(status: str | None = None, department: str | None = None,
+              orphan: bool | None = None, suspect: bool | None = None,
+              db: Session = Depends(get_db)):
+    """承辦案件清單（申請管線）。可篩 status/department/orphan/suspect。"""
+    return cases.list_cases(db, status=status, department=department,
+                            orphan=orphan, suspect=suspect)
+
+
+class TransitionIn(BaseModel):
+    to: str
+    note: str | None = None
+
+
+@app.post("/api/cases/{case_id}/transition")
+def api_case_transition(case_id: int, body: TransitionIn, db: Session = Depends(get_db)):
+    """推進申請管線狀態。寫入預設關閉(WEBVULN_ALLOW_WRITE)，登入+audit 由 W4 接手。"""
+    if not config.ALLOW_WRITE:
+        raise HTTPException(status_code=403, detail="寫入未開放（待 W4 登入+audit）")
+    try:
+        c = cases.transition(db, case_id, body.to, body.note)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"id": c.id, "status": c.status, "note": c.note}
 
 
 @app.get("/api/export")

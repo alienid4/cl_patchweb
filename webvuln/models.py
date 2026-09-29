@@ -47,6 +47,35 @@ class SheetColumns(Base):
     batch: Mapped["ImportBatch"] = relationship(back_populates="sheets")
 
 
+class Case(Base):
+    """承辦疊加層：以弱點身分(穩定鍵)為主鍵的申請案，跨快照存活。
+
+    快照(finding)每次匯入重生；case 不重生，只 reconcile：仍在最新快照→更新去正規化欄與 source_closed；
+    不在→標 is_orphan(來源已消失，多半修好或移除)。申請管線狀態由承辦手動推進(見 logic.CASE_*)。
+    """
+    __tablename__ = "case_overlay"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    vuln_key: Mapped[str] = mapped_column(String(400), unique=True, index=True)  # sheet|plugin|host(正規化)
+    sheet_key: Mapped[str | None] = mapped_column(String(100))
+    plugin_id: Mapped[str | None] = mapped_column(String(50))
+    host: Mapped[str | None] = mapped_column(String(200))
+    department: Mapped[str | None] = mapped_column(String(200), index=True)
+    owner: Mapped[str | None] = mapped_column(String(100), index=True)  # 去正規化：最新快照的承辦
+    status: Mapped[str] = mapped_column(String(30), default="未申請", index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    # reconcile 用
+    last_seen_batch_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    is_orphan: Mapped[bool] = mapped_column(Boolean, default=False, index=True)  # 不在最新快照
+    source_closed: Mapped[bool] = mapped_column(Boolean, default=False)          # 最新快照顯示已結案
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=dt.datetime.now, onupdate=dt.datetime.now
+    )
+    # 承辦最後推進管線狀態的時間（只在 transition 更新，reconcile 不動）；供可疑聲稱的匯入時間差比對
+    status_changed_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now)
+
+
 class Finding(Base):
     __tablename__ = "finding"
 

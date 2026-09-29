@@ -57,4 +57,8 @@ def create_batch(session: Session, data: ImportIn) -> ImportBatch:
     session.add(batch)
     session.commit()
     session.refresh(batch)
+
+    # 承辦疊加層：把新快照對到既有 case（見 W3）。import 內部呼叫，避免循環匯入放這。
+    from . import cases
+    cases.reconcile(session, batch)
     return batch

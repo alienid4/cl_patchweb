@@ -45,3 +45,12 @@ def lead_days(severity) -> int:
 _DEFAULT_SLA = {"Critical": 7, "High": 30, "Medium": 90, "Low": 180}
 _sla_env = _parse_sev_lead(os.environ.get("WEBVULN_SLA_DAYS", ""))
 SLA_POLICY_DAYS: dict = {**_DEFAULT_SLA, **_sla_env}
+
+
+def _truthy(v: str) -> bool:
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+# 寫入(改 case 狀態等)預設關閉：登入+audit(W4)未上線前，221 不開匿名寫入。
+# 開發/測試以 env WEBVULN_ALLOW_WRITE=1 打開。W4 完成後改由登入權限控管。
+ALLOW_WRITE: bool = _truthy(os.environ.get("WEBVULN_ALLOW_WRITE", ""))

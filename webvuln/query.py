@@ -259,10 +259,13 @@ def close_stats(session: Session, department: Optional[str] = None,
     for f in newly_closed:
         by_closer[(f.owner or "").strip() or "— 未指派"] += 1
 
+    from . import cases  # 延後匯入避免循環
+    claimed = cases.suspect_count(session)  # 承辦聲稱完成、來源未確認(可疑)
+
     return {
         "new_closed": len(newly_closed),
         "source_confirmed": len(newly_closed),   # 皆為來源 Excel 確認
-        "claimed_unconfirmed": 0,                # 待 W3 承辦疊加層
+        "claimed_unconfirmed": claimed,          # 承辦聲稱完成但來源仍未結案(W3)
         "by_closer": sorted(({"name": k, "closed": v} for k, v in by_closer.items()),
                             key=lambda r: -r["closed"]),
         "prev_batch": prev.id if prev else None,

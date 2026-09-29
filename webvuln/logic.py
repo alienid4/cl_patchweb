@@ -20,6 +20,30 @@ CLOSE_OTHER = "其他"
 
 SEVERITIES = ("Critical", "High", "Medium", "Low")
 
+# ── 承辦申請管線（case 疊加層）──
+CASE_NEW = "未申請"
+CASE_WAIT_MGR = "待主管"
+CASE_WAIT_SEC = "待資安"
+CASE_APPROVED = "核准"
+CASE_DONE = "完成"
+CASE_RETURNED = "退回補件"
+
+CASE_STATUSES = (CASE_NEW, CASE_WAIT_MGR, CASE_WAIT_SEC, CASE_APPROVED, CASE_DONE, CASE_RETURNED)
+
+# 允許的狀態轉移（其餘一律擋下）：走完 = 完成（終態）；任一審核可退回補件；退回後回到待主管
+CASE_TRANSITIONS = {
+    CASE_NEW: (CASE_WAIT_MGR,),
+    CASE_WAIT_MGR: (CASE_WAIT_SEC, CASE_RETURNED),
+    CASE_WAIT_SEC: (CASE_APPROVED, CASE_RETURNED),
+    CASE_APPROVED: (CASE_DONE,),
+    CASE_RETURNED: (CASE_WAIT_MGR,),
+    CASE_DONE: (),
+}
+
+
+def can_transition(frm: str, to: str) -> bool:
+    return to in CASE_TRANSITIONS.get(frm, ())
+
 
 def parse_iso_date(value) -> Optional[dt.date]:
     """只吃 ISO 字串或 date；吃不下回 None（不做民國年換算——那是前端的事）。"""
