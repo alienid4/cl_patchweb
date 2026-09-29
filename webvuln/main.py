@@ -163,6 +163,12 @@ def api_close_stats(department: str | None = None, db: Session = Depends(get_db)
     return query.close_stats(db, department=department)
 
 
+@app.get("/api/snapshot")
+def api_snapshot(db: Session = Depends(get_db)):
+    """最新快照原封內容（各表欄序＋raw 列），供前端重建 workbook 餵回原本 render。"""
+    return query.snapshot(db)
+
+
 @app.get("/api/matrix")
 def api_matrix(department: str | None = None, db: Session = Depends(get_db)):
     """交叉分析：嚴重度 × 到期時間帶（未結案）。"""

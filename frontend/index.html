@@ -3,170 +3,232 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>國泰證券弱點彙總（網頁版）</title>
-  <link rel="stylesheet" href="/style.css">
+  <!-- 不快取：避免更新後瀏覽器仍載入舊版(看不到新版號) -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>國泰證券弱點彙總</title>
+  <link rel="stylesheet" href="css/style.css?v=1.76">
 </head>
 <body>
+
+  <!-- ===== 頁首 ===== -->
   <header class="app-header">
-    <div class="brand">🛡️ 國泰證券弱點彙總 <span class="ver" id="ver"></span></div>
-    <div class="head-right">
-      <span class="fresh" id="fresh">—</span>
-      <span class="user-chip hidden" id="userchip"></span>
-      <button id="btn-login" class="btn">登入</button>
-      <button id="btn-logout" class="btn hidden">登出</button>
+    <div class="header-inner">
+      <div class="brand">
+        <img class="brand-logo-img" src="assets/logo.png" alt="國泰證券"
+             onerror="if(!this.dataset.f){this.dataset.f=1;this.src='assets/logo.svg';}else{this.style.display='none';this.nextElementSibling.style.display='inline';}">
+        <span class="brand-logo" style="display:none">🛡️</span>
+        <div>
+          <h1>國泰證券弱點彙總 <span id="app-version" class="app-version"></span></h1>
+          <p class="brand-sub">弱點追蹤管理</p>
+        </div>
+      </div>
+      <div id="header-search" class="header-search hidden">
+        <input id="global-search-input" type="search" class="search-input"
+               placeholder="查詢：負責人／主機／弱點名稱／Plugin ID…（可空格分隔多字）">
+        <button id="global-search-clear" class="btn btn-secondary btn-sm">清除</button>
+      </div>
+
+      <div class="header-actions">
+        <div class="more-menu">
+          <button id="more-btn" class="btn btn-ghost hidden">其他功能 ▾</button>
+          <div id="more-dropdown" class="more-dropdown hidden">
+            <div class="more-info">檔案：<span id="file-name-tag" class="file-tag"></span></div>
+            <div class="more-divider"></div>
+            <button id="help-btn" class="more-item">使用說明</button>
+            <button id="security-btn" class="more-item">資安說明</button>
+            <button id="features-btn" class="more-item">功能開關</button>
+            <button id="email-settings-btn" class="more-item">Email 設定</button>
+            <button id="autoimport-btn" class="more-item">自動匯入設定</button>
+            <button id="reload-btn" class="more-item">重新選擇檔案</button>
+            <button id="clear-btn" class="more-item">清除暫存資料</button>
+          </div>
+        </div>
+      </div>
     </div>
   </header>
 
-  <div class="filters">
-    <label>部門
-      <select id="dept"><option value="全部">全部部門</option></select>
-    </label>
-    <div class="view-toggle" role="tablist">
-      <button class="vt active" data-view="manager">管理人視圖</button>
-      <button class="vt" data-view="supervisor">主管視圖</button>
-    </div>
-    <input id="kw" type="search" placeholder="查詢：主機／負責人／弱點／Plugin ID（空格分隔多字）">
-    <button id="btn-search" class="btn">查詢</button>
-    <label class="upload">匯入 Excel<input id="xlsx" type="file" accept=".xlsx,.xls" hidden></label>
-    <label class="upload">匯入 JSON<input id="file" type="file" accept=".json" hidden></label>
-  </div>
-
   <main class="container">
-    <div id="banner" class="banner hidden"></div>
 
-    <!-- ① 首屏：一句話 + Top3 + 紅數字 -->
-    <section class="sec" id="sec-home">
-      <span class="lbl">① 首屏 · 30 秒看完</span>
-      <div class="oneline" id="oneline">載入中…</div>
-      <div class="top3" id="top3"></div>
-      <div class="nums" id="rednums"></div>
+    <!-- ===== 上傳區 ===== -->
+    <section id="upload-section" class="upload-section">
+      <div id="drop-zone" class="drop-zone">
+        <div class="drop-icon">📊</div>
+        <h2>選擇或拖放「弱點彙總報告」Excel</h2>
+        <p class="drop-hint">支援 .xlsx / .xls / .csv　·　檔案僅在您的瀏覽器本機解析，不會上傳</p>
+        <button id="pick-btn" class="btn btn-primary btn-lg">選擇檔案</button>
+        <input type="file" id="file-input" accept=".xlsx,.xlsm,.xls,.csv" hidden>
+        <p class="drop-note">
+          預期工作表：<code>1-系統弱點掃描弱點</code>（找不到時自動改用第一個工作表）<br>
+          依「欄位名稱」讀取，欄位順序改變仍可運作。
+        </p>
+        <p class="drop-version">版本 <span id="app-version-up"></span> · <a href="docs/使用說明.html" target="_blank" rel="noopener" class="help-link">使用說明</a> · <a href="docs/資安說明.html" target="_blank" rel="noopener" class="help-link">資安說明</a></p>
+      </div>
+      <div id="error-box" class="error-box"></div>
     </section>
 
-    <!-- KPI + 分帶 + 嚴重度 -->
-    <section class="kpi-row" id="kpi"></section>
-    <div class="two-col">
-      <section class="card">
-        <h3>到期時間帶（互斥，相加＝未結案）</h3>
-        <div id="bands" class="chips"></div>
-      </section>
-      <section class="card">
-        <h3>嚴重度（未結案）</h3>
-        <div id="severity" class="chips"></div>
-      </section>
-    </div>
+    <!-- ===== 主內容 ===== -->
+    <section id="main-content" class="main-content hidden">
+     <div class="workspace">
+      <!-- 左側：工作表導覽 -->
+      <nav id="sheet-nav" class="sheet-nav"></nav>
 
-    <!-- 交叉分析：嚴重度 × 到期時間帶（沿用單機版「交叉分析」） -->
-    <section class="card" id="sec-matrix">
-      <h3>交叉分析（嚴重度 × 到期時間帶，未結案）</h3>
-      <div class="table-wrap"><table id="matrix"><thead></thead><tbody></tbody></table></div>
-      <p class="muted">點格子看該（嚴重度×時間帶）明細；點列首＝該嚴重度、欄首＝該時間帶。</p>
-    </section>
+      <!-- 右側：看板 -->
+      <div class="ws-main">
 
-    <!-- 階段統計：例外／展延（沿用單機版「例外／展延統計」） -->
-    <section class="card" id="sec-stage">
-      <h3>例外／展延 階段統計（未結案）</h3>
-      <div class="stage-grid" id="stage-grid"></div>
-      <p class="muted" id="stage-hint"></p>
-    </section>
+      <!-- 主管總覽首頁 -->
+      <div id="summary-view" class="summary-view"></div>
 
-    <!-- 主管視圖：SLA -->
-    <section class="card view-supervisor hidden" id="sec-sla">
-      <h3>SLA 達成率（各嚴重度政策天數）</h3>
-      <div class="table-wrap"><table id="sla">
-        <thead><tr><th>嚴重度</th><th>政策(天)</th><th>未結</th><th>逾期</th><th>達成率</th></tr></thead>
-        <tbody></tbody></table></div>
-    </section>
+      <!-- 各項目(工作表)細項 -->
+      <div id="sheet-view" class="hidden">
 
-    <!-- 排行榜 -->
-    <section class="card" id="sec-rank">
-      <div class="detail-head">
-        <h3>負責人數量排行榜（依逾期多寡）</h3>
-        <div class="rank-toggle">
-          <button class="rt active" data-by="owner">負責人</button>
-          <button class="rt" data-by="department">部門</button>
+      <div id="quality-banner" class="quality-banner"></div>
+
+      <div id="scope-info" class="scope-info"></div>
+
+      <!-- 分頁列 -->
+      <nav class="tabs">
+        <button class="tab-btn active" data-tab="dashboard">總覽</button>
+        <button class="tab-btn" data-tab="tracking">人員追蹤</button>
+        <button class="tab-btn" data-tab="matrix">交叉分析</button>
+        <button class="tab-btn" data-tab="stats">例外／展延統計</button>
+        <button class="tab-btn" data-tab="search">查詢</button>
+      </nav>
+
+      <!-- TAB1 Dashboard（子分頁：點選切換，免下拉） -->
+      <div id="tab-dashboard" class="tab-panel active">
+        <nav class="subtabs">
+          <button class="subtab-btn active" data-sub="metrics">指標</button>
+          <button class="subtab-btn" data-sub="sevrepair">結案進度</button>
+          <button class="subtab-btn" data-sub="today">優先處理</button>
+          <button class="subtab-btn" data-sub="risk">風險排序</button>
+          <button class="subtab-btn" data-sub="charts">圖表</button>
+        </nav>
+        <div class="subpanel active" data-sub="metrics">
+          <div id="metric-grid" class="metric-grid"></div>
+        </div>
+        <div class="subpanel" data-sub="sevrepair">
+          <div id="sev-repair" class="sev-repair-panel"></div>
+        </div>
+        <div class="subpanel" data-sub="today">
+          <div id="today-actions" class="action-panel"></div>
+        </div>
+        <div class="subpanel" data-sub="risk">
+          <div id="risk-top" class="risk-panel"></div>
+        </div>
+        <div class="subpanel" data-sub="charts">
+          <div class="charts-row">
+            <div class="chart-card">
+              <div class="chart-wrap"><canvas id="chart-severity"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <div class="chart-wrap"><canvas id="chart-due"></canvas></div>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="table-wrap"><table id="rank">
-        <thead><tr><th>#</th><th>名稱</th><th>未結案</th><th>已逾期</th><th>應提申請未提</th><th>高風險</th><th>結案率</th></tr></thead>
-        <tbody></tbody></table></div>
-      <p class="muted"><a href="#" id="rank-expand">展開全部</a></p>
-    </section>
 
-    <!-- ④ 申請管線 -->
-    <section class="card" id="sec-pipeline">
-      <h3>申請流程管線（承辦案件卡在哪關）</h3>
-      <div class="pipe" id="pipe"></div>
-      <p class="muted" id="pipe-hint"></p>
-    </section>
-
-    <!-- ⑤ 結案統計 -->
-    <section class="card" id="sec-close">
-      <h3>結案統計（含「有人自行結案」）</h3>
-      <div class="rep" id="closerep"></div>
-      <div class="table-wrap"><table id="closetbl">
-        <thead><tr><th>結案人</th><th>本期結案</th></tr></thead><tbody></tbody></table></div>
-      <p class="muted">「本期新結案」＝上期未結、這期變已結（快照比對）。「承辦聲稱未確認」＝承辦標完成但來源 Excel 仍未結，可能自行浮報。</p>
-    </section>
-
-    <!-- ③ 報告 / 匯出 -->
-    <section class="card" id="sec-report">
-      <h3>報告 / 匯出</h3>
-      <div class="report-actions">
-        <button id="btn-export" class="btn">下載原封匯出（Excel，欄序 1:1）</button>
-        <span class="muted">缺值標「無原始資料」，含管理摘要分頁。每週報表 Email 待主機上線（W9）。</span>
+      <!-- TAB2 人員追蹤 -->
+      <div id="tab-tracking" class="tab-panel">
+        <div class="panel-head">
+          <h3>各負責人未結案追蹤</h3>
+        </div>
+        <div id="tracking-body" class="tracking-body"></div>
       </div>
-    </section>
 
-    <!-- 明細 / 下鑽 -->
-    <section class="card">
-      <div class="detail-head">
-        <h3 id="detail-title">明細</h3>
-        <div><button id="btn-csv" class="btn btn-sm">匯出 CSV</button></div>
+      <!-- TAB 交叉分析：嚴重度 × 到期時間帶 逐層過濾 -->
+      <div id="tab-matrix" class="tab-panel">
+        <div class="panel-head">
+          <h3>嚴重度 × 到期時間帶</h3>
+        </div>
+        <div id="matrix-body" class="matrix-cross-body"></div>
       </div>
-      <div class="table-wrap">
-        <table id="detail">
-          <thead><tr>
-            <th data-k="host">主機</th><th data-k="owner">負責人</th><th data-k="severity">嚴重度</th>
-            <th data-k="name">弱點</th><th data-k="plugin_id">Plugin ID</th>
-            <th data-k="effective_due">到期日</th><th data-k="overdue_days">逾期天數</th>
-            <th data-k="action_line">行動線</th><th data-k="stage">處置階段</th><th data-k="department">部門</th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <p class="muted" id="detail-count"></p>
-    </section>
 
-    <!-- 承辦案件（管線點選後顯示，登入後可推進） -->
-    <section class="card hidden" id="sec-cases">
-      <div class="detail-head"><h3 id="cases-title">承辦案件</h3></div>
-      <div class="table-wrap"><table id="cases">
-        <thead><tr><th>主機</th><th>Plugin</th><th>負責人</th><th>部門</th><th>狀態</th><th>來源</th><th>操作</th></tr></thead>
-        <tbody></tbody></table></div>
+      <!-- TAB3 例外/展延統計（子分頁：免下拉） -->
+      <div id="tab-stats" class="tab-panel">
+        <nav class="subtabs">
+          <button class="subtab-btn active" data-sub="stage">階段統計</button>
+          <button class="subtab-btn" data-sub="stats-charts">圖表</button>
+        </nav>
+        <div class="subpanel active" data-sub="stage">
+          <div id="stats-scope" class="scope-info"></div>
+          <div id="stage-grid" class="stage-grid"></div>
+        </div>
+        <div class="subpanel" data-sub="stats-charts">
+          <div class="charts-row">
+            <div class="chart-card"><div class="chart-wrap"><canvas id="chart-stage-pie"></canvas></div></div>
+            <div class="chart-card"><div class="chart-wrap"><canvas id="chart-stage-band"></canvas></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB4 查詢 -->
+      <div id="tab-search" class="tab-panel">
+        <div class="panel-head">
+          <h3>查詢</h3>
+        </div>
+        <div id="search-body" class="search-body"></div>
+      </div>
+
+      </div><!-- /#sheet-view -->
+      </div><!-- /.ws-main -->
+     </div><!-- /.workspace -->
     </section>
   </main>
 
-  <footer class="app-footer">資料來自最新匯入快照 · 讀取免登入、寫入需登入 · 國泰證券 資訊架構部</footer>
+  <!-- ===== Loading 遮罩 ===== -->
+  <div id="loading" class="loading-overlay">
+    <div class="spinner"></div>
+    <p>解析中…</p>
+  </div>
 
-  <!-- 登入 modal -->
-  <div class="modal hidden" id="login-modal">
-    <div class="modal-box">
-      <h3>登入</h3>
-      <label>帳號<input id="li-user" autocomplete="username"></label>
-      <label>密碼<input id="li-pass" type="password" autocomplete="current-password"></label>
-      <p class="err hidden" id="li-err"></p>
-      <div class="modal-actions">
-        <button class="btn" id="li-cancel">取消</button>
-        <button class="btn btn-primary" id="li-submit">登入</button>
+  <!-- ===== Modal ===== -->
+  <div id="modal-overlay" class="modal-overlay">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h3 id="modal-title">明細</h3>
+        <button id="modal-close" class="modal-close" aria-label="關閉">✕</button>
       </div>
+      <div id="modal-body" class="modal-body"></div>
+      <div id="modal-footer" class="modal-footer"></div>
     </div>
   </div>
 
-  <!-- 沿用單機版已驗證的 Excel 解析（民國年/多表/嚴重度），避免在後端重寫重生 bug（決策 import-v1-upload） -->
-  <script src="/vendor/xlsx.full.min.js"></script>
-  <script src="/vendor/utils.js"></script>
-  <script src="/vendor/profiles.js"></script>
-  <script src="/vendor/sheets.js"></script>
-  <script src="/app.js"></script>
+  <!-- ===== Toast ===== -->
+  <div id="toast" class="toast"></div>
+
+  <footer class="app-footer">
+    <span>國泰證券弱點彙總 · 純前端本機解析 · SheetJS + Chart.js</span>
+  </footer>
+
+  <!-- ===== 相依函式庫：本機載入，離線(無網路)也能用，不依賴 CDN ===== -->
+  <script src="assets/vendor/xlsx.full.min.js?v=1.76"></script>
+  <script src="assets/vendor/chart.umd.min.js?v=1.76"></script>
+
+  <!-- ===== 應用程式 ===== -->
+  <script src="config/version.js?v=1.76"></script>
+  <script src="config/config.js?v=1.76"></script>
+  <script src="config/features.js?v=1.76"></script>
+  <script src="config/profiles.js?v=1.76"></script>
+  <script src="js/utils.js?v=1.76"></script>
+  <script src="js/sheets.js?v=1.76"></script>
+  <script src="js/analysis.js?v=1.76"></script>
+  <script src="js/multi.js?v=1.76"></script>
+  <script src="js/reminder.js?v=1.76"></script>
+  <script src="js/ui-common.js?v=1.76"></script>
+  <script src="js/features.js?v=1.76"></script>
+  <script src="js/dashboard.js?v=1.76"></script>
+  <script src="js/tracking.js?v=1.76"></script>
+  <script src="js/matrix.js?v=1.76"></script>
+  <script src="js/stats.js?v=1.76"></script>
+  <script src="js/search.js?v=1.76"></script>
+  <script src="js/summary.js?v=1.76"></script>
+  <script src="js/history.js?v=1.76"></script>
+  <script src="js/email.js?v=1.76"></script>
+  <script src="js/autoimport.js?v=1.76"></script>
+  <script src="js/main.js?v=1.76"></script>
+  <!-- 網頁版黏合層（不改原檔）：開頁載入伺服器快照、上傳同時存回伺服器 -->
+  <script src="js/webext.js"></script>
 </body>
 </html>

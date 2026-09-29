@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>國泰證券弱點彙總 — 資安說明書</title>
+<style>
+  :root{
+    --c:#009142; --cd:#00703a; --soft:#e5f4ec; --bd:#d8dee6; --tx:#1f2937; --mut:#5b6673;
+    --warn:#b26a00; --warnbg:#fff8e6; --danger:#b3261e; --dangerbg:#fdf0ef;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:#eef1f4;color:var(--tx);
+    font-family:"Segoe UI","Microsoft JhengHei","PingFang TC",system-ui,sans-serif;
+    line-height:1.7;font-size:15px;}
+  .page{max-width:960px;margin:0 auto;background:#fff;box-shadow:0 2px 24px rgba(0,0,0,.06);}
+  header{background:linear-gradient(120deg,var(--c),var(--cd));color:#fff;padding:28px 44px;}
+  header .cls{display:inline-block;border:1px solid rgba(255,255,255,.6);border-radius:4px;
+    padding:2px 10px;font-size:12px;letter-spacing:1px;margin-bottom:10px;}
+  header h1{margin:4px 0 6px;font-size:25px;letter-spacing:.5px;}
+  header p{margin:0;opacity:.92;font-size:14px;}
+
+  .docinfo{padding:0 44px;margin:22px 0 0;}
+  .docinfo table{width:100%;border-collapse:collapse;font-size:13.5px;}
+  .docinfo th{width:110px;background:#f5f7f9;color:var(--mut);text-align:left;
+    padding:7px 12px;border:1px solid var(--bd);font-weight:600;}
+  .docinfo td{padding:7px 12px;border:1px solid var(--bd);}
+
+  nav.toc{margin:22px 44px 0;background:var(--soft);border-radius:6px;padding:14px 20px;font-size:13.5px;}
+  nav.toc b{display:block;color:var(--cd);margin-bottom:6px;font-size:13px;letter-spacing:.5px;}
+  nav.toc a{color:var(--cd);text-decoration:none;margin-right:16px;line-height:2;}
+  nav.toc a:hover{text-decoration:underline;}
+
+  section{padding:26px 44px;border-bottom:1px solid var(--bd);}
+  h2{font-size:18px;color:var(--cd);margin:0 0 4px;padding-bottom:8px;border-bottom:2px solid var(--soft);}
+  h3{font-size:15px;color:var(--tx);margin:20px 0 6px;}
+  .lead{color:var(--mut);margin:10px 0 16px;font-size:14px;}
+  p{margin:10px 0;}
+  ul{margin:8px 0;padding-left:22px;}
+  li{margin:5px 0;}
+
+  table.grid{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px;}
+  table.grid th{background:var(--soft);color:var(--cd);text-align:left;
+    padding:9px 12px;border:1px solid var(--bd);font-weight:700;}
+  table.grid td{padding:9px 12px;border:1px solid var(--bd);vertical-align:top;}
+  table.grid tr:nth-child(even) td{background:#fafbfc;}
+
+  .note{background:var(--soft);border-left:4px solid var(--c);border-radius:0 6px 6px 0;
+    padding:11px 16px;font-size:13.5px;margin:14px 0;}
+  .warn{background:var(--warnbg);border-left:4px solid var(--warn);border-radius:0 6px 6px 0;
+    padding:11px 16px;font-size:13.5px;margin:14px 0;}
+  .risk{background:var(--dangerbg);border-left:4px solid var(--danger);border-radius:0 6px 6px 0;
+    padding:11px 16px;font-size:13.5px;margin:14px 0;}
+  code{background:#eef2f0;padding:1px 6px;border-radius:4px;color:var(--cd);font-size:12.5px;}
+  .tag{display:inline-block;border-radius:3px;padding:1px 8px;font-size:12px;font-weight:700;}
+  .t-ok{background:var(--soft);color:var(--cd);}
+  .t-na{background:#f0f2f5;color:var(--mut);}
+  .t-res{background:var(--warnbg);color:var(--warn);}
+  .fig{margin:14px 0;text-align:center;}
+  .fig svg{max-width:100%;height:auto;border:1px solid var(--bd);border-radius:8px;background:#fbfcfd;}
+  footer{padding:18px 44px;color:var(--mut);font-size:12.5px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="cls">內部使用</div>
+  <h1>弱點彙總看板　資安說明書</h1>
+  <p>系統安全控制措施、威脅因應、部署模式與安全邊界說明</p>
+</header>
+
+<div class="docinfo">
+  <table>
+    <tr><th>文件版本</th><td>1.0</td><th>對應系統版本</th><td>V1.69</td></tr>
+    <tr><th>發布日期</th><td>2026-07-21</td><th>文件分類</th><td>內部使用</td></tr>
+    <tr><th>適用對象</th><td colspan="3">部門資安窗口、系統使用者、資安稽核人員</td></tr>
+    <tr><th>系統定位</th><td colspan="3">弱點掃描結果之<b>本機輔助檢視與追蹤工具</b>；非權威資料來源，正式紀錄仍以原始弱點報告為準</td></tr>
+  </table>
+</div>
+
+<nav class="toc">
+  <b>目次</b>
+  <a href="#s1">1 系統概述</a>
+  <a href="#s2">2 資料處理說明</a>
+  <a href="#s3">3 安全控制措施</a>
+  <a href="#s4">4 威脅情境與因應</a>
+  <a href="#s5">5 部署模式與安全邊界</a>
+  <a href="#s6">6 驗證方式與結果</a>
+  <a href="#s7">7 使用者責任</a>
+</nav>
+
+<!-- 1 -->
+<section id="s1">
+  <h2>1　系統概述</h2>
+
+  <h3>1.1 架構</h3>
+  <p>本系統為<b>純前端單機應用程式</b>，以瀏覽器開啟本機 HTML 檔案執行，<b>不含應用程式伺服器、不含資料庫、不對外連線</b>。</p>
+
+  <div class="fig">
+    <svg viewBox="0 0 780 230" xmlns="http://www.w3.org/2000/svg">
+      <rect x="24" y="24" width="440" height="182" rx="10" fill="#f7fbf9" stroke="#009142" stroke-width="2"/>
+      <text x="40" y="48" font-size="12.5" fill="#00703a" font-weight="700">使用者端電腦（信任邊界）</text>
+
+      <rect x="48" y="66" width="180" height="52" rx="7" fill="#e5f4ec" stroke="#009142"/>
+      <text x="138" y="88" text-anchor="middle" font-size="12.5" fill="#1f2937" font-weight="700">弱點報告 Excel</text>
+      <text x="138" y="106" text-anchor="middle" font-size="11.5" fill="#5b6673">使用者自行選取</text>
+
+      <rect x="260" y="66" width="180" height="52" rx="7" fill="#e5f4ec" stroke="#009142"/>
+      <text x="350" y="88" text-anchor="middle" font-size="12.5" fill="#1f2937" font-weight="700">瀏覽器</text>
+      <text x="350" y="106" text-anchor="middle" font-size="11.5" fill="#5b6673">解析／統計／呈現</text>
+      <path d="M232 92 H254" stroke="#009142" stroke-width="2" marker-end="url(#a)"/>
+
+      <rect x="48" y="136" width="180" height="50" rx="7" fill="#fff" stroke="#94a3b8" stroke-dasharray="4,3"/>
+      <text x="138" y="157" text-anchor="middle" font-size="12" fill="#5b6673">瀏覽器本機暫存</text>
+      <text x="138" y="174" text-anchor="middle" font-size="11" fill="#5b6673">localStorage</text>
+      <path d="M350 120 V133 H232" stroke="#94a3b8" stroke-width="1.6" stroke-dasharray="4,3" marker-end="url(#b)"/>
+
+      <rect x="260" y="136" width="180" height="50" rx="7" fill="#fff" stroke="#94a3b8" stroke-dasharray="4,3"/>
+      <text x="350" y="157" text-anchor="middle" font-size="12" fill="#5b6673">寄信小幫手（選用）</text>
+      <text x="350" y="174" text-anchor="middle" font-size="11" fill="#5b6673">localhost only ＋ 權杖</text>
+
+      <rect x="510" y="66" width="240" height="52" rx="7" fill="#f6f8fc" stroke="#94a3b8"/>
+      <text x="630" y="88" text-anchor="middle" font-size="12.5" fill="#1f2937" font-weight="700">公司 AD／郵件 relay</text>
+      <text x="630" y="106" text-anchor="middle" font-size="11.5" fill="#5b6673">僅催辦功能使用</text>
+      <path d="M442 162 H480 V92 H504" stroke="#009142" stroke-width="1.8" marker-end="url(#a)"/>
+
+      <rect x="510" y="140" width="240" height="46" rx="7" fill="#fdf0ef" stroke="#b3261e" stroke-dasharray="5,4"/>
+      <text x="630" y="160" text-anchor="middle" font-size="12" fill="#b3261e" font-weight="700">網際網路／雲端服務</text>
+      <text x="630" y="177" text-anchor="middle" font-size="11" fill="#b3261e">無任何連線</text>
+
+      <defs>
+        <marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#009142"/></marker>
+        <marker id="b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#94a3b8"/></marker>
+      </defs>
+    </svg>
+  </div>
+
+  <h3>1.2 元件</h3>
+  <table class="grid">
+    <tr><th style="width:150px;">元件</th><th>說明</th><th style="width:120px;">對外連線</th></tr>
+    <tr><td><b>看板主程式</b></td><td>HTML/JavaScript，於瀏覽器執行；解析 Excel 並產生統計與明細</td><td><span class="tag t-na">無</span></td></tr>
+    <tr><td><b>寄信小幫手</b><br>（選用，可停用）</td><td>本機 PowerShell 服務，供看板發送催辦信；查詢 AD 取得收件人、透過公司 relay 寄送</td><td>僅公司內部 AD／SMTP relay</td></tr>
+  </table>
+  <p>寄信小幫手屬<b>選用模組</b>，可於「其他功能 → 功能開關」關閉；關閉後系統為完全離線之檢視工具。</p>
+</section>
+
+<!-- 2 -->
+<section id="s2">
+  <h2>2　資料處理說明</h2>
+
+  <h3>2.1 資料分類</h3>
+  <table class="grid">
+    <tr><th style="width:170px;">資料類別</th><th>內容</th><th style="width:110px;">敏感等級</th></tr>
+    <tr><td>弱點掃描結果</td><td>主機位址、弱點名稱、Plugin ID、嚴重度、修補期限</td><td><b>機敏</b></td></tr>
+    <tr><td>權責資訊</td><td>負責單位、負責人姓名</td><td>內部</td></tr>
+    <tr><td>催辦紀錄</td><td>寄送時間、收件人電子郵件、寄送結果</td><td>內部（含個人資訊）</td></tr>
+    <tr><td>個人設定</td><td>SMTP 主機、寄件人信箱、篩選偏好、小幫手權杖</td><td>內部</td></tr>
+  </table>
+
+  <h3>2.2 資料流向</h3>
+  <ul>
+    <li>Excel 由使用者<b>自行選取本機檔案</b>，經瀏覽器 File API 讀入記憶體解析</li>
+    <li>解析與統計<b>全部於瀏覽器本機完成</b>，無任何 HTTP 上傳行為</li>
+    <li>唯一對外行為為<b>催辦寄信</b>：由本機小幫手查詢公司 AD、經公司內部 SMTP relay 寄送</li>
+  </ul>
+
+  <h3>2.3 儲存位置與保存</h3>
+  <table class="grid">
+    <tr><th style="width:180px;">資料</th><th>儲存位置</th><th>保存與清除</th></tr>
+    <tr><td>匯入的 Excel 內容</td><td>瀏覽器 localStorage（<code>vulnDashboard.v2</code>），以 Base64 編碼存放</td><td>保留至使用者清除；「其他功能 → 清除暫存資料」可刪除</td></tr>
+    <tr><td>發信紀錄</td><td>瀏覽器 localStorage，上限 500 筆（逾量自動汰舊）</td><td>可於「發信紀錄」介面清空</td></tr>
+    <tr><td>發信稽核檔</td><td>小幫手所在資料夾 <code>mail_log.csv</code></td><td>持續累積，由使用者自行保管與清理</td></tr>
+    <tr><td>存取權杖</td><td>小幫手所在資料夾 <code>agent_token.txt</code></td><td>每次小幫手啟動即重新產生（舊權杖立即失效）</td></tr>
+  </table>
+
+  <div class="warn">
+    <b>請注意：</b>Base64 為<b>編碼而非加密</b>，localStorage 內容可由該電腦使用者讀取。
+    共用或公用電腦使用後，請務必執行「清除暫存資料」。
+  </div>
+</section>
+
+<!-- 3 -->
+<section id="s3">
+  <h2>3　安全控制措施</h2>
+  <p class="lead">依控制面向列示實作方式。「不適用」係因架構上不存在該風險面。</p>
+
+  <table class="grid">
+    <tr><th style="width:130px;">控制面向</th><th>實作方式</th><th style="width:92px;">狀態</th></tr>
+    <tr>
+      <td><b>資料傳輸</b></td>
+      <td>看板不進行任何網路傳輸；催辦寄信經公司內部 relay，不經外部網路</td>
+      <td><span class="tag t-ok">已實作</span></td>
+    </tr>
+    <tr>
+      <td><b>對外暴露</b></td>
+      <td>寄信小幫手僅繫結 <code>localhost</code>，不接受外部主機連線</td>
+      <td><span class="tag t-ok">已實作</span></td>
+    </tr>
+    <tr>
+      <td><b>服務存取控制</b></td>
+      <td>小幫手每次啟動產生一次性權杖，寄信端點須帶正確權杖（<code>X-Agent-Token</code>），
+          並限制請求來源（同源／本機）；驗證失敗回應 401 並拒絕執行</td>
+      <td><span class="tag t-ok">已實作</span></td>
+    </tr>
+    <tr>
+      <td><b>稽核軌跡</b></td>
+      <td>催辦寄送逐筆記錄時間、負責人、收件人、副本、結果與失敗原因；
+          同時寫入本機稽核檔，檔案被占用時自動改寫入備援檔並回報</td>
+      <td><span class="tag t-ok">已實作</span></td>
+    </tr>
+    <tr>
+      <td><b>錯誤處理</b></td>
+      <td>寄送失敗明確標示並告警（不以「已送出」概括）；操作逾時提示避免重複寄送；
+          寄送中鎖定按鈕防重複觸發</td>
+      <td><span class="tag t-ok">已實作</span></td>
+    </tr>
+    <tr>
+      <td><b>資料完整性</b></td>
+      <td>欄位無法辨識、狀態無法歸類、重複欄位名稱時主動警示並提供明細，
+          避免資料靜默遺失而未被察覺</td>
+      <td><span class="tag t-ok">已實作</span></td>
+    </tr>
+    <tr>
+      <td><b>輸出編碼</b></td>
+      <td>來源資料於畫面呈現前一律經 HTML escape，避免內容含標記字元造成注入或破版</td>
+      <td><span class="tag t-ok">已實作</span></td>
+    </tr>
+    <tr>
+      <td><b>機敏資訊管理</b></td>
+      <td>程式碼不內嵌任何主機位址、帳號、密碼或信箱；連線參數全由使用者於本機設定。
+          真實資料檔、權杖、催辦紀錄均排除於版本控制之外</td>
+      <td><span class="tag t-ok">已實作</span></td>
+    </tr>
+    <tr>
+      <td><b>身分驗證</b></td>
+      <td>單機工具無伺服器可驗證身分，存取控制邊界為作業系統帳戶（詳見 5.1）。
+          本工具不新增亦不降低既有防護</td>
+      <td><span class="tag t-na">部署模式</span></td>
+    </tr>
+    <tr>
+      <td><b>靜態資料加密</b></td>
+      <td>本機暫存未加密，依賴作業系統帳戶隔離與磁碟加密政策；
+          提供清除功能（詳見 5.4）</td>
+      <td><span class="tag t-res">需承擔</span></td>
+    </tr>
+    <tr>
+      <td><b>伺服器面控制</b></td>
+      <td>無伺服器、無資料庫、無對外服務埠</td>
+      <td><span class="tag t-na">不適用</span></td>
+    </tr>
+  </table>
+</section>
+
+<!-- 4 -->
+<section id="s4">
+  <h2>4　威脅情境與因應</h2>
+
+  <table class="grid">
+    <tr><th style="width:210px;">威脅情境</th><th>因應措施</th><th style="width:92px;">評估</th></tr>
+    <tr>
+      <td>弱點資料經網路外洩</td>
+      <td>系統無上傳行為、無外部連線，資料不離開本機</td>
+      <td><span class="tag t-ok">已控制</span></td>
+    </tr>
+    <tr>
+      <td>本機其他程式或網頁盜用寄信服務，冒用使用者名義發信</td>
+      <td>小幫手僅收本機連線；寄信端點須通過一次性權杖驗證與來源檢查</td>
+      <td><span class="tag t-ok">已控制</span></td>
+    </tr>
+    <tr>
+      <td>催辦未實際送達卻誤認為成功</td>
+      <td>修正失敗判定邏輯，失敗逐筆標示並告警；保留可查紀錄</td>
+      <td><span class="tag t-ok">已控制</span></td>
+    </tr>
+    <tr>
+      <td>資料被誤判或漏算，導致風險誤判</td>
+      <td>欄位／狀態無法辨識時主動警示；統計數字全數可下鑽核對明細</td>
+      <td><span class="tag t-ok">已控制</span></td>
+    </tr>
+    <tr>
+      <td>惡意內容夾帶於 Excel 欄位，於畫面觸發指令碼</td>
+      <td>所有輸出經 HTML escape；系統不執行來源資料內容</td>
+      <td><span class="tag t-ok">已控制</span></td>
+    </tr>
+    <tr>
+      <td>取得該電腦控制權者讀取本機暫存資料</td>
+      <td>應用層無法阻擋；依作業系統帳戶控管與磁碟加密政策。
+          惟該情境下攻擊者本即可直接開啟來源 Excel，非本工具新增之風險</td>
+      <td><span class="tag t-res">需承擔</span></td>
+    </tr>
+    <tr>
+      <td>使用者自行轉寄含真實弱點之原始報告</td>
+      <td>屬使用行為，非系統可控範圍；以第 7 節使用者責任規範</td>
+      <td><span class="tag t-na">使用行為</span></td>
+    </tr>
+  </table>
+</section>
+
+<!-- 5 -->
+<section id="s5">
+  <h2>5　部署模式與安全邊界</h2>
+  <p class="lead">評估基準：本工具是否使既有處境變差。單機工具的既有特性（無登入、資料存本機）
+    屬部署模式定義，非缺陷，故不列為風險項。</p>
+
+  <h3>5.1 部署模式</h3>
+  <p><b>單機本機工具。</b>存取控制邊界為<b>作業系統帳戶</b>，與該電腦上的 Excel、Word 等本機檔案同一層級。</p>
+  <ul>
+    <li>本工具<b>不新增身分驗證層</b>——單機工具無伺服器可驗證身分，於前端實作之登入可被繞過，
+        提供虛假保護反而有害</li>
+    <li>本工具<b>亦不降低既有防護</b>——能開啟看板者，本即可直接開啟同一份來源 Excel</li>
+    <li>資料保護仰賴既有機制：Windows 帳戶隔離、資料夾權限、公司磁碟加密政策</li>
+  </ul>
+
+  <h3>5.2 本工具新增的風險面</h3>
+  <p>相對於「電腦中原本就存有該份 Excel」，本工具實際新增之風險面為下列兩項，均已施控：</p>
+  <table class="grid">
+    <tr><th style="width:220px;">新增項目</th><th>控制方式</th><th style="width:92px;">狀態</th></tr>
+    <tr>
+      <td><b>本機服務監聽連接埠</b><br>（寄信小幫手，選用模組）</td>
+      <td>僅繫結 localhost 不對外；寄信端點須通過一次性權杖驗證與來源檢查；
+          權杖檔限縮為僅本人可讀；連接埠被占用時自動改用備用埠，並驗證回應方確為本服務</td>
+      <td><span class="tag t-ok">已控制</span></td>
+    </tr>
+    <tr>
+      <td><b>瀏覽器暫存留存資料</b><br>（供下次開啟還原）</td>
+      <td>提供「清除暫存資料」隨時清除；發信紀錄設上限並可清空；
+          不使用小幫手時可於功能開關停用整個模組</td>
+      <td><span class="tag t-ok">已控制</span></td>
+    </tr>
+  </table>
+
+  <h3>5.3 適用邊界</h3>
+  <table class="grid">
+    <tr><th style="width:110px;">適用</th><td>個人專屬之公務電腦，且該電腦已納入公司端點管理與磁碟加密政策</td></tr>
+    <tr><th>不適用</th><td>共用帳號環境、公用電腦、跨部門共享之工作站；
+      如須多人共用檢視，應改以具身分驗證之伺服器型系統實作</td></tr>
+  </table>
+
+  <h3>5.4 需風險承擔事項</h3>
+  <div class="warn">
+    <b>RA-01　瀏覽器暫存於同一 Windows 帳戶內可被讀取</b><br>
+    匯入之內容以 Base64（<b>編碼而非加密</b>）存於 localStorage 供還原使用，
+    同一帳戶下之其他程式可讀取。應用層無法消除此性質——加密金鑰須置於前端，等同鎖與鑰匙同放。<br>
+    <b>影響範圍：</b>限於該 Windows 帳戶內；跨帳戶無法讀取；不涉及網路外洩。<br>
+    <b>補償措施：</b>提供「清除暫存資料」功能供使用後清除；依公司磁碟加密政策保護靜態資料；
+    限定於個人專屬電腦使用。<br>
+    <b>風險水準：</b>與該帳戶下其他本機檔案（含來源 Excel 本身）同等，<b>無額外惡化</b>。
+  </div>
+
+  <h3>5.5 系統定位聲明</h3>
+  <div class="note">
+    本工具為弱點報告之<b>輔助檢視與追蹤介面</b>，非資料權威來源。
+    統計結果供追蹤管理使用，正式陳報與稽核應以原始弱點報告為準。<br>
+    為利核對，所有統計數字均可下鑽至明細逐筆查證；畫面固定顯示目前母體條件
+    （部門／結案狀態／筆數）；欄位或狀態無法辨識時主動警示。
+  </div>
+</section>
+
+<!-- 6 -->
+<section id="s6">
+  <h2>6　驗證方式與結果</h2>
+
+  <h3>6.1 驗證方法</h3>
+  <table class="grid">
+    <tr><th style="width:150px;">項目</th><th>方式</th></tr>
+    <tr><td>功能驗證（黑箱）</td><td>以測試資料實際操作，逐一比對統計數字與明細筆數（50 項）、各功能頁面與下鑽行為</td></tr>
+    <tr><td>程式碼審查（白箱）</td><td>全部程式碼逐行檢視，涵蓋邊界條件、錯誤處理、狀態管理與存取控制</td></tr>
+    <tr><td>存取控制驗證</td><td>實測未帶權杖、帶錯誤權杖、帶正確權杖之回應行為</td></tr>
+    <tr><td>回歸驗證</td><td>每次修正後重新執行完整測試，確認未衍生新問題</td></tr>
+  </table>
+
+  <h3>6.2 結果</h3>
+  <ul>
+    <li>列管問題 <b>35 項，已全數修正完畢</b>（含 1 項存取控制缺失、多項資料正確性與催辦可靠性問題）</li>
+    <li>存取控制實測：未帶權杖與帶錯誤權杖均<b>正確拒絕</b>（HTTP 401），帶正確權杖始放行</li>
+    <li>最終回歸：全模組正常載入、各功能頁面正常、統計與明細比對 <b>50/50 相符</b>、無執行期錯誤</li>
+  </ul>
+
+  <div class="note">
+    上述問題均為<b>發布前之內部自我檢測</b>所發現，於開放使用前完成修正，未曾造成實際作業影響。
+    詳細清單與修正對照留存於內部測試報告。
+  </div>
+
+  <h3>6.3 後續建議</h3>
+  <ul>
+    <li>補強自動化測試（日期解析、狀態分類、數字對帳三項），降低後續修改之回歸風險</li>
+    <li>依部門試用回饋持續調整；如納入正式作業流程，另依規定辦理相關程序</li>
+  </ul>
+</section>
+
+<!-- 7 -->
+<section id="s7">
+  <h2>7　使用者責任</h2>
+  <p class="lead">部分風險無法由系統控制，須由使用行為配合。</p>
+  <ul>
+    <li><b>原始報告保管</b>：含真實主機與弱點細節之 Excel 屬機敏資料，不得任意轉寄或置於共用空間</li>
+    <li><b>使用後清除</b>：於共用或非個人專屬電腦使用後，須執行「其他功能 → 清除暫存資料」</li>
+    <li><b>紀錄保管</b>：匯出之發信紀錄含同仁電子郵件，須比照個人資料保管，不得外流</li>
+    <li><b>權杖保管</b>：<code>agent_token.txt</code> 等同寄信授權，不得外傳或置於共用位置</li>
+    <li><b>異常回報</b>：發現統計異常、寄送異常或疑似安全問題，請即聯繫系統維護窗口，勿自行修改程式檔案</li>
+  </ul>
+</section>
+
+<footer>
+  國泰證券弱點彙總 · 資安說明書 v1.0 · 內部使用 · 本文件隨系統版本更新
+</footer>
+</div>
+</body>
+</html>

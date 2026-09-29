@@ -17,7 +17,7 @@ from collections import defaultdict
 from .config import SLA_POLICY_DAYS, lead_days
 from .logic import (CLOSE_DONE, CLOSE_OPEN, SEVERITIES, STAGE_EXCEPTION,
                     STAGE_EXTENSION, STAGE_ORIGINAL, overdue_days)
-from .models import Finding, ImportBatch
+from .models import Finding, ImportBatch, SheetColumns
 
 BANDS = ("已逾期", "30天內", "31–90天", "91–180天", "180天以上", "無到期日")
 HIGH_RISK = ("Critical", "High")
@@ -173,6 +173,34 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         }
 
     return [row(f) for f in fs]
+
+
+def snapshot(session: Session) -> dict:
+    """回傳最新快照的『原封』內容（各表欄序＋每列 raw），供網頁前端重建 workbook、
+    餵回單機版原本的解析/render pipeline，畫面與單機版一模一樣。"""
+    b = latest_batch(session)
+    if not b:
+        return {"source_file": None, "imported_at": None, "sheets": []}
+    scs = {sc.sheet_key: sc.columns for sc in session.execute(
+        select(SheetColumns).where(SheetColumns.batch_id == b.id)).scalars().all()}
+    findings = session.execute(
+        select(Finding).where(Finding.batch_id == b.id).order_by(Finding.id)).scalars().all()
+    order: list[str] = []
+    by: dict[str, list] = {}
+    for f in findings:
+        k = f.sheet_key or "未分類"
+        if k not in by:
+            by[k] = []
+            order.append(k)
+        by[k].append(f.raw or {})
+    sheets = [{
+        "name": k,
+        "columns": scs.get(k) or (list(by[k][0].keys()) if by[k] else []),
+        "rows": by[k],
+    } for k in order]
+    return {"source_file": b.source_file,
+            "imported_at": b.imported_at.isoformat() if b.imported_at else None,
+            "sheets": sheets}
 
 
 def matrix(session: Session, department: Optional[str] = None,

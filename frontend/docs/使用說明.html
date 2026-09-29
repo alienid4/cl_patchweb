@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>國泰證券弱點彙總 — 使用說明</title>
+<style>
+  :root{
+    --c:#009142; --cd:#00703a; --soft:#e5f4ec; --bd:#e2e8f0; --tx:#1f2937; --mut:#64748b;
+    --crit:#b71c1c; --high:#e64a19; --med:#f9a825; --low:#43a047; --overdue:#c62828;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:#eef2f4;color:var(--tx);
+    font-family:"Segoe UI","Microsoft JhengHei","PingFang TC",system-ui,sans-serif;line-height:1.65;}
+  .page{max-width:920px;margin:0 auto;background:#fff;box-shadow:0 2px 24px rgba(0,0,0,.06);}
+  header{background:linear-gradient(120deg,var(--c),var(--cd));color:#fff;padding:32px 40px;}
+  header .logo{font-size:40px;}
+  header h1{margin:8px 0 4px;font-size:26px;letter-spacing:.5px;}
+  header p{margin:0;opacity:.9;font-size:15px;}
+  nav.toc{background:var(--soft);padding:16px 40px;display:flex;flex-wrap:wrap;gap:8px 18px;font-size:14px;}
+  nav.toc a{color:var(--cd);text-decoration:none;font-weight:600;}
+  nav.toc a:hover{text-decoration:underline;}
+  section{padding:28px 40px;border-bottom:1px solid var(--bd);}
+  h2{font-size:20px;color:var(--cd);margin:0 0 8px;display:flex;align-items:center;gap:10px;}
+  h2 .n{background:var(--c);color:#fff;width:28px;height:28px;border-radius:50%;display:inline-flex;
+    align-items:center;justify-content:center;font-size:15px;flex:none;}
+  .lead{color:var(--mut);margin:0 0 18px;font-size:14.5px;}
+  .fig{margin:6px 0 16px;text-align:center;}
+  .fig svg{max-width:100%;height:auto;border:1px solid var(--bd);border-radius:10px;background:#fbfdfc;}
+  ul.steps{margin:8px 0 0;padding-left:20px;}
+  ul.steps li{margin:6px 0;font-size:14.5px;}
+  .tip{background:var(--soft);border-left:4px solid var(--c);border-radius:8px;padding:12px 16px;font-size:14px;margin-top:14px;}
+  .tip b{color:var(--cd);}
+  code{background:#eef2f0;padding:2px 7px;border-radius:5px;color:var(--cd);font-size:13px;}
+  .pill{display:inline-block;background:var(--c);color:#fff;border-radius:16px;padding:3px 12px;font-size:12.5px;font-weight:700;}
+  footer{padding:20px 40px;color:var(--mut);font-size:13px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="logo">🛡️</div>
+  <h1>國泰證券弱點彙總</h1>
+  <p>使用說明 · 純前端本機解析，免安裝、可離線</p>
+</header>
+
+<nav class="toc">
+  <a href="#s1">1 這是什麼</a>
+  <a href="#s2">2 開始使用</a>
+  <a href="#s3">3 左側控制</a>
+  <a href="#s4">4 總覽首頁</a>
+  <a href="#s5">5 子分頁（免下拉）</a>
+  <a href="#s6">6 查詢：多選篩選</a>
+  <a href="#s7">7 其他功能</a>
+  <a href="#s8">8 催辦通知信</a>
+  <a href="#s9">9 更新紀錄</a>
+</nav>
+
+<!-- 1 -->
+<section id="s1">
+  <h2><span class="n">1</span>這是什麼</h2>
+  <p class="lead">把每期的「弱點彙總報告 Excel」拖進來，一鍵變成互動式追蹤看板：自動算到期日、數逾期、分部門、產催辦。</p>
+  <div class="fig">
+    <svg viewBox="0 0 720 150" xmlns="http://www.w3.org/2000/svg">
+      <rect x="30" y="45" width="150" height="60" rx="8" fill="#e8f5ec" stroke="#009142"/>
+      <text x="105" y="72" text-anchor="middle" font-size="13" fill="#00703a" font-weight="700">弱點彙總</text>
+      <text x="105" y="90" text-anchor="middle" font-size="13" fill="#00703a" font-weight="700">Excel</text>
+      <path d="M195 75 H265" stroke="#94a3b8" stroke-width="2" marker-end="url(#a)"/>
+      <rect x="280" y="30" width="160" height="90" rx="8" fill="#fff" stroke="#009142" stroke-width="2"/>
+      <text x="360" y="60" text-anchor="middle" font-size="13" fill="#00703a" font-weight="700">🛡️ 系統解析</text>
+      <text x="360" y="82" text-anchor="middle" font-size="11.5" fill="#64748b">本機瀏覽器</text>
+      <text x="360" y="99" text-anchor="middle" font-size="11.5" fill="#64748b">不外傳</text>
+      <path d="M455 75 H525" stroke="#94a3b8" stroke-width="2" marker-end="url(#a)"/>
+      <rect x="540" y="30" width="150" height="90" rx="8" fill="#e8f5ec" stroke="#009142"/>
+      <text x="615" y="60" text-anchor="middle" font-size="13" fill="#00703a" font-weight="700">互動看板</text>
+      <text x="615" y="80" text-anchor="middle" font-size="11.5" fill="#64748b">逾期 / 部門</text>
+      <text x="615" y="97" text-anchor="middle" font-size="11.5" fill="#64748b">催辦 / 查詢</text>
+      <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#94a3b8"/></marker></defs>
+    </svg>
+  </div>
+  <div class="tip"><b>隱私：</b>Excel 只在你自己電腦的瀏覽器解析，<b>不會上傳任何伺服器</b>。</div>
+</section>
+
+<!-- 2 -->
+<section id="s2">
+  <h2><span class="n">2</span>開始使用</h2>
+  <p class="lead">用瀏覽器開啟 <code>index.html</code>，把 Excel 拖進去即可。</p>
+  <div class="fig">
+    <svg viewBox="0 0 720 170" xmlns="http://www.w3.org/2000/svg">
+      <rect x="180" y="20" width="360" height="130" rx="12" fill="#fbfdfc" stroke="#009142" stroke-width="2" stroke-dasharray="8 6"/>
+      <text x="360" y="70" text-anchor="middle" font-size="30">📊</text>
+      <text x="360" y="100" text-anchor="middle" font-size="14" fill="#1f2937" font-weight="700">選擇或拖放「弱點彙總報告」Excel</text>
+      <rect x="300" y="112" width="120" height="26" rx="13" fill="#009142"/>
+      <text x="360" y="129" text-anchor="middle" font-size="12.5" fill="#fff" font-weight="700">選擇檔案</text>
+    </svg>
+  </div>
+  <ul class="steps">
+    <li>支援 <code>.xlsx</code> / <code>.xls</code> / <code>.csv</code></li>
+    <li>系統會記住上次匯入，下次開直接看到，不必重匯</li>
+    <li>換檔：右上「其他功能 → 重新選擇檔案」；清空：「清除暫存資料」</li>
+  </ul>
+</section>
+
+<!-- 3 -->
+<section id="s3">
+  <h2><span class="n">3</span>左側控制：部門、結案狀態、項目</h2>
+  <p class="lead">左欄最上面先選<b>你的部門</b>（會記住，下次自動套用），下面是各檢測項目。</p>
+  <div class="fig">
+    <svg viewBox="0 0 720 220" xmlns="http://www.w3.org/2000/svg">
+      <rect x="30" y="20" width="200" height="185" rx="8" fill="#fff" stroke="#e2e8f0"/>
+      <text x="45" y="42" font-size="11" fill="#64748b">部門</text>
+      <rect x="45" y="48" width="170" height="26" rx="6" fill="#e5f4ec" stroke="#009142"/>
+      <text x="55" y="65" font-size="12.5" fill="#00703a" font-weight="700">資訊架構部 ▾</text>
+      <text x="45" y="92" font-size="11" fill="#64748b">結案狀態</text>
+      <rect x="45" y="98" width="170" height="26" rx="6" fill="#fff" stroke="#e2e8f0"/>
+      <text x="55" y="115" font-size="12.5" fill="#1f2937">未結案 ▾</text>
+      <rect x="45" y="134" width="170" height="24" rx="5" fill="#009142"/>
+      <text x="55" y="150" font-size="12" fill="#fff" font-weight="700">總覽</text>
+      <rect x="45" y="162" width="170" height="20" rx="4" fill="#f6f9f7"/>
+      <text x="55" y="176" font-size="11" fill="#334155">1-系統弱點掃描弱點</text>
+      <rect x="45" y="184" width="170" height="20" rx="4" fill="#f6f9f7"/>
+      <text x="55" y="198" font-size="11" fill="#334155">2-IoT設備弱點</text>
+      <text x="270" y="60" font-size="13.5" fill="#1f2937">① 選你的部門 → 只看自己部門的資料</text>
+      <text x="270" y="112" font-size="13.5" fill="#1f2937">② 切換 未結案／已結案／全部</text>
+      <text x="270" y="150" font-size="13.5" fill="#1f2937">③ 「總覽」= 全部項目彙總（主管用）</text>
+      <text x="270" y="188" font-size="13.5" fill="#1f2937">④ 點各項目 → 進入該項細項</text>
+    </svg>
+  </div>
+</section>
+
+<!-- 4 -->
+<section id="s4">
+  <h2><span class="n">4</span>總覽首頁（主管一眼掌握）</h2>
+  <p class="lead">全部項目一頁彙總：最上面紅色<b>逾期警示</b>、五張 KPI、各項目狀態表。</p>
+  <div class="fig">
+    <svg viewBox="0 0 720 210" xmlns="http://www.w3.org/2000/svg">
+      <rect x="30" y="18" width="660" height="36" rx="8" fill="#fdecea" stroke="#f5c6cb"/>
+      <text x="48" y="41" font-size="13.5" fill="#842029">⚠ 全部項目共 <tspan font-weight="700" fill="#c62828">16</tspan> 筆已逾期尚未結案 · 逾期集中：資訊架構部…</text>
+      <rect x="560" y="26" width="118" height="22" rx="11" fill="#c62828"/>
+      <text x="619" y="41" text-anchor="middle" font-size="11.5" fill="#fff" font-weight="700">查看全部逾期</text>
+      <g font-weight="700">
+        <rect x="30" y="66" width="126" height="52" rx="8" fill="#fff" stroke="#e2e8f0"/><text x="46" y="92" font-size="20" fill="#009142">55</text><text x="46" y="108" font-size="11" fill="#64748b">未結案</text>
+        <rect x="164" y="66" width="126" height="52" rx="8" fill="#fff" stroke="#e2e8f0"/><text x="180" y="92" font-size="20" fill="#c62828">16</text><text x="180" y="108" font-size="11" fill="#64748b">已逾期</text>
+        <rect x="298" y="66" width="126" height="52" rx="8" fill="#fff" stroke="#e2e8f0"/><text x="314" y="92" font-size="20" fill="#e64a19">17</text><text x="314" y="108" font-size="11" fill="#64748b">近期到期</text>
+        <rect x="432" y="66" width="126" height="52" rx="8" fill="#fff" stroke="#e2e8f0"/><text x="448" y="92" font-size="20" fill="#b71c1c">27</text><text x="448" y="108" font-size="11" fill="#64748b">高風險未結</text>
+        <rect x="566" y="66" width="112" height="52" rx="8" fill="#fff" stroke="#e2e8f0"/><text x="582" y="92" font-size="20" fill="#009142">16.7%</text><text x="582" y="108" font-size="11" fill="#64748b">結案率</text>
+      </g>
+      <rect x="30" y="130" width="648" height="66" rx="8" fill="#fff" stroke="#e2e8f0"/>
+      <line x1="30" y1="154" x2="678" y2="154" stroke="#e2e8f0"/>
+      <text x="45" y="147" font-size="11.5" fill="#334155" font-weight="700">項目　　　　　未結　逾期　近期　高風險　已結　結案率　狀態</text>
+      <text x="45" y="172" font-size="11.5" fill="#334155">1-系統弱點掃描　7　　2　　1　　0　　　1　　13%</text>
+      <rect x="600" y="161" width="60" height="16" rx="8" fill="#fdecea"/><text x="630" y="173" text-anchor="middle" font-size="10.5" fill="#c62828" font-weight="700">有逾期</text>
+      <text x="45" y="190" font-size="11.5" fill="#94a3b8">…點任一列可進入該項目細項</text>
+    </svg>
+  </div>
+  <div class="tip">狀態燈：<span class="pill" style="background:#c62828">有逾期</span> <span class="pill" style="background:#e8a300">追蹤中</span> <span class="pill" style="background:#2e7d32">已全數結案</span>　點列可直接鑽進該項目。</div>
+</section>
+
+<!-- 5 -->
+<section id="s5">
+  <h2><span class="n">5</span>子分頁：點 Tab 切換，不用一直往下拉</h2>
+  <p class="lead">進入某項目後，「總覽」與「例外統計」內部再分<b>子分頁</b>，點一下就切，不必捲畫面。</p>
+  <div class="fig">
+    <svg viewBox="0 0 720 160" xmlns="http://www.w3.org/2000/svg">
+      <rect x="30" y="20" width="90" height="26" rx="13" fill="#009142"/><text x="75" y="37" text-anchor="middle" font-size="12" fill="#fff" font-weight="700">指標</text>
+      <rect x="128" y="20" width="96" height="26" rx="13" fill="#fff" stroke="#e2e8f0"/><text x="176" y="37" text-anchor="middle" font-size="12" fill="#64748b">結案進度</text>
+      <rect x="232" y="20" width="96" height="26" rx="13" fill="#fff" stroke="#e2e8f0"/><text x="280" y="37" text-anchor="middle" font-size="12" fill="#64748b">優先處理</text>
+      <rect x="336" y="20" width="96" height="26" rx="13" fill="#fff" stroke="#e2e8f0"/><text x="384" y="37" text-anchor="middle" font-size="12" fill="#64748b">風險排序</text>
+      <rect x="440" y="20" width="80" height="26" rx="13" fill="#fff" stroke="#e2e8f0"/><text x="480" y="37" text-anchor="middle" font-size="12" fill="#64748b">圖表</text>
+      <rect x="30" y="58" width="490" height="86" rx="8" fill="#f6f9f7" stroke="#e2e8f0"/>
+      <text x="275" y="105" text-anchor="middle" font-size="13" fill="#64748b">點上方綠色 Tab 即切換內容（免下拉）</text>
+    </svg>
+  </div>
+  <ul class="steps">
+    <li><b>總覽</b>子分頁：指標／結案進度／優先處理／風險排序／圖表</li>
+    <li><b>例外統計</b>子分頁：階段統計／圖表</li>
+    <li>其他分頁：人員追蹤（催辦）、交叉分析、查詢</li>
+  </ul>
+</section>
+
+<!-- 6 -->
+<section id="s6">
+  <h2><span class="n">6</span>查詢：多條件疊加篩選</h2>
+  <p class="lead">快速篩選可<b>複選</b>：同類（嚴重度、到期狀態…）內是「或」，跨類是「且」，一直收窄。</p>
+  <div class="fig">
+    <svg viewBox="0 0 720 140" xmlns="http://www.w3.org/2000/svg">
+      <rect x="30" y="24" width="110" height="28" rx="14" fill="#009142"/><text x="85" y="42" text-anchor="middle" font-size="12.5" fill="#fff" font-weight="700">今日待追蹤</text>
+      <text x="150" y="43" font-size="16" fill="#64748b">＋</text>
+      <rect x="172" y="24" width="70" height="28" rx="14" fill="#009142"/><text x="207" y="42" text-anchor="middle" font-size="12.5" fill="#fff" font-weight="700">High</text>
+      <text x="250" y="43" font-size="16" fill="#64748b">＋</text>
+      <rect x="272" y="24" width="110" height="28" rx="14" fill="#009142"/><text x="327" y="42" text-anchor="middle" font-size="12.5" fill="#fff" font-weight="700">例外管理中</text>
+      <text x="205" y="98" text-anchor="middle" font-size="13" fill="#00703a" font-weight="700">= 同時符合這三個條件（層層 AND 收窄）</text>
+      <text x="205" y="120" text-anchor="middle" font-size="12" fill="#64748b">再點「全部」可一鍵清空</text>
+    </svg>
+  </div>
+  <div class="tip">同一類（例：High＋Medium）是<b>聯集</b>（High 或 Medium），不會變成空集合。</div>
+</section>
+
+<!-- 7 -->
+<section id="s7">
+  <h2><span class="n">7</span>其他功能（右上 ▾）</h2>
+  <p class="lead">右上「其他功能」下拉：</p>
+  <ul class="steps">
+    <li><b>功能開關</b>：自由開／關各面板</li>
+    <li><b>Email 設定</b>：填自己的 SMTP（免密碼內部 relay），可預覽通知內容、匯出寄送任務（催辦寄信詳見下一節）</li>
+    <li><b>重新選擇檔案</b>／<b>清除暫存資料</b>：換檔或清空</li>
+  </ul>
+</section>
+
+<!-- 8 -->
+<section id="s8">
+  <h2><span class="n">8</span>催辦通知信（自動副本部門主管）</h2>
+  <p class="lead">在<b>人員追蹤</b>分頁一鍵產生催辦，或到 Email 設定按「寄出」。<b>寄出前一定會先列出「寄送計畫」讓你過目</b>，確認無誤才真的送出。</p>
+  <div class="fig">
+    <svg viewBox="0 0 720 170" xmlns="http://www.w3.org/2000/svg">
+      <rect x="30" y="24" width="150" height="50" rx="8" fill="#e8f5ec" stroke="#009142"/>
+      <text x="105" y="46" text-anchor="middle" font-size="12.5" fill="#00703a" font-weight="700">產生催辦</text>
+      <text x="105" y="63" text-anchor="middle" font-size="11" fill="#64748b">只挑逾期／快到期</text>
+      <path d="M188 49 H248" stroke="#94a3b8" stroke-width="2" marker-end="url(#b)"/>
+      <rect x="256" y="14" width="200" height="120" rx="8" fill="#fff" stroke="#009142" stroke-width="2"/>
+      <text x="356" y="38" text-anchor="middle" font-size="12.5" fill="#00703a" font-weight="700">寄送計畫（過目）</text>
+      <text x="272" y="62" font-size="11.5" fill="#334155">喬峰 → qiaofeng@…</text>
+      <text x="272" y="80" font-size="11" fill="#00703a">　（副本主管 arch_lead@…）</text>
+      <text x="272" y="100" font-size="11.5" fill="#334155">段譽 → duanyu@…</text>
+      <text x="272" y="118" font-size="11" fill="#c62828">　（主管未填：資訊安全部）</text>
+      <path d="M464 74 H524" stroke="#94a3b8" stroke-width="2" marker-end="url(#b)"/>
+      <rect x="532" y="49" width="150" height="50" rx="8" fill="#e8f5ec" stroke="#009142"/>
+      <text x="607" y="71" text-anchor="middle" font-size="12.5" fill="#00703a" font-weight="700">確認寄出</text>
+      <text x="607" y="88" text-anchor="middle" font-size="11" fill="#64748b">按下才真的送</text>
+      <defs><marker id="b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#94a3b8"/></marker></defs>
+    </svg>
+  </div>
+  <ul class="steps">
+    <li>系統只挑<b>已逾期</b>與<b>快到期</b>的負責人，例外保護中且日期還遠的不打擾</li>
+    <li>每封催辦會<b>自動副本給該負責人的部門主管</b>——計畫畫面會先顯示會副本給誰</li>
+    <li>寄完每封都留在「發信紀錄」（時間、收件人、副本、狀態），可匯出 CSV</li>
+  </ul>
+  <div class="tip"><b>設定部門主管：</b>在小幫手資料夾把 <code>dept_manager.json.example</code> 複製成 <code>dept_manager.json</code>，一個部門一行填「部門 → 主管信箱」（部門名稱要跟 Excel 一致）。<b>沒填的部門</b>，計畫會標紅「主管未填：○○部」且該封<b>不加主管副本</b>，不會亂寄。</div>
+</section>
+
+<!-- 9 -->
+<section id="s9">
+  <h2><span class="n">9</span>更新紀錄</h2>
+  <p class="lead">近期版本的使用者可見改動：</p>
+  <ul class="steps">
+    <li><span class="pill">V1.75</span>　催辦信每封自動<b>副本給該負責人的部門主管</b>（需設定 <code>dept_manager.json</code>，見上一節）</li>
+    <li><span class="pill">V1.73</span>　Email 設定等<b>有輸入的視窗</b>，填到一半不小心點到旁邊<b>不再整個關掉</b>；要關請按右上 ✕</li>
+  </ul>
+</section>
+
+<footer>國泰證券弱點彙總 · 純前端本機解析 · 本說明隨系統一起更新</footer>
+</div>
+</body>
+</html>

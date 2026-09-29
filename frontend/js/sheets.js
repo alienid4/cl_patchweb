@@ -128,7 +128,7 @@
       overdueDays: (closeBucket !== 'closed' && daysLeft !== null && daysLeft < 0) ? -daysLeft : 0,
       closeStatus: closeRaw, closeBucket: closeBucket, closeDate: closeDate,
       remark: U.normStr(pick(row, map.remark)),
-      raw: row,  // [CL_WebVuln 加] 整列原始欄位(原欄名→原值)，供原封匯出 1:1；展延計數展開時各筆共用同一來源列
+      raw: row,  // [CL_WebVuln 加] 整列原始欄位，供原封匯出＋伺服器快照重建；不影響任何渲染
     };
 
     // 嚴重度：表9 計數字串 → 展開多筆；否則單筆
