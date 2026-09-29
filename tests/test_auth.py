@@ -27,7 +27,7 @@ def test_login_logout_me_flow(client, engine):
         security.create_user(s, "amy", "pw12345", role="承辦", display_name="Amy")
 
     # 未登入
-    assert client.get("/api/me").json() == {"authenticated": False}
+    assert client.get("/api/me").json()["authenticated"] is False
     # 密碼錯
     assert client.post("/api/login", json={"username": "amy", "password": "bad"}).status_code == 401
     # 正確登入
@@ -74,6 +74,21 @@ def test_transition_requires_login_and_role(client, engine):
     with factory() as s:
         acts = {a.action for a in s.query(AuditLog).all()}
     assert "login" in acts and "case_transition" in acts and "case_transition_rejected" in acts
+
+
+def test_no_auth_mode_allows_write(client, engine, monkeypatch):
+    from webvuln import config
+    client.post("/api/import", json={"findings": [
+        {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}
+    ]})
+    cid = client.get("/api/cases").json()[0]["id"]
+    # 未登入預設擋
+    assert client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"}).status_code == 401
+    # 開免登入模式 → 未登入也能寫；/api/me 回 open_write=True
+    monkeypatch.setattr(config, "NO_AUTH", True)
+    assert client.get("/api/me").json()["open_write"] is True
+    r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
+    assert r.status_code == 200 and r.json()["status"] == "待主管"
 
 
 def test_disable_write_killswitch(client, engine, monkeypatch):

@@ -124,7 +124,7 @@
   var PIPE = ['未申請', '待主管', '待資安', '核准', '完成', '退回補件'];
   var NEXT = { '未申請': ['待主管'], '待主管': ['待資安', '退回補件'], '待資安': ['核准', '退回補件'],
     '核准': ['完成'], '退回補件': ['待主管'], '完成': [] };
-  function canWrite() { return me.authenticated && (me.role === 'admin' || me.role === '承辦'); }
+  function canWrite() { return me.open_write || (me.authenticated && (me.role === 'admin' || me.role === '承辦')); }
   async function jget(u) { var r = await fetch(u); if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); }
 
   function card(value, label, danger) {
@@ -149,6 +149,12 @@
     var span = document.getElementById('webext-user');
     var btn = document.getElementById('webext-login-btn');
     if (!span || !btn) return;
+    if (me.open_write && !me.authenticated) {
+      // 免登入模式：不需登入即可寫入，隱藏登入鈕避免困惑
+      span.classList.add('hidden'); btn.classList.add('hidden');
+      return;
+    }
+    btn.classList.remove('hidden');
     if (me.authenticated) {
       span.textContent = (me.display_name || me.username) + '（' + me.role + '）';
       span.classList.remove('hidden'); btn.textContent = '登出';
@@ -177,13 +183,14 @@
   async function doLogout() { await fetch('/api/logout', { method: 'POST' }); await refreshMe(); renderCases(); UI.toast('已登出', 'info'); }
 
   // ---- 承辦管線 ----
-  async function transition(id, to) {
+  async function transition(id, to, rerender) {
     var r = await fetch('/api/cases/' + id + '/transition', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: to }) });
     if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('失敗：' + (e.detail || r.status), 'error'); return; }
-    UI.toast('已更新狀態', 'success'); renderCases();
+    UI.toast('已更新狀態', 'success'); if (rerender) rerender();
   }
-  async function renderCases() {
-    var host = document.getElementById('webext-cases'); if (!host) return;
+  function renderCases(host) { return renderCasesInto(host || document.getElementById('webext-cases')); }
+  async function renderCasesInto(host) {
+    if (!host) return;
     host.innerHTML = '';
     var s, cases;
     try { s = await jget('/api/summary'); cases = await jget('/api/cases'); }
@@ -204,7 +211,9 @@
     })));
     var hint = U.el('div', { class: 'scope-info' }, [U.el('span', {
       html: '可疑聲稱 <b>' + suspect + '</b>　·　來源已消失 <b>' + orphan + '</b>　·　'
-        + (me.authenticated ? '（登入身分：' + (me.display_name || me.username) + '，可推進狀態）' : '（登入後可推進狀態）') })]);
+        + (me.open_write ? '（目前免登入模式，可直接推進狀態）'
+           : me.authenticated ? '（登入身分：' + (me.display_name || me.username) + '，可推進狀態）'
+           : '（登入後可推進狀態）') })]);
     host.appendChild(hint);
     // 案件表
     if (!cases.length) { host.appendChild(U.el('p', { class: 'empty-hint', text: '無案件。' })); return; }
@@ -217,7 +226,7 @@
       if (canWrite()) {
         (NEXT[c.status] || []).forEach(function (to) {
           var b = U.el('button', { class: 'btn btn-sm', text: '→' + to, style: 'margin:1px' });
-          b.addEventListener('click', function () { transition(c.id, to); });
+          b.addEventListener('click', function () { transition(c.id, to, function () { renderCasesInto(host); }); });
           ops.appendChild(b);
         });
         if (!(NEXT[c.status] || []).length) ops.textContent = '—';
@@ -234,8 +243,9 @@
   }
 
   // ---- 結案統計 ----
-  async function renderCloseStat() {
-    var host = document.getElementById('webext-closestat'); if (!host) return;
+  function renderCloseStat(host) { return renderCloseInto(host || document.getElementById('webext-closestat')); }
+  async function renderCloseInto(host) {
+    if (!host) return;
     host.innerHTML = '';
     var s;
     try { s = await jget('/api/close-stats'); } catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料。' })); return; }
@@ -259,6 +269,15 @@
     if (lb) lb.addEventListener('click', function () { me.authenticated ? doLogout() : openLogin(); });
     var ex = document.getElementById('webext-export');
     if (ex) ex.addEventListener('click', function () { window.location = '/api/export'; });
+    // 「其他功能」選單直接開（總覽首頁也能看，不必先選表）
+    var oc = document.getElementById('webext-open-cases');
+    if (oc) oc.addEventListener('click', function () {
+      var box = U.el('div'); UI.openModal('承辦申請管線', box); renderCasesInto(box);
+    });
+    var ocs = document.getElementById('webext-open-close');
+    if (ocs) ocs.addEventListener('click', function () {
+      var box = U.el('div'); UI.openModal('結案統計', box); renderCloseInto(box);
+    });
     // 點新分頁時才渲染（lazy），main.js 的 switchTab 已負責顯示/隱藏面板
     var cb = document.querySelector('.tab-btn[data-tab="cases"]');
     if (cb) cb.addEventListener('click', renderCases);

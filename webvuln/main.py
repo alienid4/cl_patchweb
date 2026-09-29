@@ -52,9 +52,20 @@ def require_login(user: User | None = Depends(current_user)) -> User:
     return user
 
 
-def require_write_role(user: User = Depends(require_login)) -> User:
+class _AnonUser:
+    """免登入模式(WEBVULN_NO_AUTH)用的匿名寫入身分；audit 會記成『(未登入)』。"""
+    username = "(未登入)"
+    role = config.ROLE_ADMIN
+    display_name = "(未登入)"
+
+
+def require_write_role(user: User | None = Depends(current_user)) -> User:
     if config.DISABLE_WRITE:
         raise HTTPException(status_code=503, detail="寫入維護中（暫停）")
+    if config.NO_AUTH:
+        return user or _AnonUser()   # 暫時取消密碼：免登入即可寫入（仍留 audit）
+    if user is None:
+        raise HTTPException(status_code=401, detail="請先登入")
     if user.role not in (config.ROLE_ADMIN, config.ROLE_STAFF):
         raise HTTPException(status_code=403, detail="權限不足（需承辦或管理員）")
     return user
@@ -100,11 +111,12 @@ def api_logout(request: Request, response: Response, db: Session = Depends(get_d
 
 @app.get("/api/me")
 def api_me(user: User | None = Depends(current_user)):
+    # open_write：伺服器目前是否免登入即可寫入（WEBVULN_NO_AUTH）→ 前端據此顯示操作鈕
     if user is None:
-        return {"authenticated": False}
+        return {"authenticated": False, "open_write": config.NO_AUTH}
     return {"authenticated": True, "username": user.username,
             "display_name": user.display_name, "role": user.role,
-            "department": user.department}
+            "department": user.department, "open_write": config.NO_AUTH}
 
 
 @app.post("/api/import", response_model=ImportResult)
