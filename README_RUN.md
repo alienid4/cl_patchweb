@@ -1,8 +1,26 @@
-# CL_WebVuln 執行說明（v0.1）
+# CL_WebVuln 執行說明（V2）
 
-弱點彙總網頁版：FastAPI + SQLite（內部工具）。查詢免登入；寫入（承辦申請狀態等）預設關閉，
-待 W4 登入+audit 上線再由權限控管（開發可設 `WEBVULN_ALLOW_WRITE=1` 開啟）。
+弱點彙總網頁版：FastAPI + SQLite（內部工具）。沿用單機版整套前端（畫面一模一樣），
+加上伺服器端新功能（承辦管線／結案統計／缺口示警／原封匯出／登入）。
 > 部署主機 IP／實際路徑屬內網識別，不寫進此公開檔；見本機（非公開）部署筆記。
+
+## 一鍵安裝（全新 Linux）
+
+```bash
+# 1) 取得程式
+git clone <本 repo> && cd cl_patchweb   # 或把 APP/ 內容放到目標目錄後 cd 進去
+# 2) 安裝（建 venv＋裝相依；需 Python 3.10+）
+bash deploy/install.sh
+# 3) 啟動（預設 http://0.0.0.0:3100，測試期免登入）
+bash deploy/run.sh
+```
+
+- 換埠：`PORT=8080 bash deploy/run.sh`
+- 開登入（寫入需登入）：`WEBVULN_NO_AUTH=0 bash deploy/run.sh`，再用 `python -m webvuln.useradmin add <帳號> admin` 建帳號。
+- 開機常駐：見 `ops/patchweb.service.example`（systemd）。
+- 防火牆：`sudo firewall-cmd --add-port=3100/tcp --permanent && sudo firewall-cmd --reload`
+- 首次無資料時會顯示上傳畫面：用「選擇檔案」或拖放弱點彙總報告 Excel（沿用單機版解析），
+  上傳同時會存進伺服器，之後所有人開頁都直接看得到（不必重傳）。
 
 ## 本機開發
 
