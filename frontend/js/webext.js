@@ -339,9 +339,9 @@
     nav.querySelectorAll('.sheet-item:not(.webext-navitem)').forEach(function (b) {
       if (!b._webextHooked) { b._webextHooked = true; b.addEventListener('click', hideWebextView); }
     });
-    // 大項標頭（綠色，比照 nav-summary 風格）
-    var head = U.el('button', { class: 'sheet-item nav-summary webext-navgroup', title: '承辦管線（新功能）' },
-      [U.el('span', { class: 'sheet-name', text: '承辦管線' })]);
+    // 大項標頭（綠色，比照 nav-summary 風格）；點標頭＝收合/展開底下小項
+    var head = U.el('button', { class: 'sheet-item nav-summary webext-navgroup', title: '承辦管線（點我收合／展開）' },
+      [U.el('span', { class: 'sheet-name', text: '承辦管線' }), U.el('span', { class: 'webext-chev' })]);
     nav.appendChild(head);
     // 小項
     GOV_ITEMS.forEach(function (item) {
@@ -353,8 +353,45 @@
       });
       nav.appendChild(b);
     });
-    // 點大項標頭＝開第一個小項
-    head.addEventListener('click', function () { showWebextView(GOV_ITEMS[0], null); });
+    head.addEventListener('click', function () {
+      setNavState('navGov', !navState('navGov', true)); applyCollapse();
+    });
+    decorateNav();
+  }
+
+  // ===== 大項收合／展開（總覽的 10 張表、承辦管線的小項），狀態記 localStorage =====
+  function navState(key, def) {
+    try { var v = localStorage.getItem('webext.' + key); return v === null ? def : v === '1'; }
+    catch (e) { return def; }
+  }
+  function setNavState(key, val) { try { localStorage.setItem('webext.' + key, val ? '1' : '0'); } catch (e) {} }
+
+  function applyCollapse() {
+    var sheetsOpen = navState('navSheets', true);
+    var govOpen = navState('navGov', true);
+    document.querySelectorAll('#sheet-nav .sheet-item').forEach(function (b) {
+      if (b.classList.contains('nav-summary') || b.classList.contains('webext-navgroup')) return;
+      if (b.classList.contains('webext-navitem')) b.style.display = govOpen ? '' : 'none';
+      else b.style.display = sheetsOpen ? '' : 'none';   // 原本 10 張表
+    });
+    var s = document.querySelector('#sheet-nav .nav-summary:not(.webext-navgroup) .webext-chev');
+    if (s) s.textContent = sheetsOpen ? ' ▾' : ' ▸';
+    var g = document.querySelector('#sheet-nav .webext-navgroup .webext-chev');
+    if (g) g.textContent = govOpen ? ' ▾' : ' ▸';
+  }
+
+  function decorateNav() {
+    // 給「總覽」大項加收合箭頭（點箭頭收 10 張表，點總覽本身仍開總覽頁）
+    var sum = document.querySelector('#sheet-nav .nav-summary:not(.webext-navgroup)');
+    if (sum && !sum.querySelector('.webext-chev')) {
+      var c = U.el('span', { class: 'webext-chev' });
+      c.addEventListener('click', function (e) {
+        e.stopPropagation();
+        setNavState('navSheets', !navState('navSheets', true)); applyCollapse();
+      });
+      sum.appendChild(c);
+    }
+    applyCollapse();
   }
 
   function wireNewFeatures() {
