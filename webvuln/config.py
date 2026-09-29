@@ -51,6 +51,22 @@ def _truthy(v: str) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
-# 寫入(改 case 狀態等)預設關閉：登入+audit(W4)未上線前，221 不開匿名寫入。
-# 開發/測試以 env WEBVULN_ALLOW_WRITE=1 打開。W4 完成後改由登入權限控管。
-ALLOW_WRITE: bool = _truthy(os.environ.get("WEBVULN_ALLOW_WRITE", ""))
+# （W4 前的舊閘門，保留為緊急 kill-switch；預設不擋——寫入改由登入權限控管）
+# 設 WEBVULN_DISABLE_WRITE=1 可整體停用寫入端點（維護時用）。
+DISABLE_WRITE: bool = _truthy(os.environ.get("WEBVULN_DISABLE_WRITE", ""))
+
+# 驗證後端：local=本地帳號(pbkdf2)。日後 ad=AD/LDAP(架構已留 seam，見 security.authenticate)。
+AUTH_BACKEND: str = os.environ.get("WEBVULN_AUTH_BACKEND", "local").strip().lower()
+
+# session 有效時數；cookie 名稱
+SESSION_TTL_HOURS: int = int(os.environ.get("WEBVULN_SESSION_TTL_HOURS", "12"))
+SESSION_COOKIE: str = os.environ.get("WEBVULN_SESSION_COOKIE", "webvuln_session")
+
+# cookie 是否標 Secure（正式機上 TLS 後設 1）
+COOKIE_SECURE: bool = _truthy(os.environ.get("WEBVULN_COOKIE_SECURE", ""))
+
+# 角色
+ROLE_ADMIN = "admin"
+ROLE_STAFF = "承辦"
+ROLE_VIEWER = "viewer"
+ROLES = (ROLE_ADMIN, ROLE_STAFF, ROLE_VIEWER)

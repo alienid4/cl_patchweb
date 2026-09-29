@@ -74,20 +74,20 @@ def test_suspect_and_close_stats(session):
     assert stats["claimed_unconfirmed"] == 1
 
 
-def test_endpoint_write_gated(client, monkeypatch):
-    from webvuln import config
-    # 先建一案
+def test_endpoint_read_and_write_requires_login(client, engine):
+    from sqlalchemy.orm import Session, sessionmaker
+    from webvuln import security
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    with factory() as s:
+        security.create_user(s, "staff", "pw12345", role="承辦")
+
     client.post("/api/import", json={"findings": [
         {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}
     ]})
-    cid = client.get("/api/cases").json()[0]["id"]
+    cid = client.get("/api/cases").json()[0]["id"]   # 讀取免登入
 
-    monkeypatch.setattr(config, "ALLOW_WRITE", False)
-    r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
-    assert r.status_code == 403
-
-    monkeypatch.setattr(config, "ALLOW_WRITE", True)
+    # 未登入寫入 → 401；登入後 → 200；非法轉移 → 400（細節見 test_auth）
+    assert client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"}).status_code == 401
+    client.post("/api/login", json={"username": "staff", "password": "pw12345"})
     r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
     assert r.status_code == 200 and r.json()["status"] == "待主管"
-    r = client.post(f"/api/cases/{cid}/transition", json={"to": "完成"})
-    assert r.status_code == 400   # 非法轉移

@@ -1,4 +1,4 @@
-"""FastAPI 進入點。v1：匯入 + 查詢（唯讀）。無登入（決策 no-auth-v1）。"""
+"""FastAPI 進入點。查詢免登入；寫入需登入+稽核（W4，本地帳號，決策 writable-with-overlay）。"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -6,13 +6,14 @@ from pathlib import Path
 
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from . import cases, config, export, importer, query
+from . import cases, config, export, importer, query, security
 from .db import SessionLocal, init_db
+from .models import User
 from .schemas import ImportIn, ImportResult
 
 _FRONTEND = Path(__file__).resolve().parents[1] / "frontend"
@@ -35,9 +36,75 @@ def get_db():
         db.close()
 
 
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
+def current_user(request: Request, db: Session = Depends(get_db)) -> User | None:
+    """讀 cookie 取登入者；未登入回 None（讀取端點不強制）。"""
+    token = request.cookies.get(config.SESSION_COOKIE)
+    return security.get_session_user(db, token)
+
+
+def require_login(user: User | None = Depends(current_user)) -> User:
+    if user is None:
+        raise HTTPException(status_code=401, detail="請先登入")
+    return user
+
+
+def require_write_role(user: User = Depends(require_login)) -> User:
+    if config.DISABLE_WRITE:
+        raise HTTPException(status_code=503, detail="寫入維護中（暫停）")
+    if user.role not in (config.ROLE_ADMIN, config.ROLE_STAFF):
+        raise HTTPException(status_code=403, detail="權限不足（需承辦或管理員）")
+    return user
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+# ── 登入 ──
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/login")
+def api_login(body: LoginIn, request: Request, response: Response, db: Session = Depends(get_db)):
+    user = security.authenticate(db, body.username, body.password)
+    if user is None:
+        security.log_audit(db, username=body.username, action="login_failed",
+                           ip=_client_ip(request))
+        raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+    token = security.create_session(db, user)
+    response.set_cookie(
+        config.SESSION_COOKIE, token, httponly=True, samesite="lax",
+        secure=config.COOKIE_SECURE, max_age=config.SESSION_TTL_HOURS * 3600,
+    )
+    security.log_audit(db, username=user.username, action="login", ip=_client_ip(request))
+    return {"username": user.username, "display_name": user.display_name, "role": user.role}
+
+
+@app.post("/api/logout")
+def api_logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    token = request.cookies.get(config.SESSION_COOKIE)
+    user = security.get_session_user(db, token)
+    security.revoke_session(db, token)
+    response.delete_cookie(config.SESSION_COOKIE)
+    if user:
+        security.log_audit(db, username=user.username, action="logout", ip=_client_ip(request))
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def api_me(user: User | None = Depends(current_user)):
+    if user is None:
+        return {"authenticated": False}
+    return {"authenticated": True, "username": user.username,
+            "display_name": user.display_name, "role": user.role,
+            "department": user.department}
 
 
 @app.post("/api/import", response_model=ImportResult)
@@ -110,14 +177,19 @@ class TransitionIn(BaseModel):
 
 
 @app.post("/api/cases/{case_id}/transition")
-def api_case_transition(case_id: int, body: TransitionIn, db: Session = Depends(get_db)):
-    """推進申請管線狀態。寫入預設關閉(WEBVULN_ALLOW_WRITE)，登入+audit 由 W4 接手。"""
-    if not config.ALLOW_WRITE:
-        raise HTTPException(status_code=403, detail="寫入未開放（待 W4 登入+audit）")
+def api_case_transition(case_id: int, body: TransitionIn, request: Request,
+                        db: Session = Depends(get_db),
+                        user: User = Depends(require_write_role)):
+    """推進申請管線狀態。需登入（承辦/管理員），動作留稽核。"""
     try:
         c = cases.transition(db, case_id, body.to, body.note)
     except ValueError as e:
+        security.log_audit(db, username=user.username, action="case_transition_rejected",
+                           target=f"case:{case_id}", detail=f"→{body.to}: {e}",
+                           ip=_client_ip(request))
         raise HTTPException(status_code=400, detail=str(e))
+    security.log_audit(db, username=user.username, action="case_transition",
+                       target=f"case:{c.id}", detail=f"→{c.status}", ip=_client_ip(request))
     return {"id": c.id, "status": c.status, "note": c.note}
 
 

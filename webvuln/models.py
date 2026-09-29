@@ -47,6 +47,45 @@ class SheetColumns(Base):
     batch: Mapped["ImportBatch"] = relationship(back_populates="sheets")
 
 
+class User(Base):
+    """登入帳號（本地帳號；日後可切 AD，見 config.AUTH_BACKEND）。"""
+    __tablename__ = "app_user"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255))  # 本地帳號才有；AD 帳號留空
+    display_name: Mapped[str | None] = mapped_column(String(100))
+    email: Mapped[str | None] = mapped_column(String(200))
+    department: Mapped[str | None] = mapped_column(String(200))
+    role: Mapped[str] = mapped_column(String(20), default="viewer", index=True)  # admin/承辦/viewer
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now)
+
+
+class UserSession(Base):
+    """伺服器端 session（cookie 帶隨機 token 對到這裡）。"""
+    __tablename__ = "user_session"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("app_user.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime, index=True)
+
+
+class AuditLog(Base):
+    """稽核：誰、何時、對什麼、做了什麼（寫入類動作一律留痕）。"""
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now, index=True)
+    username: Mapped[str | None] = mapped_column(String(100), index=True)
+    action: Mapped[str] = mapped_column(String(50), index=True)  # login/logout/case_transition…
+    target: Mapped[str | None] = mapped_column(String(200))      # e.g. case:123
+    detail: Mapped[str | None] = mapped_column(Text)
+    ip: Mapped[str | None] = mapped_column(String(64))
+
+
 class Case(Base):
     """承辦疊加層：以弱點身分(穩定鍵)為主鍵的申請案，跨快照存活。
 

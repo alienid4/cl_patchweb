@@ -14,7 +14,23 @@ py -m uvicorn webvuln.main:app --host 127.0.0.1 --port 3100
 # 開 http://127.0.0.1:3100
 ```
 
-測試：`cd APP && py -m pytest -q`（目前 20 passed）
+測試：`cd APP && py -m pytest -q`（目前 42 passed）
+
+## 帳號 / 登入（W4）
+
+讀取免登入；寫入（推進承辦申請狀態等）需登入，且限 `admin` / `承辦`。密碼用 stdlib pbkdf2（零外部相依）。
+
+```bash
+# 建帳號（密碼從 WEBVULN_PWD 取，沒設就隨機產生並印出一次）
+WEBVULN_PWD=請改我 py -m webvuln.useradmin add <帳號> admin --name 管理員
+py -m webvuln.useradmin add <帳號> 承辦            # 不給 WEBVULN_PWD → 印臨時密碼
+py -m webvuln.useradmin list                        # 列出帳號
+py -m webvuln.useradmin passwd <帳號>               # 重設密碼
+```
+
+登入 API：`POST /api/login {username,password}`（設 httponly cookie）、`POST /api/logout`、`GET /api/me`。
+維護時可設 `WEBVULN_DISABLE_WRITE=1` 暫停所有寫入。正式機上 TLS 後設 `WEBVULN_COOKIE_SECURE=1`。
+日後轉 AD：設 `WEBVULN_AUTH_BACKEND=ad`（seam 已留於 `security.authenticate`，實作待 W4-B）。
 
 ## 匯入資料
 
