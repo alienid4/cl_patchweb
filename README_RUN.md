@@ -22,6 +22,21 @@ bash deploy/run.sh
 - 首次無資料時會顯示上傳畫面：用「選擇檔案」或拖放弱點彙總報告 Excel（沿用單機版解析），
   上傳同時會存進伺服器，之後所有人開頁都直接看得到（不必重傳）。
 
+### 離線一鍵安裝包（全新 Linux、無網路、連 Python 都沒有）
+
+目標機不能連網、也沒裝 Python 時，用「離線安裝包」：在**有網路的機器**產出單一 tar.gz
+（自帶可攜 CPython 3.11 ＋ 全相依離線 wheels），拷到目標機解開即裝，全程不連網。
+
+```bash
+# 有網路的機器：產出安裝包（約 60MB，落在 dist/install/，不進版控）
+python .project/make_install_pack.py
+# 目標機（Linux x86_64）：
+tar xzf CL_WebVuln_離線安裝包_*.tar.gz && cd CL_WebVuln_installpack
+bash setup.sh      # 解可攜 python＋離線裝相依（不連網、不動系統、不需 root）
+bash run.sh        # 啟動 http://0.0.0.0:3100
+```
+平台鎖 Linux x86_64 / CPython 3.11；要別的平台改 `.project/make_install_pack.py` 的 `TARGET_*`。
+
 ## 本機開發
 
 ```bash
