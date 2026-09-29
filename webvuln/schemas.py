@@ -25,12 +25,15 @@ class FindingIn(BaseModel):
     close_status: Optional[str] = None          # 未結案/已結案/其他（前端已分類）
     close_date: Optional[str] = None
     remark: Optional[str] = None
+    raw: Optional[dict] = None                   # 整列原始資料（原欄名→原值），供原封匯出
 
 
 class ImportIn(BaseModel):
     source_file: Optional[str] = None
     note: Optional[str] = None
     findings: list[FindingIn] = []
+    # 每張來源表的欄位順序：sheet_key -> [原欄名,...]（供原封匯出 1:1）
+    sheet_columns: dict[str, list[str]] = {}
 
 
 class ImportResult(BaseModel):

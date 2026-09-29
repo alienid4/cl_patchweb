@@ -9,7 +9,7 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from . import logic
-from .models import Finding, ImportBatch
+from .models import Finding, ImportBatch, SheetColumns
 from .schemas import ImportIn
 
 
@@ -46,8 +46,13 @@ def create_batch(session: Session, data: ImportIn) -> ImportBatch:
                 close_status=logic.classify_close(f.close_status),
                 close_date=logic.parse_iso_date(f.close_date),
                 remark=f.remark,
+                raw=f.raw,
             )
         )
+
+    # 各表欄序（供原封匯出）
+    for sheet_key, columns in (data.sheet_columns or {}).items():
+        batch.sheets.append(SheetColumns(sheet_key=sheet_key, columns=list(columns)))
 
     session.add(batch)
     session.commit()

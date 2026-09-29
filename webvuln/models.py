@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -28,6 +28,23 @@ class ImportBatch(Base):
     findings: Mapped[list["Finding"]] = relationship(
         back_populates="batch", cascade="all, delete-orphan", passive_deletes=True
     )
+    sheets: Mapped[list["SheetColumns"]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class SheetColumns(Base):
+    """每張來源工作表的欄位清單＋順序（供原封匯出 1:1 還原欄序）。"""
+    __tablename__ = "sheet_columns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("import_batch.id", ondelete="CASCADE"), index=True
+    )
+    sheet_key: Mapped[str] = mapped_column(String(100))
+    columns: Mapped[list] = mapped_column(JSON)  # 有序欄名 list
+
+    batch: Mapped["ImportBatch"] = relationship(back_populates="sheets")
 
 
 class Finding(Base):
@@ -56,5 +73,7 @@ class Finding(Base):
     close_status: Mapped[str | None] = mapped_column(String(30), index=True)  # 未結案/已結案/其他
     close_date: Mapped[dt.date | None] = mapped_column(Date)
     remark: Mapped[str | None] = mapped_column(Text)
+    # 整列原始資料（原欄名→原值），供原封匯出；工具用的對映欄仍各自存於上方以利查詢
+    raw: Mapped[dict | None] = mapped_column(JSON)
 
     batch: Mapped["ImportBatch"] = relationship(back_populates="findings")
