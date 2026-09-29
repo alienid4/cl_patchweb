@@ -63,10 +63,14 @@ def api_findings(
     band: str | None = None,
     keyword: str | None = None,
     sheet_key: str | None = None,
+    should_apply: bool = False,
+    no_owner: bool = False,
+    no_due: bool = False,
     db: Session = Depends(get_db),
 ):
     return query.find(db, department=department, status=status, owner=owner,
-                      severity=severity, band=band, keyword=keyword, sheet_key=sheet_key)
+                      severity=severity, band=band, keyword=keyword, sheet_key=sheet_key,
+                      only_should_apply=should_apply, no_owner=no_owner, no_due=no_due)
 
 
 # 靜態前端掛在最後（/api/* 先比對到，其餘落到這裡）

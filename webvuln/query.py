@@ -12,7 +12,8 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .logic import CLOSE_DONE, CLOSE_OPEN, SEVERITIES, overdue_days
+from .config import lead_days
+from .logic import CLOSE_DONE, CLOSE_OPEN, SEVERITIES, STAGE_ORIGINAL, overdue_days
 from .models import Finding, ImportBatch
 
 BANDS = ("已逾期", "30天內", "31–90天", "91–180天", "180天以上", "無到期日")
@@ -34,6 +35,20 @@ def _latest_findings(session: Session, department: Optional[str] = None) -> list
     if department and department != "全部":
         q = q.where(Finding.department == department)
     return list(session.execute(q).scalars().all())
+
+
+def action_line(f: Finding, today: dt.date) -> dt.date | None:
+    """行動線＝真正到期日 − 申請提前期（依嚴重度）。"""
+    if not f.effective_due:
+        return None
+    return f.effective_due - dt.timedelta(days=lead_days(f.severity))
+
+
+def should_apply(f: Finding, today: dt.date) -> bool:
+    """應提申請未提：未結案、還在原始修補期限(＝尚未申請的代理)、已過行動線。"""
+    al = action_line(f, today)
+    return (f.close_status == CLOSE_OPEN and f.stage == STAGE_ORIGINAL
+            and al is not None and al <= today)
 
 
 def _band(f: Finding, today: dt.date) -> str:
@@ -78,6 +93,8 @@ def summary(session: Session, department: Optional[str] = None,
             sev[f.severity] += 1
 
     total = len(open_) + len(done)
+    b = latest_batch(session)
+    imported = b.imported_at if b else None
     return {
         "department": department or "全部",
         "unresolved": len(open_),
@@ -88,14 +105,30 @@ def summary(session: Session, department: Optional[str] = None,
         "close_rate": round(len(done) / total * 100, 1) if total else 0.0,
         "bands": bands,          # 互斥；相加＝unresolved（對帳）
         "severity": sev,
+        # 行動線：應提申請未提
+        "should_apply": sum(1 for f in open_ if should_apply(f, today)),
+        "lead_days": lead_days(None),   # 預設提前期天數
+        # 缺口（會被漏掉的洞）
+        "gaps": {
+            "no_owner": sum(1 for f in open_ if not (f.owner or "").strip()),
+            "no_due": sum(1 for f in open_ if not f.effective_due),
+        },
+        # 資料新鮮度
+        "freshness": {
+            "imported_at": imported.isoformat() if imported else None,
+            "days_ago": (today - imported.date()).days if imported else None,
+        },
     }
 
 
 def find(session: Session, department: Optional[str] = None, status: str = CLOSE_OPEN,
          owner: Optional[str] = None, severity: Optional[str] = None,
          band: Optional[str] = None, keyword: Optional[str] = None,
-         sheet_key: Optional[str] = None, today: Optional[dt.date] = None) -> list[dict]:
-    """下鑽明細。status 預設未結案；band 用互斥分帶過濾；keyword 多字 AND(host/owner/name/plugin)。"""
+         sheet_key: Optional[str] = None, only_should_apply: bool = False,
+         no_owner: bool = False, no_due: bool = False,
+         today: Optional[dt.date] = None) -> list[dict]:
+    """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
+    only_should_apply/no_owner/no_due 為缺口/行動線清單。"""
     today = today or dt.date.today()
     fs = _latest_findings(session, department)
 
@@ -109,6 +142,12 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if f.sheet_key == sheet_key]
     if band:
         fs = [f for f in fs if _band(f, today) == band]
+    if only_should_apply:
+        fs = [f for f in fs if should_apply(f, today)]
+    if no_owner:
+        fs = [f for f in fs if not (f.owner or "").strip()]
+    if no_due:
+        fs = [f for f in fs if not f.effective_due]
     if keyword:
         terms = [t.lower() for t in keyword.split() if t.strip()]
         def hit(f: Finding) -> bool:
@@ -122,6 +161,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             "host": f.host, "severity": f.severity, "department": f.department, "owner": f.owner,
             "effective_due": f.effective_due.isoformat() if f.effective_due else None,
             "overdue_days": overdue_days(f.effective_due, today),
+            "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
+            "should_apply": should_apply(f, today),
             "stage": f.stage, "close_status": f.close_status, "remark": f.remark,
         }
 
