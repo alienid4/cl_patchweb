@@ -15,7 +15,8 @@ from sqlalchemy.orm import Session
 from collections import defaultdict
 
 from .config import SLA_POLICY_DAYS, lead_days
-from .logic import CLOSE_DONE, CLOSE_OPEN, SEVERITIES, STAGE_ORIGINAL, overdue_days
+from .logic import (CLOSE_DONE, CLOSE_OPEN, SEVERITIES, STAGE_EXCEPTION,
+                    STAGE_EXTENSION, STAGE_ORIGINAL, overdue_days)
 from .models import Finding, ImportBatch
 
 BANDS = ("已逾期", "30天內", "31–90天", "91–180天", "180天以上", "無到期日")
@@ -126,7 +127,8 @@ def summary(session: Session, department: Optional[str] = None,
 def find(session: Session, department: Optional[str] = None, status: str = CLOSE_OPEN,
          owner: Optional[str] = None, severity: Optional[str] = None,
          band: Optional[str] = None, keyword: Optional[str] = None,
-         sheet_key: Optional[str] = None, only_should_apply: bool = False,
+         sheet_key: Optional[str] = None, stage: Optional[str] = None,
+         only_should_apply: bool = False,
          no_owner: bool = False, no_due: bool = False,
          today: Optional[dt.date] = None) -> list[dict]:
     """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
@@ -142,6 +144,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if f.severity == severity]
     if sheet_key:
         fs = [f for f in fs if f.sheet_key == sheet_key]
+    if stage:
+        fs = [f for f in fs if f.stage == stage]
     if band:
         fs = [f for f in fs if _band(f, today) == band]
     if only_should_apply:
@@ -169,6 +173,59 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         }
 
     return [row(f) for f in fs]
+
+
+def matrix(session: Session, department: Optional[str] = None,
+           today: Optional[dt.date] = None) -> dict:
+    """交叉分析：嚴重度 × 到期時間帶（未結案）。列/欄總和皆可對帳到未結案總數。"""
+    today = today or dt.date.today()
+    open_ = [f for f in _latest_findings(session, department) if f.close_status == CLOSE_OPEN]
+    grid: dict = {s: {b: 0 for b in BANDS} for s in SEVERITIES}
+    unknown = {b: 0 for b in BANDS}
+    has_unknown = False
+    for f in open_:
+        b = _band(f, today)
+        if f.severity in grid:
+            grid[f.severity][b] += 1
+        else:
+            unknown[b] += 1
+            has_unknown = True
+    order = list(SEVERITIES) + (["Unknown"] if has_unknown else [])
+    if has_unknown:
+        grid["Unknown"] = unknown
+    return {
+        "severities": order,
+        "bands": list(BANDS),
+        "cells": grid,  # cells[severity][band] = 數
+        "row_totals": {s: sum(grid[s].values()) for s in order},
+        "col_totals": {b: sum(grid[s][b] for s in order) for b in BANDS},
+        "total": len(open_),
+    }
+
+
+def stage_stats(session: Session, department: Optional[str] = None,
+                today: Optional[dt.date] = None) -> dict:
+    """例外／展延階段統計（未結案）：各處置階段計數＋占比＋『例外核准未到期』安全名單。"""
+    today = today or dt.date.today()
+    open_ = [f for f in _latest_findings(session, department) if f.close_status == CLOSE_OPEN]
+    total = len(open_)
+    order = [STAGE_EXCEPTION, STAGE_EXTENSION, STAGE_ORIGINAL]
+    cnt = {k: 0 for k in order}
+    other = 0
+    for f in open_:
+        if f.stage in cnt:
+            cnt[f.stage] += 1
+        else:
+            other += 1
+    stages = [{"key": k, "count": cnt[k],
+               "pct": round(cnt[k] / total * 100, 1) if total else 0.0} for k in order]
+    if other:
+        stages.append({"key": "未定期限", "count": other,
+                       "pct": round(other / total * 100, 1) if total else 0.0})
+    # 安全名單：例外管理中 且 真正到期日尚未到（例外核准未到期）
+    safe = sum(1 for f in open_ if f.stage == STAGE_EXCEPTION
+               and f.effective_due and f.effective_due > today)
+    return {"total": total, "stages": stages, "safe_count": safe}
 
 
 def _is_overdue(f: Finding, today: dt.date) -> bool:

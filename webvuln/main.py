@@ -133,6 +133,7 @@ def api_findings(
     band: str | None = None,
     keyword: str | None = None,
     sheet_key: str | None = None,
+    stage: str | None = None,
     should_apply: bool = False,
     no_owner: bool = False,
     no_due: bool = False,
@@ -140,7 +141,7 @@ def api_findings(
 ):
     return query.find(db, department=department, status=status, owner=owner,
                       severity=severity, band=band, keyword=keyword, sheet_key=sheet_key,
-                      only_should_apply=should_apply, no_owner=no_owner, no_due=no_due)
+                      stage=stage, only_should_apply=should_apply, no_owner=no_owner, no_due=no_due)
 
 
 @app.get("/api/ranking")
@@ -160,6 +161,18 @@ def api_sla(department: str | None = None, db: Session = Depends(get_db)):
 def api_close_stats(department: str | None = None, db: Session = Depends(get_db)):
     """結案統計：本期新結案(快照 delta)＋依結案人。來源 Excel 確認為準。"""
     return query.close_stats(db, department=department)
+
+
+@app.get("/api/matrix")
+def api_matrix(department: str | None = None, db: Session = Depends(get_db)):
+    """交叉分析：嚴重度 × 到期時間帶（未結案）。"""
+    return query.matrix(db, department=department)
+
+
+@app.get("/api/stage-stats")
+def api_stage_stats(department: str | None = None, db: Session = Depends(get_db)):
+    """例外／展延階段統計（未結案）。"""
+    return query.stage_stats(db, department=department)
 
 
 @app.get("/api/cases")

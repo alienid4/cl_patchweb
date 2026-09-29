@@ -117,6 +117,46 @@ async function loadSla() {
     <td class="${r.met_rate < 80 ? "warnr" : ""}">${r.met_rate}%</td></tr>`).join("");
 }
 
+// ── 交叉分析矩陣（嚴重度 × 到期時間帶）──
+async function loadMatrix() {
+  const m = await j("/api/matrix?department=" + encodeURIComponent(dept()));
+  const thead = $("#matrix thead"), tbody = $("#matrix tbody");
+  thead.innerHTML = "<tr><th>嚴重度＼到期帶</th>" +
+    m.bands.map(b => `<th data-band="${esc(b)}">${esc(b)}</th>`).join("") + "<th>小計</th></tr>";
+  tbody.innerHTML = m.severities.map(s => {
+    const cells = m.bands.map(b => {
+      const v = m.cells[s][b];
+      return v > 0
+        ? `<td class="cell" data-sev="${esc(s)}" data-band="${esc(b)}">${v}</td>`
+        : `<td class="zero">0</td>`;
+    }).join("");
+    return `<tr><td data-sev="${esc(s)}">${esc(s)}</td>${cells}<td class="tot">${m.row_totals[s]}</td></tr>`;
+  }).join("") +
+    `<tr><td class="tot">小計</td>${m.bands.map(b => `<td class="tot">${m.col_totals[b]}</td>`).join("")}<td class="tot">${m.total}</td></tr>`;
+  // 點格子 → 該 嚴重度×時間帶；點列首 → 該嚴重度；點欄首 → 該時間帶
+  tbody.querySelectorAll("td.cell").forEach(td => td.onclick = () =>
+    drill({ status: "未結案", severity: td.dataset.sev, band: td.dataset.band },
+      `未結案 · ${td.dataset.sev} · ${td.dataset.band}`));
+  tbody.querySelectorAll("td[data-sev]:not(.cell)").forEach(td => td.onclick = () =>
+    drill({ status: "未結案", severity: td.dataset.sev }, "未結案 · " + td.dataset.sev));
+  thead.querySelectorAll("th[data-band]").forEach(th => th.onclick = () =>
+    drill({ status: "未結案", band: th.dataset.band }, "未結案 · " + th.dataset.band));
+}
+
+// ── 例外／展延 階段統計 ──
+const STAGE_CLS = { "例外管理中": "exc", "首次展延中": "ext", "原始修補期限": "ori", "未定期限": "" };
+async function loadStage() {
+  const s = await j("/api/stage-stats?department=" + encodeURIComponent(dept()));
+  const cards = [];
+  cards.push(`<div class="stage-card safe"><div class="t">例外核准未到期</div><div class="big" style="color:var(--green)">${s.safe_count}</div><div class="s">例外核准期限尚未到</div></div>`);
+  s.stages.forEach(st => cards.push(
+    `<div class="stage-card ${STAGE_CLS[st.key] || ""}" data-stage="${esc(st.key)}"><div class="t">${esc(st.key)}</div><div class="big">${st.count}</div><div class="s">占未結案 ${st.pct}%</div></div>`));
+  $("#stage-grid").innerHTML = cards.join("");
+  $("#stage-hint").textContent = `未結案 ${s.total} 筆，依處置階段分類（點卡片看明細）。`;
+  $("#stage-grid").querySelectorAll(".stage-card[data-stage]").forEach(el => el.onclick = () =>
+    drill({ status: "未結案", stage: el.dataset.stage }, "未結案 · " + el.dataset.stage));
+}
+
 // ── 排行榜 ──
 async function loadRank() {
   const url = rankBy === "department" ? "/api/ranking?by=department"
@@ -129,6 +169,14 @@ async function loadRank() {
     <td class="${r.should_apply ? "warnr" : ""}">${r.should_apply}</td>
     <td>${r.high_risk}</td><td>${r.close_rate}%</td></tr>`).join("");
   $("#rank-expand").textContent = rankExpand ? "收合" : "展開全部";
+  // 排行列點開 → 該負責人/部門的未結案明細（人員追蹤下鑽）
+  $("#rank tbody").querySelectorAll("tr").forEach((tr, i) => {
+    const name = rows[i] && rows[i].name; if (!name) return;
+    tr.style.cursor = "pointer";
+    tr.onclick = () => rankBy === "department"
+      ? drill({ status: "未結案", department: name }, "未結案 · 部門 " + name)
+      : drill({ status: "未結案", owner: name }, "未結案 · " + name);
+  });
 }
 
 // ── 申請管線 ──
@@ -301,7 +349,7 @@ async function refresh() {
   const top = await j("/api/findings?" + new URLSearchParams({ department: dept(), status: "未結案", should_apply: "true" }));
   top.sort((a, b) => (b.overdue_days ?? -1e9) - (a.overdue_days ?? -1e9));
   renderHome(s, top); renderKpi(s); renderBands(s); renderSeverity(s); renderBanner(s);
-  await Promise.all([loadSla(), loadRank(), loadPipeline(), loadClose()]);
+  await Promise.all([loadMatrix(), loadStage(), loadSla(), loadRank(), loadPipeline(), loadClose()]);
   drill({ status: "未結案" }, "未結案明細");
 }
 

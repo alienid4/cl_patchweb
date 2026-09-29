@@ -55,6 +55,20 @@
       </section>
     </div>
 
+    <!-- 交叉分析：嚴重度 × 到期時間帶（沿用單機版「交叉分析」） -->
+    <section class="card" id="sec-matrix">
+      <h3>交叉分析（嚴重度 × 到期時間帶，未結案）</h3>
+      <div class="table-wrap"><table id="matrix"><thead></thead><tbody></tbody></table></div>
+      <p class="muted">點格子看該（嚴重度×時間帶）明細；點列首＝該嚴重度、欄首＝該時間帶。</p>
+    </section>
+
+    <!-- 階段統計：例外／展延（沿用單機版「例外／展延統計」） -->
+    <section class="card" id="sec-stage">
+      <h3>例外／展延 階段統計（未結案）</h3>
+      <div class="stage-grid" id="stage-grid"></div>
+      <p class="muted" id="stage-hint"></p>
+    </section>
+
     <!-- 主管視圖：SLA -->
     <section class="card view-supervisor hidden" id="sec-sla">
       <h3>SLA 達成率（各嚴重度政策天數）</h3>

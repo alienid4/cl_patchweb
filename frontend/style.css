@@ -98,6 +98,27 @@ td.od,.warnr{color:var(--red);font-weight:700}
 
 .report-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 
+/* 交叉分析矩陣 */
+#matrix td,#matrix th{text-align:center}
+#matrix td:first-child,#matrix th:first-child{text-align:left;background:#eef4f0;font-weight:700}
+#matrix td.cell{cursor:pointer}
+#matrix td.cell:hover{background:#e8f5e9}
+#matrix td.zero{color:#bbb;cursor:default}
+#matrix .tot{background:#f2f6f4;font-weight:700}
+#matrix thead th{cursor:pointer}
+
+/* 階段統計卡 */
+.stage-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.stage-card{background:#fff;border:1px solid var(--line);border-top:3px solid var(--gray);border-radius:10px;padding:12px;text-align:center;cursor:pointer}
+.stage-card:hover{border-color:var(--green)}
+.stage-card.safe{border-top-color:var(--green);cursor:default}
+.stage-card.exc{border-top-color:var(--purple)}
+.stage-card.ext{border-top-color:var(--blue)}
+.stage-card.ori{border-top-color:var(--green)}
+.stage-card .big{font-size:24px;font-weight:800}
+.stage-card .t{font-size:13px;font-weight:600}
+.stage-card .s{font-size:12px;color:var(--gray);margin-top:2px}
+
 .app-footer{text-align:center;color:var(--gray);font-size:11.5px;padding:20px}
 
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:50}
