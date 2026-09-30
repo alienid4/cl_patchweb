@@ -225,9 +225,10 @@ def api_case_transition(case_id: int, body: TransitionIn, request: Request,
 
 
 @app.get("/api/export")
-def api_export(batch_id: int | None = None, db: Session = Depends(get_db)):
-    """原封匯出 xlsx：欄位與來源 1:1，缺值標『無原始資料』，另附管理摘要頁。"""
-    wb, filename = export.build_workbook(db, batch_id=batch_id)
+def api_export(batch_id: int | None = None, department: str | None = None,
+               db: Session = Depends(get_db)):
+    """原封匯出 xlsx：欄位與來源 1:1，缺值標『無原始資料』，另附管理摘要頁。可依部門篩選。"""
+    wb, filename = export.build_workbook(db, batch_id=batch_id, department=department)
     data = export.to_bytes(wb)
     disp = f"attachment; filename*=UTF-8''{quote(filename)}"
     return Response(

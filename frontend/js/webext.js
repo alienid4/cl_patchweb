@@ -126,13 +126,20 @@
     '核准': ['完成'], '退回補件': ['待主管'], '完成': [] };
   function canWrite() { return me.open_write || (me.authenticated && (me.role === 'admin' || me.role === '承辦')); }
   async function jget(u) { var r = await fetch(u); if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); }
+  // 讀「左側目前選的部門」（沿用原本 #my-dept-select），承辦管線各面板都要吃它
+  function curDept() { var s = document.getElementById('my-dept-select'); var v = s && s.value; return (v && v !== '__all__') ? v : null; }
+  function qd(params) { var d = curDept(); if (d) (params = params || {}).department = d; return new URLSearchParams(params || {}).toString(); }
 
-  function card(value, label, danger) {
+  function card(value, label, danger, onDrill) {
     var c = U.el('div', { class: 'metric-card' }, [
       U.el('div', { class: 'metric-value', text: String(value) }),
       U.el('div', { class: 'metric-label', text: label }),
     ]);
     if (danger && value && value !== '0') c.querySelector('.metric-value').style.color = '#c0392b';
+    if (onDrill && value && value !== '0' && value !== '—') {
+      c.style.cursor = 'pointer'; c.title = '點我看明細';
+      c.addEventListener('click', onDrill);
+    }
     return c;
   }
   function group(title, cards) {
@@ -141,6 +148,51 @@
     cards.forEach(function (c) { cs.appendChild(c); });
     wrap.appendChild(cs);
     return wrap;
+  }
+
+  // 讓表格可點欄位排序（數字欄按數值、其餘按字串；再點反向）
+  function makeSortable(table) {
+    var ths = table.tHead ? table.tHead.rows[0].cells : [];
+    for (var i = 0; i < ths.length; i++) (function (ci, th) {
+      th.style.cursor = 'pointer'; th.title = '點我排序';
+      var asc = true;
+      th.addEventListener('click', function () {
+        var tb = table.tBodies[0]; if (!tb) return;
+        var rows = Array.prototype.slice.call(tb.rows).filter(function (r) { return r.cells.length === ths.length; });
+        rows.sort(function (a, b) {
+          var x = a.cells[ci].textContent.trim(), y = b.cells[ci].textContent.trim();
+          var nx = parseFloat(x.replace(/[^\d.-]/g, '')), ny = parseFloat(y.replace(/[^\d.-]/g, ''));
+          var both = !isNaN(nx) && !isNaN(ny) && x !== '' && y !== '';
+          var r = both ? (nx - ny) : (x > y ? 1 : x < y ? -1 : 0);
+          return asc ? r : -r;
+        });
+        asc = !asc;
+        rows.forEach(function (r) { tb.appendChild(r); });
+      });
+    })(i, ths[i]);
+  }
+
+  // 下鑽：開視窗顯示 /api/findings 篩出的明細（可排序）
+  async function openFindings(title, params) {
+    var box = U.el('div');
+    UI.openModal(title, box);
+    var rows;
+    try { rows = await jget('/api/findings?' + qd(Object.assign({ status: '未結案' }, params || {}))); }
+    catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
+    if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '無資料' })); return; }
+    box.appendChild(U.el('p', { class: 'empty-hint', text: '共 ' + rows.length + ' 筆（點欄位排序）' }));
+    var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
+      ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
+      ['stage', '處置階段'], ['department', '部門']];
+    var table = U.el('table', { class: 'tracking-table' });
+    table.appendChild(U.el('thead', {}, [U.el('tr', {}, cols.map(function (c) { return U.el('th', { text: c[1] }); }))]));
+    var tb = U.el('tbody');
+    rows.forEach(function (r) {
+      tb.appendChild(U.el('tr', {}, cols.map(function (c) {
+        return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
+      })));
+    });
+    table.appendChild(tb); box.appendChild(table); makeSortable(table);
   }
 
   // ---- 登入 ----
@@ -192,21 +244,22 @@
     if (!host) return;
     host.innerHTML = '';
     var s, cases;
-    try { s = await jget('/api/summary'); cases = await jget('/api/cases'); }
+    try { s = await jget('/api/summary?' + qd()); cases = await jget('/api/cases?' + qd()); }
     catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
-    // 行動線 / 缺口 / 新鮮度
+    // 行動線 / 缺口 / 新鮮度（數字可下鑽）
     host.appendChild(group('行動線與缺口示警', [
-      card(s.should_apply, '應提申請未提', true),
-      card(s.gaps.no_owner, '無人負責', true),
-      card(s.gaps.no_due, '無到期日', true),
+      card(s.should_apply, '應提申請未提', true, function () { openFindings('應提申請未提', { should_apply: 'true' }); }),
+      card(s.gaps.no_owner, '無人負責', true, function () { openFindings('無人負責', { no_owner: 'true' }); }),
+      card(s.gaps.no_due, '無到期日', true, function () { openFindings('無到期日', { no_due: 'true' }); }),
       card((s.freshness.days_ago == null ? '—' : s.freshness.days_ago), '資料距今(天)'),
     ]));
-    // 管線關卡
+    // 管線關卡（可下鑽該關卡案件）
     var cnt = {}; PIPE.forEach(function (k) { cnt[k] = 0; });
     var suspect = 0, orphan = 0;
     cases.forEach(function (c) { if (c.status in cnt) cnt[c.status]++; if (c.suspect) suspect++; if (c.is_orphan) orphan++; });
     host.appendChild(group('申請流程管線', PIPE.map(function (k) {
-      return card(cnt[k], k, k === '未申請' || k === '退回補件');
+      return card(cnt[k], k, k === '未申請' || k === '退回補件',
+        function () { openCasesModal(k + ' 案件', { status: k }); });
     })));
     var hint = U.el('div', { class: 'scope-info' }, [U.el('span', {
       html: '可疑聲稱 <b>' + suspect + '</b>　·　來源已消失 <b>' + orphan + '</b>　·　'
@@ -239,6 +292,29 @@
     });
     table.appendChild(tb);
     host.appendChild(table);
+    makeSortable(table);
+  }
+
+  // 下鑽：開視窗顯示 /api/cases 某關卡的案件（可排序）
+  async function openCasesModal(title, params) {
+    var box = U.el('div');
+    UI.openModal(title, box);
+    var rows;
+    try { rows = await jget('/api/cases?' + qd(params || {})); }
+    catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
+    if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '無案件' })); return; }
+    box.appendChild(U.el('p', { class: 'empty-hint', text: '共 ' + rows.length + ' 筆（點欄位排序）' }));
+    var cols = [['host', '主機'], ['plugin_id', 'Plugin'], ['owner', '負責人'], ['department', '部門'], ['status', '狀態'], ['source_closed', '來源']];
+    var table = U.el('table', { class: 'tracking-table' });
+    table.appendChild(U.el('thead', {}, [U.el('tr', {}, cols.map(function (c) { return U.el('th', { text: c[1] }); }))]));
+    var tb = U.el('tbody');
+    rows.forEach(function (r) {
+      tb.appendChild(U.el('tr', {}, cols.map(function (c) {
+        var v = c[0] === 'source_closed' ? (r[c[0]] ? '已結' : '未結') : (r[c[0]] == null ? (c[0] === 'owner' ? '未指派' : '') : String(r[c[0]]));
+        return U.el('td', { text: v });
+      })));
+    });
+    table.appendChild(tb); box.appendChild(table); makeSortable(table);
   }
 
   // ---- 缺口示警（行動線／缺口／新鮮度＋最急 Top） ----
@@ -247,15 +323,15 @@
     host.innerHTML = '';
     var s, top;
     try {
-      s = await jget('/api/summary');
-      top = await jget('/api/findings?' + new URLSearchParams({ status: '未結案', should_apply: 'true' }));
+      s = await jget('/api/summary?' + qd());
+      top = await jget('/api/findings?' + qd({ status: '未結案', should_apply: 'true' }));
     } catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
     host.appendChild(group('行動線與缺口示警', [
-      card(s.should_apply, '應提申請未提', true),
-      card(s.gaps.no_owner, '無人負責', true),
-      card(s.gaps.no_due, '無到期日', true),
-      card(s.due_soon, '近期到期(30天)', true),
-      card(s.overdue, '已逾期', true),
+      card(s.should_apply, '應提申請未提', true, function () { openFindings('應提申請未提', { should_apply: 'true' }); }),
+      card(s.gaps.no_owner, '無人負責', true, function () { openFindings('無人負責', { no_owner: 'true' }); }),
+      card(s.gaps.no_due, '無到期日', true, function () { openFindings('無到期日', { no_due: 'true' }); }),
+      card(s.due_soon, '近期到期(30天)', true, function () { openFindings('近期到期(30天)', { band: '30天內' }); }),
+      card(s.overdue, '已逾期', true, function () { openFindings('已逾期', { band: '已逾期' }); }),
       card((s.freshness.days_ago == null ? '—' : s.freshness.days_ago), '資料距今(天)'),
     ]));
     top.sort(function (a, b) { return (b.overdue_days == null ? -1e9 : b.overdue_days) - (a.overdue_days == null ? -1e9 : a.overdue_days); });
@@ -272,7 +348,7 @@
           U.el('td', { text: r.department || '' }),
         ]));
       });
-      table.appendChild(tb); host.appendChild(table);
+      table.appendChild(tb); host.appendChild(table); makeSortable(table);
     } else {
       host.appendChild(U.el('p', { class: 'empty-hint', text: '目前無「應提申請未提」的急件。' }));
     }
@@ -283,7 +359,7 @@
     if (!host) return;
     host.innerHTML = '';
     var s;
-    try { s = await jget('/api/close-stats'); } catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料。' })); return; }
+    try { s = await jget('/api/close-stats?' + qd()); } catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料。' })); return; }
     host.appendChild(group('結案統計（快照比對）', [
       card(s.new_closed, '本期新結案'),
       card(s.source_confirmed, '來源(Excel)確認'),
@@ -294,7 +370,7 @@
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, [U.el('th', { text: '結案人' }), U.el('th', { text: '本期結案' })])]));
       var tb = U.el('tbody');
       s.by_closer.forEach(function (r) { tb.appendChild(U.el('tr', {}, [U.el('td', { text: r.name }), U.el('td', { text: String(r.closed) })])); });
-      table.appendChild(tb); host.appendChild(table);
+      table.appendChild(tb); host.appendChild(table); makeSortable(table);
     }
     host.appendChild(U.el('p', { class: 'empty-hint', text: '「本期新結案」＝上期未結、這期變已結（快照比對）；「承辦聲稱未確認」＝承辦標完成但來源仍未結，可能自行浮報。' }));
   }
@@ -305,8 +381,21 @@
     { key: 'gaps', label: '缺口示警', render: renderGapsInto },
     { key: 'cases', label: '申請流程管線', render: renderCasesInto },
     { key: 'closestat', label: '結案統計', render: renderCloseInto },
-    { key: 'export', label: '原封匯出（Excel）', action: function () { window.location = '/api/export'; } },
   ];
+
+  // 全站匯出統一成「原封 Excel」：攔截所有匯出鈕(原本各表的匯出CSV等)→改下載原封 xlsx。
+  // 用捕獲階段委派，涵蓋動態產生的按鈕，且不改原檔。
+  function wireUnifiedExport() {
+    document.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('button, a') : null;
+      if (!b) return;
+      var t = (b.textContent || '').replace(/\s/g, '');
+      if (/匯出/.test(t) && /(CSV|清單|Excel|匯出$)/.test(t) && b.id.indexOf('webext') !== 0) {
+        e.preventDefault(); e.stopImmediatePropagation();
+        window.location = '/api/export?' + qd();   // 原封 1:1 xlsx（帶目前部門）
+      }
+    }, true);
+  }
 
   var currentGov = null;
   function hideWebextView() {
@@ -397,6 +486,7 @@
   function wireNewFeatures() {
     var lb = document.getElementById('webext-login-btn');
     if (lb) lb.addEventListener('click', function () { me.authenticated ? doLogout() : openLogin(); });
+    wireUnifiedExport();
     injectNavGroup();
     // main.js 會在載入資料/切部門時重建 #sheet-nav → 用 observer 重新注入我的大項
     var nav = document.getElementById('sheet-nav');

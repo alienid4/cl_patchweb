@@ -73,8 +73,9 @@ def _cols_for(session: Session, batch_id: int, sheet_key: str, findings: list[Fi
 
 
 def build_workbook(session: Session, batch_id: Optional[int] = None,
-                   today: Optional[dt.date] = None) -> tuple[Workbook, str]:
-    """回傳 (workbook, 建議檔名)。無資料則回空白帶提示。"""
+                   today: Optional[dt.date] = None,
+                   department: Optional[str] = None) -> tuple[Workbook, str]:
+    """回傳 (workbook, 建議檔名)。無資料則回空白帶提示。department 指定時只匯出該部門。"""
     today = today or dt.date.today()
     batch = _pick_batch(session, batch_id)
     wb = Workbook()
@@ -86,9 +87,10 @@ def build_workbook(session: Session, batch_id: Optional[int] = None,
     used = {"管理摘要"}
 
     if batch:
-        fs = session.execute(
-            select(Finding).where(Finding.batch_id == batch.id)
-        ).scalars().all()
+        q = select(Finding).where(Finding.batch_id == batch.id)
+        if department and department != "全部":
+            q = q.where(Finding.department == department)
+        fs = session.execute(q).scalars().all()
         by_sheet: dict[str, list[Finding]] = {}
         for f in fs:
             by_sheet.setdefault(f.sheet_key or "未分類", []).append(f)
