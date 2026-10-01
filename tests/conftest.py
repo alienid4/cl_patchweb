@@ -23,6 +23,19 @@ def session(engine) -> Session:
         s.close()
 
 
+@pytest.fixture(autouse=True)
+def _default_noauth():
+    """測試預設免登入模式(寫入放行),讓多數測試可直接匯入/建資料;
+    驗證 auth 閘門的測試自行 monkeypatch config.NO_AUTH=False。"""
+    from webvuln import config
+    old = config.NO_AUTH
+    config.NO_AUTH = True
+    try:
+        yield
+    finally:
+        config.NO_AUTH = old
+
+
 @pytest.fixture
 def client(engine):
     """TestClient，DB 依賴覆寫成測試用 engine（不碰真實 DB）。"""

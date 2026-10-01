@@ -102,6 +102,9 @@
       if (rp.ok && global.UI && global.UI.toast) {
         var b = await rp.json();
         global.UI.toast('已存到伺服器（' + b.row_count + ' 筆）', 'success');
+      } else if ((rp.status === 401 || rp.status === 403) && global.UI && global.UI.toast) {
+        // 關掉免登入後，要先登入(承辦/管理員)才能把資料存進伺服器
+        global.UI.toast('本機已顯示，但未存到伺服器：請先登入（承辦／管理員）再匯入', 'error');
       }
     } catch (e) { /* 存伺服器失敗不影響本機渲染 */ }
   }

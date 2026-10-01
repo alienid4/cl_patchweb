@@ -120,9 +120,15 @@ def api_me(user: User | None = Depends(current_user)):
 
 
 @app.post("/api/import", response_model=ImportResult)
-def import_data(payload: ImportIn, db: Session = Depends(get_db)):
-    """收前端解析好的一批 finding → 存成新快照，舊快照退位。"""
+def import_data(payload: ImportIn, request: Request, db: Session = Depends(get_db),
+                user: User = Depends(require_write_role)):
+    """收前端解析好的一批 finding → 存成新快照，舊快照退位。
+    匯入＝覆蓋最新快照，屬寫入：需登入（承辦/管理員），免登入模式才放行；動作留稽核。"""
     batch = importer.create_batch(db, payload)
+    security.log_audit(db, username=user.username, action="import",
+                       target=f"batch:{batch.id}",
+                       detail=f"{payload.source_file or ''} {batch.row_count}筆",
+                       ip=_client_ip(request))
     return ImportResult(batch_id=batch.id, row_count=batch.row_count, is_latest=batch.is_latest)
 
 

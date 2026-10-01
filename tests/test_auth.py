@@ -41,19 +41,21 @@ def test_login_logout_me_flow(client, engine):
     assert client.get("/api/me").json()["authenticated"] is False
 
 
-def test_transition_requires_login_and_role(client, engine):
+def test_transition_requires_login_and_role(client, engine, monkeypatch):
     from sqlalchemy.orm import Session, sessionmaker
+    from webvuln import config
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
     with factory() as s:
         security.create_user(s, "staff", "pw12345", role="承辦")
         security.create_user(s, "bob", "pw12345", role="viewer")
 
-    # 建一個 case
+    # 建一個 case（匯入在免登入下先完成）
     client.post("/api/import", json={"findings": [
         {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}
     ]})
     cid = client.get("/api/cases").json()[0]["id"]
 
+    monkeypatch.setattr(config, "NO_AUTH", False)   # 關免登入，測真正的權限閘門
     # 未登入 → 401
     r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
     assert r.status_code == 401
@@ -82,13 +84,31 @@ def test_no_auth_mode_allows_write(client, engine, monkeypatch):
         {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}
     ]})
     cid = client.get("/api/cases").json()[0]["id"]
-    # 未登入預設擋
+    # 關免登入 → 未登入被擋
+    monkeypatch.setattr(config, "NO_AUTH", False)
     assert client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"}).status_code == 401
     # 開免登入模式 → 未登入也能寫；/api/me 回 open_write=True
     monkeypatch.setattr(config, "NO_AUTH", True)
     assert client.get("/api/me").json()["open_write"] is True
     r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
     assert r.status_code == 200 and r.json()["status"] == "待主管"
+
+
+def test_import_requires_write(client, engine, monkeypatch):
+    """P5：匯入屬寫入。關免登入後未登入不能匯入(擋 401)；登入承辦可匯入且留稽核。"""
+    from sqlalchemy.orm import Session, sessionmaker
+    from webvuln import config
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    with factory() as s:
+        security.create_user(s, "staff", "pw12345", role="承辦")
+    body = {"findings": [{"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}]}
+
+    monkeypatch.setattr(config, "NO_AUTH", False)
+    assert client.post("/api/import", json=body).status_code == 401      # 未登入擋
+    client.post("/api/login", json={"username": "staff", "password": "pw12345"})
+    assert client.post("/api/import", json=body).status_code == 200      # 登入可匯入
+    with factory() as s:
+        assert "import" in {a.action for a in s.query(AuditLog).all()}   # 留稽核
 
 
 def test_disable_write_killswitch(client, engine, monkeypatch):
