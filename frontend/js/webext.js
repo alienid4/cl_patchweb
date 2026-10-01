@@ -384,6 +384,10 @@
     { key: 'gaps', label: '缺口示警', render: renderGapsInto },
     { key: 'cases', label: '申請流程管線', render: renderCasesInto },
     { key: 'closestat', label: '結案統計', render: renderCloseInto },
+    // 一鍵發送＝沿用原本「Email 設定」流程(開原設定視窗)，移到此、改名；原選單項已隱藏
+    { key: 'email', label: '一鍵發送', action: function () {
+        var b = document.getElementById('email-settings-btn'); if (b) b.click();
+      } },
   ];
 
   // 全站匯出統一成「原封 Excel」：攔截所有匯出鈕(原本各表的匯出CSV等)→改下載原封 xlsx。
@@ -489,6 +493,8 @@
   function wireNewFeatures() {
     var lb = document.getElementById('webext-login-btn');
     if (lb) lb.addEventListener('click', function () { me.authenticated ? doLogout() : openLogin(); });
+    // 「Email 設定」移到承辦管線→「一鍵發送」，從「其他功能」選單隱藏(功能仍靠此按鈕觸發)
+    var eb = document.getElementById('email-settings-btn'); if (eb) eb.style.display = 'none';
     wireUnifiedExport();
     injectNavGroup();
     // main.js 會在載入資料/切部門時重建 #sheet-nav → 用 observer 重新注入我的大項
