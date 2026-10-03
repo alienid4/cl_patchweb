@@ -40,6 +40,71 @@ def _latest_findings(session: Session, department: Optional[str] = None) -> list
     return list(session.execute(q).scalars().all())
 
 
+def reconcile_check(session: Session, department: Optional[str] = None,
+                    today: Optional[dt.date] = None) -> dict:
+    """對帳健檢（讓操作者不靠 AI 也能確認數字兜得起來）：跑一組「A 應等於 B」不變式，
+    每條回實際數字＋是否相等。全綠＝畫面各數字彼此一致、且對得上匯入總列數。"""
+    today = today or dt.date.today()
+    b = latest_batch(session)
+    allf = _latest_findings(session, None)
+    fs = _latest_findings(session, department)
+    open_ = [f for f in fs if f.close_status == CLOSE_OPEN]
+    closed = [f for f in fs if f.close_status == CLOSE_DONE]
+    other = [f for f in fs if f.close_status not in (CLOSE_OPEN, CLOSE_DONE)]
+    n = len(open_)
+
+    # 到期桶(互斥)
+    due = {"overdue": 0, "d30": 0, "d31_60": 0, "d61_90": 0, "d90plus": 0, "no_due": 0}
+    for f in open_:
+        if not f.effective_due:
+            due["no_due"] += 1; continue
+        d = (f.effective_due - today).days
+        due["overdue" if d < 0 else "d30" if d <= 30 else "d31_60" if d <= 60
+            else "d61_90" if d <= 90 else "d90plus"] += 1
+    # 處置階段
+    stg = {"original": 0, "extension": 0, "exception": 0, "other": 0}
+    for f in open_:
+        k = {STAGE_ORIGINAL: "original", STAGE_EXTENSION: "extension",
+             STAGE_EXCEPTION: "exception"}.get(f.stage, "other")
+        stg[k] += 1
+    # 嚴重度(含 Unknown)
+    sev = len([f for f in open_ if f.severity in SEVERITIES])
+    sev_unknown = n - sev
+    # 各部門未結相加(全域)
+    dept_open = {}
+    for f in allf:
+        if f.close_status == CLOSE_OPEN:
+            dept_open[f.department or "（未填）"] = dept_open.get(f.department or "（未填）", 0) + 1
+
+    def eq(name, a_label, a, b_label, b):
+        return {"name": name, "a_label": a_label, "a": a, "b_label": b_label, "b": b, "ok": a == b}
+
+    checks = [
+        eq("未結案 ＝ 到期各桶相加", "未結案", n,
+           "+".join(str(due[k]) for k in ["overdue", "d30", "d31_60", "d61_90", "d90plus", "no_due"]),
+           sum(due.values())),
+        eq("未結案 ＝ 處置階段相加", "未結案", n,
+           "原始%d+展延%d+例外%d+其他%d" % (stg["original"], stg["extension"], stg["exception"], stg["other"]),
+           sum(stg.values())),
+        eq("未結案 ＝ 嚴重度相加", "未結案", n, "四級%d+Unknown%d" % (sev, sev_unknown), sev + sev_unknown),
+        eq("本報表全部列 ＝ 未結＋已結＋其他", "全部列", len(fs),
+           "未結%d+已結%d+其他%d" % (n, len(closed), len(other)), n + len(closed) + len(other)),
+    ]
+    if not department or department == "全部":
+        checks.append(eq("全部未結 ＝ 各部門未結相加", "全部未結", n,
+                         "%d 個部門相加" % len(dept_open), sum(dept_open.values())))
+
+    return {
+        "scope": department or "全部",
+        "source_file": b.source_file if b else None,
+        "imported_at": b.imported_at.isoformat() if b else None,
+        "import_rows": b.row_count if b else 0,
+        "latest_rows": len(allf),
+        "all_ok": all(c["ok"] for c in checks),
+        "checks": checks,
+    }
+
+
 def action_line(f: Finding, today: dt.date) -> dt.date | None:
     """行動線＝真正到期日 − 申請提前期（依嚴重度）。"""
     if not f.effective_due:

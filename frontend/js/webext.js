@@ -635,6 +635,42 @@
     ], 'close');
   }
 
+  // ---- 對帳健檢（讓操作者不靠 AI 也能確認數字正確）----
+  async function renderReconcileInto(host) {
+    if (!host) return;
+    host.innerHTML = ''; host.classList.remove('webext-rpt');
+    var s;
+    try { s = await jget('/api/reconcile?' + qd()); }
+    catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
+    // 大橫幅：全綠或有問題
+    var banner = U.el('div', { style: 'padding:12px 16px;border-radius:8px;font-size:16px;font-weight:700;margin:4px 0 12px;'
+      + (s.all_ok ? 'background:#e8f5e9;color:#1a7f4b;border:1px solid #1a7f4b' : 'background:#fdecea;color:#c0392b;border:1px solid #c0392b') },
+      [U.el('span', { text: s.all_ok ? '✅ 全部對帳一致——畫面數字彼此兜得起來，可放心。' : '⚠️ 發現不一致，請看下方紅色項目。' })]);
+    host.appendChild(banner);
+    // 來源
+    host.appendChild(U.el('p', { class: 'empty-hint', text:
+      '範圍：' + s.scope + '　·　來源檔：' + (s.source_file || '（未知）') + '　·　匯入時間：' + (s.imported_at || '').replace('T', ' ')
+      + '　·　匯入列數：' + s.import_rows + '　·　目前資料列數：' + s.latest_rows }));
+    // 對帳表
+    var table = U.el('table', { class: 'tracking-table' });
+    table.appendChild(U.el('thead', {}, [U.el('tr', {}, ['對帳項目', '左邊', '＝?', '右邊（算式＝值）', '結果'].map(function (h) { return U.el('th', { text: h }); }))]));
+    var tb = U.el('tbody');
+    s.checks.forEach(function (c) {
+      var res = U.el('td', { text: c.ok ? '✓ 一致' : '✗ 不一致' });
+      res.style.cssText = 'font-weight:700;color:' + (c.ok ? '#1a7f4b' : '#c0392b');
+      tb.appendChild(U.el('tr', {}, [
+        U.el('td', { text: c.name }),
+        U.el('td', { text: c.a_label + '＝' + c.a }),
+        U.el('td', { text: '＝' }),
+        U.el('td', { text: c.b_label + '＝' + c.b }),
+        res,
+      ]));
+    });
+    table.appendChild(tb); host.appendChild(table);
+    host.appendChild(U.el('p', { class: 'empty-hint', text:
+      '怎麼核到原始 Excel：① 每個統計數字都能點進去看清單、每列按 🔍 看原始整列；② 用各清單的「完整匯出 (CSV)」拉出來，跟資安那份 Excel 逐列比對。「匯入列數」應等於來源 Excel 的資料列數。' }));
+  }
+
   // ---- 主管週報（應申請未申請／已申請／預計完成彙總／落後；可列印存 PDF） ----
   var _lastReport = null;
   async function renderReportInto(host) {
@@ -964,6 +1000,7 @@
     { key: 'cases', label: '送審進度', render: renderCasesInto },   // 做：例外/展延申請跑簽到核准
     { key: 'report', label: '主管週報', render: renderReportInto }, // 報：給主管的固定報告
     { key: 'closestat', label: '結案稽核', render: renderCloseInto }, // 查：結案驗證/浮報
+    { key: 'reconcile', label: '對帳健檢', render: renderReconcileInto }, // 查：數字自我對帳(不靠AI)
     // 一鍵發送＝沿用原本「Email 設定」流程(開原設定視窗)；日後 B(自動寄週報)再接進主管週報
     { key: 'email', label: '一鍵發送', action: function () {
         var b = document.getElementById('email-settings-btn'); if (b) b.click();

@@ -77,6 +77,17 @@ def test_due_buckets_and_range(session):
     assert "od" in {r["host"] for r in od_rows}
 
 
+def test_reconcile_check(session):
+    _load(session)   # 4 筆未結(A/B/C/D)
+    r = query.reconcile_check(session, today=TODAY)
+    assert r["all_ok"] is True                     # 全部對帳一致
+    names = [c["name"] for c in r["checks"]]
+    assert "未結案 ＝ 到期各桶相加" in names
+    # 每條都 a==b
+    assert all(c["a"] == c["b"] for c in r["checks"])
+    assert r["latest_rows"] == 4
+
+
 def test_freshness(session):
     _load(session, imported=dt.datetime(2026, 5, 3, 9, 0))
     s = query.summary(session, today=TODAY)

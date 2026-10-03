@@ -143,6 +143,12 @@ def api_owners(db: Session = Depends(get_db)):
     return query.owners(db)
 
 
+@app.get("/api/reconcile")
+def api_reconcile(department: str | None = None, db: Session = Depends(get_db)):
+    """對帳健檢：跑一組『A 應等於 B』不變式，讓操作者不靠 AI 也能確認數字兜得起來。"""
+    return query.reconcile_check(db, department=department)
+
+
 @app.get("/api/owner-summary")
 def api_owner_summary(department: str | None = None, due_max: int | None = None,
                       lead: int = 0, db: Session = Depends(get_db)):
