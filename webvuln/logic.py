@@ -57,19 +57,37 @@ def parse_iso_date(value) -> Optional[dt.date]:
         return None
 
 
-def compute_effective_due(exception_due, first_extension_due, remediation_due) -> Optional[dt.date]:
-    """真正到期日：例外核准期限 → 首次展延上限 → 修補期限，依序取第一個有值者。"""
-    for d in (exception_due, first_extension_due, remediation_due):
-        if d:
-            return d
-    return None
+# 備註裡的「申請紀錄」關鍵字：有寫才代表真的申請過(見下)。
+# 來源格式例：「例外管理(iForm_202605008)」「首次展延(iForm_26013068698)」，可多筆。
+EXC_KEYWORD = "例外管理"
+EXT_KEYWORD = "首次展延"
 
 
-def compute_stage(exception_due, first_extension_due) -> str:
-    """處置階段：有例外→例外管理中；有首次展延（無例外）→首次展延中；皆無→原始修補期限。"""
-    if exception_due:
+def _applied(remark, keyword: str) -> bool:
+    """備註是否出現該申請紀錄。備註空＝沒申請。"""
+    return bool(remark) and keyword in str(remark)
+
+
+def compute_effective_due(exception_due, first_extension_due, remediation_due,
+                          remark=None) -> Optional[dt.date]:
+    """真正到期日。**關鍵規則（2026-10-03 志安釐清）**：
+    展延/例外的日期『有填』不代表已申請——要「備註有對應申請紀錄」才算數（備註空＝沒申請）。
+      - 備註有「例外管理」且例外核准期限有填 → 用例外核准期限
+      - 否則 備註有「首次展延」且首次展延上限有填 → 用首次展延上限
+      - 否則 → 一律用修補期限（原始）
+    優先序 例外管理 > 首次展延 > 原始修補期限。"""
+    if exception_due and _applied(remark, EXC_KEYWORD):
+        return exception_due
+    if first_extension_due and _applied(remark, EXT_KEYWORD):
+        return first_extension_due
+    return remediation_due
+
+
+def compute_stage(exception_due, first_extension_due, remediation_due=None, remark=None) -> str:
+    """處置階段，判法同 compute_effective_due（備註要有對應申請紀錄才算展延/例外）。"""
+    if exception_due and _applied(remark, EXC_KEYWORD):
         return STAGE_EXCEPTION
-    if first_extension_due:
+    if first_extension_due and _applied(remark, EXT_KEYWORD):
         return STAGE_EXTENSION
     return STAGE_ORIGINAL
 

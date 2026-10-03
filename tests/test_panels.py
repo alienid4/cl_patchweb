@@ -13,10 +13,12 @@ def _load(session):
         f(host="a1", severity="Critical", remediation_due="2026-04-01", close_status="未結案"),
         # Critical 30天內
         f(host="a2", severity="Critical", remediation_due="2026-05-20", close_status="未結案"),
-        # High 已逾期，且有例外核准期限(未到期)→ stage 例外管理中、安全名單
-        f(host="b1", severity="High", exception_due="2026-06-01", close_status="未結案"),
-        # Medium 首次展延中
-        f(host="c1", severity="Medium", first_extension_due="2026-05-20", close_status="未結案"),
+        # High 有例外核准期限(未到期)＋備註有申請→ stage 例外管理中、安全名單
+        f(host="b1", severity="High", exception_due="2026-06-01", close_status="未結案",
+          remark="例外管理(iForm_1)"),
+        # Medium 首次展延＋備註有申請→ 首次展延中
+        f(host="c1", severity="Medium", first_extension_due="2026-05-20", close_status="未結案",
+          remark="首次展延(iForm_2)"),
         # 已結案不計入
         f(host="d1", severity="Low", remediation_due="2026-04-01", close_status="已結案"),
     ]

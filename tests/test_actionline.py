@@ -11,9 +11,10 @@ def _load(session, imported=None):
         # A: 未結、原始修補期限、到期 05-20(10天後)。High 提前期30 → 行動線 04-20 已過 → 應提申請未提
         FindingIn(host="a", severity="High", owner="玄慈", department="資訊架構部",
                   remediation_due="2026-05-20", close_status="未結案"),
-        # B: 未結、已例外管理中(不算應提申請未提,因已申請過)
+        # B: 未結、已例外管理中(備註有申請紀錄才算)→ 不算應提申請未提,因已申請過
         FindingIn(host="b", severity="High", owner="喬峰", department="資訊架構部",
-                  remediation_due="2026-05-01", exception_due="2026-05-25", close_status="未結案"),
+                  remediation_due="2026-05-01", exception_due="2026-05-25", close_status="未結案",
+                  remark="例外管理(iForm_9)"),
         # C: 未結、原始、到期很遠 2026-12-01 → 未過行動線 → 不算
         FindingIn(host="c", severity="Low", owner="阿朱", department="資安部",
                   remediation_due="2026-12-01", close_status="未結案"),

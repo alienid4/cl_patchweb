@@ -11,21 +11,33 @@ def test_parse_iso_date():
     assert logic.parse_iso_date("not-a-date") is None
 
 
-def test_effective_due_order():
+def test_effective_due_needs_remark():
+    """展延/例外的日期要『備註有對應申請紀錄』才算；備註空＝沒申請→用修補期限。"""
     exc = dt.date(2026, 3, 1)
     ext = dt.date(2026, 4, 1)
     rem = dt.date(2026, 5, 1)
-    assert logic.compute_effective_due(exc, ext, rem) == exc      # 例外優先
-    assert logic.compute_effective_due(None, ext, rem) == ext     # 無例外→首次展延
-    assert logic.compute_effective_due(None, None, rem) == rem    # 皆無→修補期限
+    # 備註空：展延/例外都不算 → 一律修補期限
+    assert logic.compute_effective_due(exc, ext, rem) == rem
+    assert logic.compute_effective_due(exc, ext, rem, "") == rem
+    assert logic.compute_effective_due(exc, ext, rem, "設備待汰換") == rem  # 無關備註也不算
+    # 備註有「例外管理」→ 例外優先
+    assert logic.compute_effective_due(exc, ext, rem, "例外管理(iForm_1)") == exc
+    # 備註只有「首次展延」→ 用展延(即使例外日期有填,因為沒申請例外)
+    assert logic.compute_effective_due(exc, ext, rem, "首次展延(iForm_2)") == ext
+    # 備註兩者都有 → 例外 > 展延
+    assert logic.compute_effective_due(exc, ext, rem, "例外管理(iForm_1) 首次展延(iForm_2)") == exc
+    # 有申請紀錄但對應日期沒填 → 退回修補
+    assert logic.compute_effective_due(None, None, rem, "首次展延(iForm_2)") == rem
     assert logic.compute_effective_due(None, None, None) is None
 
 
-def test_stage():
+def test_stage_needs_remark():
     d = dt.date(2026, 5, 1)
-    assert logic.compute_stage(d, None) == logic.STAGE_EXCEPTION
-    assert logic.compute_stage(None, d) == logic.STAGE_EXTENSION
-    assert logic.compute_stage(None, None) == logic.STAGE_ORIGINAL
+    assert logic.compute_stage(d, d, d, "例外管理(iForm_1)") == logic.STAGE_EXCEPTION
+    assert logic.compute_stage(d, d, d, "首次展延(iForm_2)") == logic.STAGE_EXTENSION
+    assert logic.compute_stage(d, d, d, "") == logic.STAGE_ORIGINAL        # 備註空→原始
+    assert logic.compute_stage(d, d, d, "廠商處理中") == logic.STAGE_ORIGINAL  # 無關備註→原始
+    assert logic.compute_stage(None, None, None) == logic.STAGE_ORIGINAL
 
 
 def test_overdue_days():

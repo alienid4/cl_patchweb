@@ -99,7 +99,15 @@
     var ext = U.parseDate(pick(row, map.firstExtension));
     var exc = U.parseDate(pick(row, map.exceptionApproval));
     var other = U.parseDate(pick(row, map.otherDue));
-    var realDue = exc || ext || fix || other || null;
+    // 真正到期日（2026-10-03 志安釐清）：展延/例外的日期『有填』不代表已申請——
+    // 要「備註有對應申請紀錄」才算數（備註空＝沒申請）。否則一律用修補期限。
+    // 備註格式例：「例外管理(iForm_…)」「首次展延(iForm_…)」。
+    var remarkRaw = U.normStr(pick(row, map.remark));
+    var hasExc = remarkRaw.indexOf('例外管理') >= 0;
+    var hasExt = remarkRaw.indexOf('首次展延') >= 0;
+    var realDue = (exc && hasExc) ? exc
+                : (ext && hasExt) ? ext
+                : (fix || other || null);
     var daysLeft = U.daysFromToday(realDue);
 
     var closeDate = U.parseDate(pick(row, map.closeDate));
@@ -127,7 +135,7 @@
       overdue: (closeBucket !== 'closed' && daysLeft !== null && daysLeft < 0),
       overdueDays: (closeBucket !== 'closed' && daysLeft !== null && daysLeft < 0) ? -daysLeft : 0,
       closeStatus: closeRaw, closeBucket: closeBucket, closeDate: closeDate,
-      remark: U.normStr(pick(row, map.remark)),
+      remark: remarkRaw,
       raw: row,  // [CL_WebVuln 加] 整列原始欄位，供原封匯出＋伺服器快照重建；不影響任何渲染
     };
 

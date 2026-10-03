@@ -4,5 +4,5 @@
  * 規則：功能新增/修改 → 小版 +0.01（V1.0 → V1.01）；重大里程碑 → 大版 +1。
  * 注意：bump 時同步更新 index.html 各 script/link 的 ?v=xxx（快取破壞）。
  * ============================================================ */
-window.APP_VERSION = 'V2.05';             // 網頁版(FastAPI+SQLite)里程碑；沿用單機版前端＋承辦管線等新功能
-window.APP_VERSION_DATE = '2026-10-01';   // 對應日期（人工維護）
+window.APP_VERSION = 'V2.06';             // 網頁版(FastAPI+SQLite)里程碑；沿用單機版前端＋承辦管線等新功能
+window.APP_VERSION_DATE = '2026-10-03';   // 對應日期（人工維護）

@@ -13,7 +13,8 @@ def _sample(n_exc=True):
         FindingIn(sheet_key="1-系統弱點掃描弱點", plugin_id="10420", host="10.30.1.11",
                   severity="Critical", department="資訊架構部", owner="玄慈",
                   remediation_due="2026-05-01", first_extension_due="2026-06-01",
-                  exception_due="2026-04-20" if n_exc else None, close_status="未結案"),
+                  exception_due="2026-04-20" if n_exc else None, close_status="未結案",
+                  remark="例外管理(iForm_1)"),  # 有申請紀錄→例外日期才算數
         FindingIn(sheet_key="1-系統弱點掃描弱點", plugin_id="10070", host="10.21.1.2",
                   severity="中", department="資訊架構部", owner="喬峰",
                   remediation_due="2026-05-30", close_status="已修補"),

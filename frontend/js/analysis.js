@@ -339,9 +339,14 @@
 
   /* 補齊衍生欄位(供多表：records 已有 severity/realDue/daysLeft/日期/remark) */
   function finalizeRecord(r) {
-    var stage = r.exceptionApproval ? 'exception'
-              : r.firstExtension    ? 'extension'
-              : r.fixDeadline       ? 'original' : 'none';
+    // 處置階段（2026-10-03 志安釐清）：展延/例外要「備註有對應申請紀錄」才算；
+    // 備註空＝沒申請 → 退回原始修補期限。與 realDue(sheets.js)同規則，數字才一致。
+    var _rm = r.remark || '';
+    var _hasExc = _rm.indexOf('例外管理') >= 0;
+    var _hasExt = _rm.indexOf('首次展延') >= 0;
+    var stage = (r.exceptionApproval && _hasExc) ? 'exception'
+              : (r.firstExtension && _hasExt)    ? 'extension'
+              : r.fixDeadline                    ? 'original' : 'none';
     r.stage = stage;
     r.safeException = (stage === 'exception' && r.daysLeft !== null && r.daysLeft >= 0);
     var actions = parseActions(r.remark || '');
