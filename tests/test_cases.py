@@ -112,6 +112,9 @@ def test_progress_and_rescan_states(session):
     rows = query.find(session, status="未結案")
     assert rows[0]["progress"] == logic.PROGRESS_RESCAN
     assert rows[0]["progress_state"] == logic.RESCAN_WAITING
+    # 下鑽：progress 精確篩選只回該進度(供負責人追蹤「等複掃」格下鑽)
+    assert len(query.find(session, progress="等複掃", status="未結案")) == 1
+    assert query.find(session, progress="要申請展延", status="未結案") == []
     # 壓早標記 + 又匯入一次仍未結 → 跨過新匯入仍未結 = 可疑待查
     session.query(Case).update({Case.status_changed_at: dt.datetime(2020, 1, 1)})
     session.commit()

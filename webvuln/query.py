@@ -219,6 +219,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
          band: Optional[str] = None, keyword: Optional[str] = None,
          sheet_key: Optional[str] = None, stage: Optional[str] = None,
          only_should_apply: bool = False, applied: bool = False, apply_intent: bool = False,
+         progress: Optional[str] = None,
          no_owner: bool = False, no_due: bool = False,
          due_min: Optional[int] = None, due_max: Optional[int] = None, lead: int = 0,
          today: Optional[dt.date] = None) -> list[dict]:
@@ -246,6 +247,11 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         _ks = {c.vuln_key for c in session.execute(
             select(_C).where(_C.status.in_((PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC)))).scalars().all()}
         fs = [f for f in fs if "|".join(vuln_key(f)) in _ks]
+    if progress:  # 管理人處理進度精確比對(如 等複掃)；對 Case.status
+        from .models import Case as _C2
+        _pk = {c.vuln_key for c in session.execute(
+            select(_C2).where(_C2.status == progress)).scalars().all()}
+        fs = [f for f in fs if "|".join(vuln_key(f)) in _pk]
     if band:
         fs = [f for f in fs if _band(f, today) == band]
     if only_should_apply:

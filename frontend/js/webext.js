@@ -538,18 +538,32 @@
       var label = sel.value ? ('（' + sel.value + ' 天內到期，' + rows.length + ' 人）') : ('（' + rows.length + ' 人）');
       box.appendChild(headWithExport('負責人追蹤' + label, cols, function () { return rows; }));
       if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: sel.value ? '此範圍內無未結案。' : '無未結案。' })); return; }
+      // 每個數字欄對應的下鑽條件(帶 owner＋目前到期範圍/提前量)
+      var DRILL = {
+        total: {}, original: { stage: '原始修補期限' }, extension: { stage: '首次展延中' },
+        exception: { stage: '例外管理中' }, rescan: { progress: '等複掃' }, overdue: { band: '已逾期' },
+      };
       var table = U.el('table', { class: 'tracking-table' });
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, cols.map(function (c) { return U.el('th', { text: c[1] }); }))]));
       var tb = U.el('tbody');
       rows.forEach(function (r) {
         var tds = cols.map(function (c) {
-          var td = U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
-          if (c[0] === 'owner' && r.owner && r.owner !== '— 未指派') {
-            td.style.cssText = 'color:#1a7f4b;cursor:pointer;font-weight:600'; td.title = '看這位負責人的全部未結';
-            var drill = { owner: r.owner }; if (sel.value) drill.due_max = sel.value; if (lead) drill.lead = lead;
-            td.addEventListener('click', function () { openFindings(r.owner + ' 的未結弱點', drill); });
+          var key = c[0];
+          var td = U.el('td', { text: r[key] == null ? '' : String(r[key]) });
+          var named = r.owner && r.owner !== '— 未指派';
+          // owner 欄、以及所有數字欄(有值)都可下鑽
+          if ((key === 'owner' || DRILL[key]) && named && (key === 'owner' || r[key])) {
+            td.style.cursor = 'pointer'; td.style.fontWeight = '600';
+            td.style.color = (key === 'overdue' && r.overdue) ? '#c0392b' : '#1a7f4b';
+            td.title = '點我看明細';
+            var base = Object.assign({ owner: r.owner }, DRILL[key] || {});
+            if (sel.value) base.due_max = sel.value;
+            if (lead) base.lead = lead;
+            var ttl = r.owner + ' · ' + (key === 'owner' || key === 'total' ? '全部未結' : c[1]);
+            td.addEventListener('click', (function (p, t) { return function () { openFindings(t, p); }; })(base, ttl));
+          } else if (key === 'overdue' && r.overdue) {
+            td.style.color = '#c0392b';
           }
-          if (c[0] === 'overdue' && r.overdue) td.style.color = '#c0392b';
           return td;
         });
         tb.appendChild(U.el('tr', {}, tds));
@@ -994,9 +1008,9 @@
   // 新功能小項：render=渲染進主區；action=直接動作(如下載)不切畫面
   // 架構：看(總覽,原生)／做(待辦清單+送審進度)／報(主管週報)／查(結案稽核)
   var GOV_ITEMS = [
+    { key: 'byowner', label: '負責人追蹤', render: renderOwnerInto }, // 主角度：誰還有幾隻＋狀態(每格可下鑽)
     { key: 'todo', label: '待辦清單', render: renderTodoInto },     // 做：要處理的清單都在這
     { key: 'duesoon', label: '到期倒數', render: renderDueSoonInto }, // 做：依距到期天數看 30/60/90
-    { key: 'byowner', label: '負責人追蹤', render: renderOwnerInto }, // 做：主管角度「誰還有幾隻＋狀態」
     { key: 'cases', label: '送審進度', render: renderCasesInto },   // 做：例外/展延申請跑簽到核准
     { key: 'report', label: '主管週報', render: renderReportInto }, // 報：給主管的固定報告
     { key: 'closestat', label: '結案稽核', render: renderCloseInto }, // 查：結案驗證/浮報
