@@ -332,18 +332,35 @@
    */
   function exportCSV(records, title, extraCols) {
     extraCols = extraCols || [];
-    var headers = extraCols.map(function (c) { return c.h; }).concat(
-      ['Host', 'Name', 'Risk', 'Severity', 'Plugin ID', '修補期限',
-       '首次展延上限', '例外核准期限', '真正到期日', '逾期天數', '負責人']);
-    var rows = records.map(function (r) {
-      return extraCols.map(function (c) { return c.disp(r); }).concat([
-        r.host, r.name, r.risk, r.severity, r.pluginId,
-        U.fmtDate(r.fixDeadline), U.fmtDate(r.firstExtension), U.fmtDate(r.exceptionApproval),
-        U.fmtDate(r.realDue),
-        (r.realDue === null ? '' : (r.daysLeft < 0 ? r.overdueDays : 0)),
-        r.owner,
-      ]);
+    records = records || [];
+    // [CL_WebVuln] 匯出「原始整列」：帶回原始 Excel 全部欄位(原欄名、原欄序)，不幫使用者篩欄；
+    // 列仍是眼前子集。record.raw 保留匯入時的整列(見 sheets.js)。無 raw 時退回原本精簡欄位。
+    var rawCols = [], seen = {};
+    records.forEach(function (r) {
+      if (r && r.raw) Object.keys(r.raw).forEach(function (k) { if (!seen[k]) { seen[k] = 1; rawCols.push(k); } });
     });
+    var headers, rows;
+    if (rawCols.length) {
+      headers = extraCols.map(function (c) { return c.h; }).concat(rawCols);
+      rows = records.map(function (r) {
+        var raw = r.raw || {};
+        return extraCols.map(function (c) { return c.disp(r); })
+          .concat(rawCols.map(function (k) { return raw[k] === undefined ? '' : raw[k]; }));
+      });
+    } else {
+      headers = extraCols.map(function (c) { return c.h; }).concat(
+        ['Host', 'Name', 'Risk', 'Severity', 'Plugin ID', '修補期限',
+         '首次展延上限', '例外核准期限', '真正到期日', '逾期天數', '負責人']);
+      rows = records.map(function (r) {
+        return extraCols.map(function (c) { return c.disp(r); }).concat([
+          r.host, r.name, r.risk, r.severity, r.pluginId,
+          U.fmtDate(r.fixDeadline), U.fmtDate(r.firstExtension), U.fmtDate(r.exceptionApproval),
+          U.fmtDate(r.realDue),
+          (r.realDue === null ? '' : (r.daysLeft < 0 ? r.overdueDays : 0)),
+          r.owner,
+        ]);
+      });
+    }
     var csv = [headers].concat(rows).map(function (arr) {
       return arr.map(function (v) {
         var s = (v === null || v === undefined) ? '' : String(v);
