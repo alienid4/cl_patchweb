@@ -153,11 +153,19 @@
     return wrap;
   }
 
-  // 讓表格可點欄位排序（數字欄按數值、其餘按字串；再點反向）
+  // 讓表格可點欄位排序（數字欄按數值、其餘按字串；再點反向）。點了會在欄名顯示 ▲/▼,讓排序看得見。
   function makeSortable(table) {
     var ths = table.tHead ? table.tHead.rows[0].cells : [];
+    function clearInd() {
+      for (var k = 0; k < ths.length; k++) {
+        var s = ths[k].querySelector('.webext-sortind'); if (s) s.textContent = '';
+      }
+    }
     for (var i = 0; i < ths.length; i++) (function (ci, th) {
       th.style.cursor = 'pointer'; th.title = '點我排序';
+      if (!th.querySelector('.webext-sortind')) {
+        th.appendChild(U.el('span', { class: 'webext-sortind', style: 'color:#1a7f4b;font-weight:700' }));
+      }
       var asc = true;
       th.addEventListener('click', function () {
         var tb = table.tBodies[0]; if (!tb) return;
@@ -169,6 +177,8 @@
           var r = both ? (nx - ny) : (x > y ? 1 : x < y ? -1 : 0);
           return asc ? r : -r;
         });
+        clearInd();
+        var ind = th.querySelector('.webext-sortind'); if (ind) ind.textContent = asc ? ' ▲' : ' ▼';
         asc = !asc;
         rows.forEach(function (r) { tb.appendChild(r); });
       });
@@ -282,7 +292,7 @@
   }
   async function renderCasesInto(host) {
     if (!host) return;
-    host.innerHTML = '';
+    host.innerHTML = ''; host.classList.remove('webext-rpt');
     var s, cases;
     try { s = await jget('/api/summary?' + qd()); cases = await jget('/api/cases?' + qd()); }
     catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
@@ -360,7 +370,7 @@
   // ---- 缺口示警（行動線／缺口／新鮮度＋最急 Top） ----
   async function renderGapsInto(host) {
     if (!host) return;
-    host.innerHTML = '';
+    host.innerHTML = ''; host.classList.remove('webext-rpt');
     var s, top;
     try {
       s = await jget('/api/summary?' + qd());
@@ -406,7 +416,7 @@
   // ---- 結案統計 ----
   async function renderCloseInto(host) {
     if (!host) return;
-    host.innerHTML = '';
+    host.innerHTML = ''; host.classList.remove('webext-rpt');
     var s;
     try { s = await jget('/api/close-stats?' + qd()); } catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料。' })); return; }
     host.appendChild(group('結案統計（快照比對）', [
@@ -428,12 +438,14 @@
   var _lastReport = null;
   async function renderReportInto(host) {
     if (!host) return;
-    host.innerHTML = '';
+    host.innerHTML = ''; host.classList.remove('webext-rpt');
     var s;
     try { s = await jget('/api/report?' + qd()); }
     catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
     _lastReport = s;
     var scope = (s.department && s.department !== '全部') ? s.department : '全部門';
+    ensureReportStyle();
+    host.classList.add('webext-rpt');   // 讓本頁 KPI 卡走等寬 grid(大小一致、對齊)
 
     // 標題列＋列印鈕
     var headRow = U.el('div', { class: 'panel-head', style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap' }, [
@@ -460,6 +472,8 @@
       card(s.applied_count, '已申請處置中（例外/展延）'),
     ]));
 
+    renderStageLanding(host, s);   // 處置落點：原始/首次展延/例外管理 各落在哪、幾筆、到期區間
+
     host.appendChild(group('預計完成彙總（需申請母體）', [
       card(s.target.with_target, '已回報預計完成日'),
       card(s.target.no_target, '未回報預計完成日（要催）', true),
@@ -467,20 +481,88 @@
       card(s.target.target_soon, '預計 30 天內完成'),
     ]));
 
-    reportTable(host, '應申請未申請清單（主管要催承辦去提例外／展延）', s.need_apply_list, renderReportInto);
-    reportTable(host, '落後清單（已逾真正到期日）', s.overdue_list, renderReportInto);
+    // 選了特定部門 → 清單裡每列部門都一樣,「部門」欄多餘,隱藏(全部門時才顯示,用來分辨)
+    var showDept = !(s.department && s.department !== '全部');
 
-    if (!s.need_apply_list.length && !s.overdue_list.length) {
-      host.appendChild(U.el('p', { class: 'empty-hint', text: '目前沒有要催的急件，也沒有落後項目。' }));
+    // 頁內搜尋：找人(負責人)／IP(主機)／弱點／逾期天數…；空白分隔多字 AND。即時過濾兩張清單。
+    var search = U.el('input', { type: 'search', placeholder: '在本頁搜尋：負責人／主機 IP／弱點／逾期天數…（可空格分隔多字）' });
+    search.style.cssText = 'width:100%;max-width:520px;margin:6px 0 2px;padding:8px 10px;border:1px solid #cdd5dd;border-radius:8px;font-size:14px';
+    host.appendChild(search);
+    var tablesBox = U.el('div');
+    host.appendChild(tablesBox);
+
+    function matchRow(r, terms) {
+      var hay = [r.owner, r.host, r.name, r.plugin_id, r.severity, r.effective_due,
+        r.target_date, (r.overdue_days != null ? r.overdue_days : ''), r.track_note,
+        r.department].join(' ').toLowerCase();
+      return terms.every(function (t) { return hay.indexOf(t) >= 0; });
     }
+    function draw() {
+      tablesBox.innerHTML = '';
+      var terms = (search.value || '').toLowerCase().split(/\s+/).filter(function (t) { return t; });
+      var na = terms.length ? s.need_apply_list.filter(function (r) { return matchRow(r, terms); }) : s.need_apply_list;
+      var ov = terms.length ? s.overdue_list.filter(function (r) { return matchRow(r, terms); }) : s.overdue_list;
+      var hit = reportTable(tablesBox, '應申請未申請清單（主管要催承辦去提例外／展延）', na, renderReportInto, showDept);
+      hit = reportTable(tablesBox, '落後清單（已逾真正到期日）', ov, renderReportInto, showDept) || hit;
+      if (!hit) {
+        tablesBox.appendChild(U.el('p', { class: 'empty-hint',
+          text: terms.length ? '找不到符合「' + search.value.trim() + '」的項目。' : '目前沒有要催的急件，也沒有落後項目。' }));
+      }
+    }
+    search.addEventListener('input', draw);
+    draw();
   }
 
-  // 週報用的清單表（含預計完成日／追蹤備註，可改）
-  function reportTable(host, title, rows, refresh) {
-    if (!rows || !rows.length) return;
+  // 一次性注入：讓主管週報的 KPI 卡走等寬 grid(大小一致、整齊對齊)
+  function ensureReportStyle() {
+    if (document.getElementById('webext-rpt-style')) return;
+    var st = U.el('style', { id: 'webext-rpt-style' });
+    st.textContent =
+      '.webext-rpt .metric-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;align-items:stretch}'
+      + '.webext-rpt .metric-card{width:auto;min-width:0;min-height:74px;display:flex;flex-direction:column;justify-content:center}';
+    document.head.appendChild(st);
+  }
+
+  // 處置落點：目前未結案各筆的「真正到期日」落在哪一關,幾筆、到期日區間、其中逾期(可點下鑽看每筆)
+  function renderStageLanding(host, s) {
+    var st = s.stages || {};
+    var rows = [
+      { key: '原始修補期限', label: '原始修補期限', b: st.original },
+      { key: '首次展延中', label: '首次展延', b: st.extension },
+      { key: '例外管理中', label: '例外管理（列管）', b: st.exception },
+    ];
+    if (st.other && st.other.count) rows.push({ key: null, label: '未定／其他', b: st.other });
+    host.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '處置落點（未結案；點筆數看每筆到期日）' })]));
+    var table = U.el('table', { class: 'tracking-table' });
+    table.appendChild(U.el('thead', {}, [U.el('tr', {},
+      ['處置階段', '筆數', '其中逾期', '最早落點（到期日）', '最晚落點（到期日）'].map(function (h) { return U.el('th', { text: h }); }))]));
+    var tb = U.el('tbody');
+    rows.forEach(function (r) {
+      var b = r.b || { count: 0 };
+      var cntCell = U.el('td', { text: String(b.count || 0) });
+      if (r.key && b.count) {
+        cntCell.style.cssText = 'color:#1a7f4b;cursor:pointer;font-weight:600';
+        cntCell.title = '點我看這關的每筆到期日';
+        cntCell.addEventListener('click', function () { openFindings(r.label + '（處置落點）', { stage: r.key }); });
+      }
+      tb.appendChild(U.el('tr', {}, [
+        U.el('td', { text: r.label }),
+        cntCell,
+        U.el('td', { text: (b.overdue == null ? '—' : String(b.overdue)) }),
+        U.el('td', { text: b.earliest_due || '—' }),
+        U.el('td', { text: b.latest_due || '—' }),
+      ]));
+    });
+    table.appendChild(tb); host.appendChild(table); makeSortable(table);
+  }
+
+  // 週報用的清單表（含預計完成日／追蹤備註，可改）。showDept=false 時隱藏部門欄。回傳是否有畫出表格。
+  function reportTable(host, title, rows, refresh, showDept) {
+    if (!rows || !rows.length) return false;
     host.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: title + '（' + rows.length + '）' })]));
     var w = canWrite();
-    var heads = ['負責人', '弱點', '嚴重度', '主機', '到期日', '逾期天數', '預計完成日', '追蹤備註', '部門'];
+    var heads = ['負責人', '弱點', '嚴重度', '主機', '到期日', '逾期天數', '預計完成日', '追蹤備註'];
+    if (showDept) heads.push('部門');
     if (w) heads.push('操作');
     var table = U.el('table', { class: 'tracking-table' });
     table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
@@ -494,8 +576,8 @@
         U.el('td', { text: r.effective_due || '—' }),
         U.el('td', { text: (r.overdue_days != null && r.overdue_days > 0) ? String(r.overdue_days) : '—' }),
         U.el('td', { text: td }), U.el('td', { text: r.track_note || '' }),
-        U.el('td', { text: r.department || '' }),
       ];
+      if (showDept) tds.push(U.el('td', { text: r.department || '' }));
       if (w) {
         var b = U.el('button', { class: 'btn btn-sm', text: '改' });
         b.addEventListener('click', function () { editOverlay(r, function () { if (refresh) refresh(document.getElementById('webext-view-body')); }); });
@@ -504,6 +586,7 @@
       tb.appendChild(U.el('tr', {}, tds));
     });
     table.appendChild(tb); host.appendChild(table); makeSortable(table);
+    return true;
   }
 
   // 列印／存 PDF：開乾淨視窗、純文字表格、觸發瀏覽器列印（可選「另存為 PDF」）
@@ -577,6 +660,9 @@
       var b = e.target && e.target.closest ? e.target.closest('button, a') : null;
       if (!b) return;
       var t = (b.textContent || '').replace(/\s/g, '');
+      // 「匯出此清單」是下鑽視窗的『只匯出眼前這份子集』(原生 exportCSV，client 端)——
+      // 不可攔；攔了會變成匯出原封全量(幾千筆)。只統一其餘『整表/總覽匯出』→ 原封 xlsx。
+      if (/此清單/.test(t)) return;
       if (/匯出/.test(t) && /(CSV|清單|Excel|匯出$)/.test(t) && b.id.indexOf('webext') !== 0) {
         e.preventDefault(); e.stopImmediatePropagation();
         window.location = '/api/export?' + qd();   // 原封 1:1 xlsx（帶目前部門）

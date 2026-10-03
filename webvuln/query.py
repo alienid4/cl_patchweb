@@ -414,6 +414,26 @@ def weekly_report(session: Session, department: Optional[str] = None,
     overdue = [f for f in open_ if _is_overdue(f, today)]
     on_track = [f for f in open_ if not _is_overdue(f, today)]
 
+    # 處置落點：每筆目前「真正到期日」是落在哪一關(原始修補 / 首次展延 / 例外管理)。
+    # 落點日期＝effective_due(已套備註閘門)；這裡給各關計數與日期區間,細節可下鑽 stage 看。
+    def _stage_block(stg):
+        items = [f for f in open_ if f.stage == stg]
+        dues = sorted(f.effective_due for f in items if f.effective_due)
+        return {
+            "count": len(items),
+            "overdue": sum(1 for f in items if _is_overdue(f, today)),
+            "earliest_due": dues[0].isoformat() if dues else None,
+            "latest_due": dues[-1].isoformat() if dues else None,
+        }
+    stages = {
+        "original": _stage_block(STAGE_ORIGINAL),
+        "extension": _stage_block(STAGE_EXTENSION),
+        "exception": _stage_block(STAGE_EXCEPTION),
+    }
+    stage_known = sum(stages[k]["count"] for k in stages)
+    stages["other"] = {"count": len(open_) - stage_known, "overdue": None,
+                       "earliest_due": None, "latest_due": None}
+
     # 需申請母體＝應申請未申請 + 已申請(都曾需要申請決策)
     universe = need_apply + applied
     with_target = [f for f in universe if _target(f)]
@@ -441,6 +461,7 @@ def weekly_report(session: Session, department: Optional[str] = None,
         "need_apply_count": len(need_apply),      # 應申請未申請(要催)
         "applied_count": len(applied),            # 已申請處置中
         "apply_universe": len(universe),          # 需申請母體
+        "stages": stages,                         # 處置落點：原始/首次展延/例外管理各計數與到期區間
         # 預計完成彙總(僅母體)
         "target": {
             "with_target": len(with_target),

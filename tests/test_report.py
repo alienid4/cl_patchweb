@@ -39,6 +39,12 @@ def test_weekly_report_buckets(session):
     assert hosts_need == {"a", "e"}
     hosts_over = {x["host"] for x in r["overdue_list"]}
     assert hosts_over == {"e"}
+    # 處置落點：A、C、E 原始；B 例外管理；無首次展延
+    assert r["stages"]["original"]["count"] == 3
+    assert r["stages"]["exception"]["count"] == 1
+    assert r["stages"]["extension"]["count"] == 0
+    assert r["stages"]["original"]["overdue"] == 1          # E 已逾期
+    assert r["stages"]["exception"]["earliest_due"] == "2026-05-25"  # B 落點＝例外核准期限
 
 
 def test_weekly_report_department_filter(session):
