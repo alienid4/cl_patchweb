@@ -225,20 +225,77 @@
     catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
     if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '無資料' })); return; }
     curRows = rows;
-    var hint = '共 ' + rows.length + ' 筆（點欄位排序）';
-    if (canWrite()) hint += '；點 ✏️ 可編輯負責人／進度／預計完成日／備註（存系統、重匯不會被蓋掉）';
-    box.appendChild(U.el('p', { class: 'empty-hint', text: hint }));
-    var heads = cols.map(function (c) { return c[1]; });
-    heads.push('操作');   // 固定有(🔍看原始；可寫入再加 ✏️)
-    var table = U.el('table', { class: 'tracking-table' });
-    table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
-    var tb = U.el('tbody');
-    rows.forEach(function (r) {
-      var tds = cols.map(function (c) { return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); });
-      tds.push(opsCell(r, function () { openFindings(title, params); }));
-      tb.appendChild(U.el('tr', {}, tds));
-    });
-    table.appendChild(tb); box.appendChild(table); makeSortable(table);
+    var self = function () { openFindings(title, params); };
+    var nPlugin = (function () { var s = {}; rows.forEach(function (r) { s[(r.plugin_id || '') + '|' + (r.name || '')] = 1; }); return Object.keys(s).length; })();
+    box.appendChild(U.el('p', { class: 'empty-hint', text: '共 ' + rows.length + ' 筆、' + nPlugin + ' 種弱點'
+      + (canWrite() ? '；點 ✏️ 編輯（存系統、重匯不洗）' : '') + '。修補以「弱點」為單位（同弱點常一次補完多台）。' }));
+    // 切換：依弱點彙總(預設) / 依主機明細
+    var tgl = U.el('nav', { class: 'subtabs', style: 'margin:4px 0 10px' });
+    var bP = U.el('button', { class: 'subtab-btn active', text: '依弱點彙總' });
+    var bH = U.el('button', { class: 'subtab-btn', text: '依主機（明細）' });
+    tgl.appendChild(bP); tgl.appendChild(bH); box.appendChild(tgl);
+    var listBox = U.el('div'); box.appendChild(listBox);
+    var mode = 'byplugin';
+    bP.addEventListener('click', function () { mode = 'byplugin'; bP.classList.add('active'); bH.classList.remove('active'); draw(); });
+    bH.addEventListener('click', function () { mode = 'byhost'; bH.classList.add('active'); bP.classList.remove('active'); draw(); });
+
+    function drawHost() {
+      var heads = cols.map(function (c) { return c[1]; }); heads.push('操作');
+      var table = U.el('table', { class: 'tracking-table' });
+      table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
+      var tb = U.el('tbody');
+      rows.forEach(function (r) {
+        var tds = cols.map(function (c) {
+          var td = U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
+          if (c[0] === 'name') td.style.whiteSpace = 'normal';
+          return td;
+        });
+        tds.push(opsCell(r, self));
+        tb.appendChild(U.el('tr', {}, tds));
+      });
+      table.appendChild(tb); listBox.appendChild(table); makeSortable(table);
+    }
+    function drawPlugin() {
+      var groups = {};
+      rows.forEach(function (r) { var k = (r.plugin_id || '') + '|' + (r.name || ''); (groups[k] = groups[k] || []).push(r); });
+      var keys = Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; });
+      var table = U.el('table', { class: 'tracking-table' });
+      table.appendChild(U.el('thead', {}, [U.el('tr', {},
+        ['弱點', 'Plugin', '嚴重度', '台數', '到期日', '處置階段', '其中逾期'].map(function (h) { return U.el('th', { text: h }); }))]));
+      var tb = U.el('tbody');
+      var icols = [['host', '主機'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
+        ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
+        ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
+      keys.forEach(function (k) {
+        var grp = groups[k]; var r0 = grp[0];
+        var od = grp.filter(function (x) { return x.overdue_days != null && x.overdue_days > 0; }).length;
+        var dues = {}; grp.forEach(function (x) { if (x.effective_due) dues[x.effective_due] = 1; });
+        var dueTxt = Object.keys(dues).length <= 1 ? (r0.effective_due || '—') : (Object.keys(dues).sort()[0] + ' 等');
+        var nameTd = U.el('td', { text: '▸ ' + (r0.name || r0.plugin_id || ''), style: 'white-space:normal;font-weight:600;color:#1a7f4b;cursor:pointer;min-width:240px' });
+        var head = U.el('tr', { style: 'cursor:pointer' }, [nameTd,
+          U.el('td', { text: r0.plugin_id || '' }), U.el('td', { text: r0.severity || '' }),
+          U.el('td', { text: String(grp.length), style: 'font-weight:700' }),
+          U.el('td', { text: dueTxt }), U.el('td', { text: r0.stage || '' }),
+          U.el('td', { text: od ? String(od) : '—', style: od ? 'color:#c0392b;font-weight:600' : '' })]);
+        // 展開：這個弱點影響的主機
+        var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
+        var ih = icols.map(function (c) { return c[1]; }); ih.push('操作');
+        inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
+        var itb = U.el('tbody');
+        grp.forEach(function (r) {
+          var tds = icols.map(function (c) { return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); });
+          tds.push(opsCell(r, self));
+          itb.appendChild(U.el('tr', {}, tds));
+        });
+        inner.appendChild(itb);
+        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: '7', style: 'background:#f6f8f7;padding:6px' }, [inner])]);
+        head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + (r0.name || r0.plugin_id || ''); });
+        tb.appendChild(head); tb.appendChild(detail);
+      });
+      table.appendChild(tb); listBox.appendChild(table);
+    }
+    function draw() { listBox.innerHTML = ''; (mode === 'byplugin' ? drawPlugin : drawHost)(); }
+    draw();
   }
 
   // 既有部門/負責人清單(可搜尋下拉用)；開一次抓、之後快取
