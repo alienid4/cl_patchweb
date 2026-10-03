@@ -762,11 +762,21 @@
     // Excel 式頁籤：總覽(KPI 三表) / 處置落點 / 應申請未申請 / 落後，一次一張、不用長捲
     renderTabs(host, [
       { label: '總覽', render: function (c) {
+          if (s.change && s.change.has_prev) {
+            kpiTable(c, '本週變化（本批 vs 上批匯入）', [
+              { label: '上批未結', value: s.change.prev },
+              { label: '本批未結', value: s.change.now },
+              { label: '淨變化', value: (s.change.delta > 0 ? '+' : '') + s.change.delta, danger: s.change.delta > 0 },
+              { label: '本週新增', value: s.change.new, danger: s.change.new > 0 },
+              { label: '本週解決', value: s.change.resolved },
+            ]);
+          }
           kpiTable(c, '本期概況（未結案）', [
             { label: '未結案', value: s.unresolved },
             { label: '落後（已逾期）', value: s.overdue, danger: true, drill: function () { openFindings('落後（已逾期）', { band: '已逾期' }); } },
             { label: '如期（未逾期）', value: s.on_track },
             { label: '高風險（Critical/High）', value: s.high_risk, danger: true },
+            { label: '高風險且逾期（最急）', value: s.high_risk_overdue, danger: true },
           ]);
           kpiTable(c, '申請進度', [
             { label: '需申請母體', value: s.apply_universe },
@@ -1005,8 +1015,13 @@
       + '<p class="sub">範圍：' + esc(scope) + '　|　基準日：' + esc(s.today)
       + '　|　產生：' + esc((s.generated_at || '').replace('T', ' '))
       + (s.freshness.days_ago == null ? '' : '　|　資料距今 ' + s.freshness.days_ago + ' 天') + '</p>'
+      + ((s.change && s.change.has_prev) ? ('<div class="block"><b>本週變化（本批 vs 上批）</b><br>'
+          + kv('上批未結', s.change.prev) + kv('本批未結', s.change.now)
+          + kv('淨變化', (s.change.delta > 0 ? '+' : '') + s.change.delta)
+          + kv('本週新增', s.change.new) + kv('本週解決', s.change.resolved) + '</div>') : '')
       + '<div class="block"><b>本期概況（未結案）</b><br>'
-      + kv('未結案', s.unresolved) + kv('落後(逾期)', s.overdue) + kv('如期', s.on_track) + kv('高風險', s.high_risk) + '</div>'
+      + kv('未結案', s.unresolved) + kv('落後(逾期)', s.overdue) + kv('如期', s.on_track)
+      + kv('高風險', s.high_risk) + kv('高風險且逾期', s.high_risk_overdue) + '</div>'
       + '<div class="block"><b>申請進度</b><br>'
       + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已申請處置中', s.applied_count) + '</div>'
       + '<div class="block"><b>預計完成彙總</b><br>'

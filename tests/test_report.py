@@ -55,6 +55,26 @@ def test_weekly_report_buckets(session):
     assert r["stages"]["exception"]["earliest_due"] == "2026-05-25"  # B 落點＝例外核准期限
 
 
+def test_weekly_report_change_delta(session):
+    f = FindingIn
+    # 第一批：兩支未結(x,y)
+    importer.create_batch(session, ImportIn(findings=[
+        f(host="x", plugin_id="p", sheet_key="s", remediation_due="2026-04-01", close_status="未結案"),
+        f(host="y", plugin_id="p", sheet_key="s", remediation_due="2026-04-01", close_status="未結案"),
+    ]))
+    r1 = query.weekly_report(session, today=TODAY)
+    assert r1["change"]["has_prev"] is False       # 只有一批,無法比
+    # 第二批：x 仍未結、y 結案、新增 z → 本週解決1(y)、新增1(z)、淨變化0(2→2)
+    importer.create_batch(session, ImportIn(findings=[
+        f(host="x", plugin_id="p", sheet_key="s", remediation_due="2026-04-01", close_status="未結案"),
+        f(host="y", plugin_id="p", sheet_key="s", remediation_due="2026-04-01", close_status="已結案"),
+        f(host="z", plugin_id="p", sheet_key="s", remediation_due="2026-04-01", close_status="未結案"),
+    ]))
+    c = query.weekly_report(session, today=TODAY)["change"]
+    assert c["has_prev"] and c["prev"] == 2 and c["now"] == 2 and c["delta"] == 0
+    assert c["new"] == 1 and c["resolved"] == 1
+
+
 def test_weekly_report_department_filter(session):
     _load(session)
     r = query.weekly_report(session, department="資安部", today=TODAY)

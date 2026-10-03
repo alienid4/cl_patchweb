@@ -545,6 +545,26 @@ def weekly_report(session: Session, department: Optional[str] = None,
     _b = latest_batch(session)
     imported = _b.imported_at if _b else None
 
+    # 本週變化(週對週)：拿最新批 vs 上一批的「未結弱點(穩定鍵)」比對(主管最在意變多還變少)
+    _latest_b, _prev_b = _two_latest_batches(session)
+    def _open_keys(batch):
+        if not batch:
+            return set()
+        q = select(Finding).where(Finding.batch_id == batch.id, Finding.close_status == CLOSE_OPEN)
+        if department and department != "全部":
+            q = q.where(Finding.department == department)
+        if owner:
+            return {"|".join(vuln_key(f)) for f in session.execute(q).scalars().all()
+                    if (f.owner or "").strip() == owner}
+        return {"|".join(vuln_key(f)) for f in session.execute(q).scalars().all()}
+    if _prev_b:
+        _cur_k = _open_keys(_latest_b); _prv_k = _open_keys(_prev_b)
+        change = {"has_prev": True, "prev": len(_prv_k), "now": len(_cur_k),
+                  "delta": len(_cur_k) - len(_prv_k),
+                  "new": len(_cur_k - _prv_k), "resolved": len(_prv_k - _cur_k)}
+    else:
+        change = {"has_prev": False}
+
     # 疊加欄(預計完成日/追蹤備註/處理進度)對照
     from .models import Case
     from .logic import (PROGRESS_VALUES, PROGRESS_WIP, PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC,
@@ -646,6 +666,9 @@ def weekly_report(session: Session, department: Optional[str] = None,
         "overdue": len(overdue),
         "on_track": len(on_track),
         "high_risk": sum(1 for f in open_ if f.severity in HIGH_RISK),
+        "high_risk_overdue": sum(1 for f in overdue if f.severity in HIGH_RISK),  # 主管最在意:高風險且逾期
+        "change": change,                          # 本週變化(週對週):prev/now/delta/new/resolved
+
         # 申請面
         "need_apply_count": len(need_apply),      # 應申請未申請(要催)
         "applied_count": len(applied),            # 已申請處置中
