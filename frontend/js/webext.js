@@ -470,43 +470,8 @@
     if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('失敗：' + (e.detail || r.status), 'error'); return; }
     UI.toast('已更新狀態', 'success'); if (rerender) rerender();
   }
-  // 送審進度＝「已申請處置中」：備註已有申請紀錄(例外/展延)的弱點，追它們的預計完成日。
-  // 狀態改成看備註自動算(方案A)：不再手動推關卡、不列全量案件。
-  async function renderCasesInto(host) {
-    if (!host) return;
-    host.innerHTML = ''; host.classList.remove('webext-rpt');
-    var s;
-    try { s = await jget('/api/report?' + qd()); }
-    catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
-    var exc = (s.stages && s.stages.exception) ? s.stages.exception.count : 0;
-    var ext = (s.stages && s.stages.extension) ? s.stages.extension.count : 0;
-    var total = (s.applied_count != null) ? s.applied_count : (exc + ext);
-    var pg = s.progress || {};
-    var intent = (pg.apply_ext || 0) + (pg.apply_exc || 0);   // 管理人標「要申請」的(送審中)
-
-    host.appendChild(U.el('p', { class: 'empty-hint',
-      text: '送審進度＝整個申請流程的勾稽。「要申請（送審中）」是你標了要申請、但資安 Excel 還沒反映的（對帳狀態看送審中/待查）；資安核准、備註出現後會自動移到「已申請處置中」。結論一律以資安 Excel 為主。' }));
-
-    renderTabs(host, [
-      { label: '要申請·送審中（' + intent + '）', render: function (c) { renderActionListInto(c, '要申請（送審中：我標了要申請，Excel 尚未反映）', { apply_intent: 'true' }); } },
-      { label: '已申請處置中（' + total + '）', render: function (c) { renderActionListInto(c, '已申請處置中（例外／展延，Excel 已反映）', { applied: 'true' }); } },
-      { label: '例外管理（' + exc + '）', render: function (c) { renderActionListInto(c, '例外管理中', { stage: '例外管理中' }); } },
-      { label: '首次展延（' + ext + '）', render: function (c) { renderActionListInto(c, '首次展延中', { stage: '首次展延中' }); } },
-    ], 'cases');
-
-    // 維護：清除舊/測試資料殘留、來源已消失的追蹤紀錄(orphan case overlay)
-    if (canWrite()) {
-      var m = U.el('div', { class: 'scope-info', style: 'margin-top:14px' },
-        [U.el('span', { text: '維護：舊／測試資料殘留、來源已消失的追蹤紀錄可在此清除。' })]);
-      var pb = U.el('button', { class: 'btn btn-sm', text: '清除已消失追蹤紀錄', style: 'margin-left:8px' });
-      pb.addEventListener('click', function () { purgeOrphans(); });
-      m.firstChild.appendChild(document.createTextNode(' '));
-      m.firstChild.appendChild(pb);
-      host.appendChild(m);
-    }
-  }
-
   // 清除「已消失」案件（來源已無的 orphan case）；需寫入權限，後端 require_write_role
+  // 用於 D 查核 › 對帳健檢 的維護區（原「送審進度」頁已併入主管週報/查核）
   async function purgeOrphans(done) {
     if (!window.confirm('確定清除所有「已消失」案件？此動作會刪掉來源已不存在的舊案件紀錄（不影響現有弱點）。')) return;
     try {
@@ -547,23 +512,6 @@
       })));
     });
     table.appendChild(tb); box.appendChild(table); makeSortable(table);
-  }
-
-  // ---- 待辦清單（「做」：要處理的清單都集中在這。待申請／已逾期／無人負責／無到期日）----
-  async function renderTodoInto(host) {
-    if (!host) return;
-    host.innerHTML = ''; host.classList.remove('webext-rpt');
-    var s;
-    try { s = await jget('/api/summary?' + qd()); }
-    catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
-    var tabs = [
-      { label: '待申請（' + s.should_apply + '）', render: function (c) { renderActionListInto(c, '待申請（應提例外／展延未提）', { should_apply: 'true' }); } },
-      { label: '已逾期（' + s.overdue + '）', render: function (c) { renderActionListInto(c, '已逾期', { band: '已逾期' }); } },
-    ];
-    // 無人負責／無到期日：有資料才顯示該頁籤(為 0 時是空的，收起來少雜訊)
-    if (s.gaps.no_owner) tabs.push({ label: '無人負責（' + s.gaps.no_owner + '）', render: function (c) { renderActionListInto(c, '無人負責', { no_owner: 'true' }); } });
-    if (s.gaps.no_due) tabs.push({ label: '無到期日（' + s.gaps.no_due + '）', render: function (c) { renderActionListInto(c, '無到期日', { no_due: 'true' }); } });
-    renderTabs(host, tabs, 'todo');
   }
 
   // ---- 到期倒數（依倒數天數分桶：已逾期／30天內／31–60／61–90／90天以上）----
@@ -934,6 +882,7 @@
     var s;
     try { s = await jget('/api/reconcile?' + qd()); }
     catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
+    var sum = null; try { sum = await jget('/api/summary?' + qd()); } catch (e) { }
     // 大橫幅：全綠或有問題
     var banner = U.el('div', { style: 'padding:12px 16px;border-radius:8px;font-size:16px;font-weight:700;margin:4px 0 12px;'
       + (s.all_ok ? 'background:#e8f5e9;color:#1a7f4b;border:1px solid #1a7f4b' : 'background:#fdecea;color:#c0392b;border:1px solid #c0392b') },
@@ -961,6 +910,35 @@
     table.appendChild(tb); host.appendChild(table);
     host.appendChild(U.el('p', { class: 'empty-hint', text:
       '怎麼核到原始 Excel：① 每個統計數字都能點進去看清單、每列按 🔍 看原始整列；② 用各清單的「完整匯出 (CSV)」拉出來，跟資安那份 Excel 逐列比對。「匯入列數」應等於來源 Excel 的資料列數。' }));
+
+    // 資料缺口（原在「待辦清單」，移來這裡集中「查」）：無人負責／無到期日，點數字看清單
+    if (sum) {
+      var g = sum.gaps || {};
+      kpiCards(host, '資料缺口（應補齊；點數字看清單）', [
+        { label: '無人負責', value: g.no_owner || 0, danger: (g.no_owner || 0) > 0, drill: function () { openFindings('無人負責', { no_owner: 'true' }); } },
+        { label: '無到期日', value: g.no_due || 0, danger: (g.no_due || 0) > 0, drill: function () { openFindings('無到期日', { no_due: 'true' }); } },
+      ]);
+      if (!(g.no_owner || g.no_due)) host.appendChild(U.el('p', { class: 'empty-hint', text: '目前沒有缺口：每筆都有負責人與到期日。' }));
+    }
+
+    // 維護（需寫入權限）：清除來源已消失的追蹤紀錄（原在「送審進度」頁，移來這裡）
+    if (canWrite()) {
+      var m = U.el('div', { class: 'scope-info', style: 'margin-top:14px' }, [U.el('span', { text: '維護：來源已消失的追蹤紀錄可在此清除（不影響現有弱點）。' })]);
+      var pb = U.el('button', { class: 'btn btn-sm', text: '清除已消失追蹤紀錄', style: 'margin-left:8px' });
+      pb.addEventListener('click', function () { purgeOrphans(function () { renderReconcileInto(host); }); });
+      m.firstChild.appendChild(document.createTextNode(' ')); m.firstChild.appendChild(pb);
+      host.appendChild(m);
+    }
+  }
+
+  // ---- D 查核（「查」：結案稽核＋對帳健檢兩分頁合一）----
+  async function renderAuditInto(host) {
+    if (!host) return;
+    host.innerHTML = ''; host.classList.remove('webext-rpt');
+    renderTabs(host, [
+      { label: '結案稽核', render: renderCloseInto },   // 結案驗證／浮報
+      { label: '對帳健檢', render: renderReconcileInto }, // 數字自我對帳＋資料缺口＋維護
+    ], 'audit');
   }
 
   // ---- 主管週報（應申請未申請／已申請／預計完成彙總／落後；可列印存 PDF） ----
@@ -978,9 +956,15 @@
     var headRow = U.el('div', { class: 'panel-head', style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap' }, [
       U.el('h3', { text: '主管週報 — ' + scope + '（' + s.today + '）' }),
     ]);
+    var btnWrap = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' });
     var printBtn = U.el('button', { class: 'btn btn-primary btn-sm', text: '列印 / 存 PDF' });
     printBtn.addEventListener('click', function () { printReport(s); });
-    headRow.appendChild(printBtn);
+    btnWrap.appendChild(printBtn);
+    // 一鍵發送：收進「報」這頁(原獨立項已併入)；沿用原 Email 設定流程
+    var sendBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '一鍵發送' });
+    sendBtn.addEventListener('click', function () { var b = document.getElementById('email-settings-btn'); if (b) b.click(); else UI.toast('找不到 Email 設定', 'error'); });
+    btnWrap.appendChild(sendBtn);
+    headRow.appendChild(btnWrap);
     host.appendChild(headRow);
 
     var fresh = (s.freshness.days_ago == null) ? '尚無匯入' : ('資料距今 ' + s.freshness.days_ago + ' 天');
@@ -1356,21 +1340,13 @@
   }
 
   // ===== 左側第二大項「承辦管線」（與「總覽」並列，綠色），底下放全部新功能 =====
-  // 新功能小項：render=渲染進主區；action=直接動作(如下載)不切畫面
-  // 架構：看(總覽,原生)／做(待辦清單+送審進度)／報(主管週報)／查(結案稽核)
+  // 架構＝四個角度：看（負責人追蹤）／做（到期倒數）／報（主管週報，含一鍵發送）／查（查核：結案稽核＋對帳健檢＋資料缺口）
   var GOV_ITEMS = [
-    // 開發期暫加 A/B/C… 代號方便對話指稱；開發完畢再拿掉(搜 'DEV-LETTER' 一次清)
-    { key: 'byowner', label: 'A. 負責人追蹤', render: renderOwnerInto }, // 主角度：誰還有幾隻＋狀態(每格可下鑽)
-    { key: 'todo', label: 'B. 待辦清單', render: renderTodoInto },     // 做：要處理的清單都在這
-    { key: 'duesoon', label: 'C. 到期倒數', render: renderDueSoonInto }, // 做：依距到期天數看 30/60/90
-    { key: 'cases', label: 'D. 送審進度', render: renderCasesInto },   // 做：例外/展延申請跑簽到核准
-    { key: 'report', label: 'E. 主管週報', render: renderReportInto }, // 報：給主管的固定報告
-    { key: 'closestat', label: 'F. 結案稽核', render: renderCloseInto }, // 查：結案驗證/浮報
-    { key: 'reconcile', label: 'G. 對帳健檢', render: renderReconcileInto }, // 查：數字自我對帳(不靠AI)
-    // 一鍵發送＝沿用原本「Email 設定」流程(開原設定視窗)；日後 B(自動寄週報)再接進主管週報
-    { key: 'email', label: 'H. 一鍵發送', action: function () {
-        var b = document.getElementById('email-settings-btn'); if (b) b.click();
-      } },
+    // 開發期暫加 A/B/C/D 代號方便對話指稱；開發完畢再拿掉(搜 'DEV-LETTER' 一次清)
+    { key: 'byowner', label: 'A. 負責人追蹤', render: renderOwnerInto }, // 看：誰還有幾隻＋狀態(每格可下鑽)
+    { key: 'duesoon', label: 'B. 到期倒數', render: renderDueSoonInto },  // 做：依距到期天數看 14/30/60/90
+    { key: 'report', label: 'C. 主管週報', render: renderReportInto },    // 報：給主管的固定報告(含一鍵發送鈕)
+    { key: 'audit', label: 'D. 查核', render: renderAuditInto },          // 查：結案稽核＋對帳健檢＋資料缺口
   ];
 
   // 全站匯出統一成「原封 Excel」：攔截所有匯出鈕(原本各表的匯出CSV等)→改下載原封 xlsx。
