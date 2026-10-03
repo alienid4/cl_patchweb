@@ -608,6 +608,12 @@
       { label: '應申請未申請（' + s.need_apply_list.length + '）', render: function (c) {
           listTab(c, '應申請未申請清單（主管要催承辦去提例外／展延）', s.need_apply_list);
       } },
+      { label: '要申請·送審中（' + (s.apply_intent_list || []).length + '）', render: function (c) {
+          listTab(c, '要申請·送審中（管理人標了要申請、Excel 尚未反映）', s.apply_intent_list || []);
+      } },
+      { label: '需追查⚠️（' + (s.flagged_list || []).length + '）', render: function (c) {
+          listTab(c, '需追查（說要申請/做完卻未反映：待查或可疑）', s.flagged_list || []);
+      } },
       { label: '落後（' + s.overdue_list.length + '）', render: function (c) {
           listTab(c, '落後清單（已逾真正到期日）', s.overdue_list);
       } },
@@ -757,7 +763,7 @@
     if (!rows || !rows.length) return false;
     host.appendChild(headWithListExport(title + '（' + rows.length + '）', function () { return rows; }));
     var w = canWrite();
-    var heads = ['負責人', '弱點', '嚴重度', '主機', '到期日', '逾期天數', '預計完成日', '追蹤備註'];
+    var heads = ['負責人', '弱點', '嚴重度', '主機', '到期日', '逾期天數', '處理進度', '對帳狀態', '預計完成日', '追蹤備註'];
     if (showDept) heads.push('部門');
     if (w) heads.push('操作');
     var table = U.el('table', { class: 'tracking-table' });
@@ -771,6 +777,7 @@
         U.el('td', { text: r.severity || '' }), U.el('td', { text: r.host || '' }),
         U.el('td', { text: r.effective_due || '—' }),
         U.el('td', { text: (r.overdue_days != null && r.overdue_days > 0) ? String(r.overdue_days) : '—' }),
+        U.el('td', { text: r.progress || '' }), U.el('td', { text: r.progress_state || '' }),
         U.el('td', { text: td }), U.el('td', { text: r.track_note || '' }),
       ];
       if (showDept) tds.push(U.el('td', { text: r.department || '' }));
@@ -792,13 +799,13 @@
     function tbl(title, rows) {
       if (!rows || !rows.length) return '<h3>' + esc(title) + '（0）</h3><p class="muted">無。</p>';
       var h = '<h3>' + esc(title) + '（' + rows.length + '）</h3><table><thead><tr>'
-        + ['負責人', '弱點', '嚴重度', '主機', '到期日', '逾期天數', '預計完成日', '追蹤備註', '部門']
+        + ['負責人', '弱點', '嚴重度', '主機', '到期日', '逾期天數', '處理進度', '對帳狀態', '預計完成日', '追蹤備註', '部門']
           .map(function (x) { return '<th>' + x + '</th>'; }).join('') + '</tr></thead><tbody>';
       rows.forEach(function (r) {
         var td = r.target_date || '—'; if (r.target_overdue) td += '（已過）';
         h += '<tr>' + [r.owner || '未指派', r.name || r.plugin_id || '', r.severity || '', r.host || '',
           r.effective_due || '—', (r.overdue_days != null && r.overdue_days > 0) ? r.overdue_days : '—',
-          td, r.track_note || '', r.department || '']
+          r.progress || '', r.progress_state || '', td, r.track_note || '', r.department || '']
           .map(function (x) { return '<td>' + esc(x) + '</td>'; }).join('') + '</tr>';
       });
       return h + '</tbody></table>';
@@ -831,6 +838,8 @@
       + kv('處理中', (s.progress || {}).wip || 0) + kv('等複掃', (s.progress || {}).rescan || 0)
       + kv('需追查⚠️', (s.progress || {}).flagged || 0) + '</div>'
       + tbl('應申請未申請清單', s.need_apply_list)
+      + tbl('要申請·送審中（Excel 尚未反映）', s.apply_intent_list || [])
+      + tbl('需追查⚠️（說要申請/做完卻未反映）', s.flagged_list || [])
       + tbl('落後清單', s.overdue_list)
       + '<p class="muted" style="margin-top:16px">結論以資安 Excel 為主；「處理進度」為管理人追蹤標註。彙總自系統「預計完成日／追蹤備註」與備註申請紀錄（例外管理／展延 iForm）。</p>'
       + '</body></html>';

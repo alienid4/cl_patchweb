@@ -412,11 +412,13 @@ def weekly_report(session: Session, department: Optional[str] = None,
     if owner:
         fs = [f for f in fs if (f.owner or "").strip() == owner]
     open_ = [f for f in fs if f.close_status == CLOSE_OPEN]
+    _b = latest_batch(session)
+    imported = _b.imported_at if _b else None
 
-    # 疊加欄(預計完成日/追蹤備註)對照
+    # 疊加欄(預計完成日/追蹤備註/處理進度)對照
     from .models import Case
-    from .logic import PROGRESS_VALUES, PROGRESS_WIP, PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC, \
-        PROGRESS_RESCAN, classify_progress, FLAGGED_STATES
+    from .logic import (PROGRESS_VALUES, PROGRESS_WIP, PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC,
+                        PROGRESS_RESCAN, classify_progress, FLAGGED_STATES, CLOSE_DONE)
     ov = {c.vuln_key: c for c in session.execute(
         select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None))
                            | (Case.status.in_(PROGRESS_VALUES)))).scalars().all()}
@@ -428,12 +430,20 @@ def weekly_report(session: Session, department: Optional[str] = None,
         c = _c(f)
         return c.target_date if c else None
 
+    def _progress(f):
+        c = _c(f)
+        return c.status if (c and c.status in PROGRESS_VALUES) else ""
+
     def _detail(f) -> dict:
         c = _c(f)
         td = c.target_date if c else None
+        prog = c.status if (c and c.status in PROGRESS_VALUES) else ""
+        pstate = classify_progress(prog, f.close_status == CLOSE_DONE, f.stage,
+                                   (c.status_changed_at if c else None), imported)
         return {
             "id": f.id, "host": f.host, "owner": f.owner, "department": f.department,
             "severity": f.severity, "name": f.name, "plugin_id": f.plugin_id,
+            "stage": f.stage, "progress": prog, "progress_state": pstate,
             "effective_due": f.effective_due.isoformat() if f.effective_due else None,
             "overdue_days": overdue_days(f.effective_due, today),
             "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
@@ -476,9 +486,6 @@ def weekly_report(session: Session, department: Optional[str] = None,
     target_soon = [f for f in with_target
                    if 0 <= (_target(f) - today).days <= SOON_DAYS]
 
-    b = latest_batch(session)
-    imported = b.imported_at if b else None
-
     # 處理進度分佈(管理人手動標的)：各類計數 + 需追查(⚠️待查/可疑)總數
     pcount = {PROGRESS_WIP: 0, PROGRESS_APPLY_EXT: 0, PROGRESS_APPLY_EXC: 0, PROGRESS_RESCAN: 0}
     flagged = 0
@@ -491,6 +498,10 @@ def weekly_report(session: Session, department: Optional[str] = None,
                                (c.status_changed_at if c else None), imported)
         if st in FLAGGED_STATES:
             flagged += 1
+
+    # 要申請·送審中清單(管理人標了要申請展延/例外的)；需追查清單(⚠️的，主管要盯)
+    apply_intent = [f for f in open_ if _progress(f) in (PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC)]
+    flagged_rows = [d for d in (_detail(f) for f in open_) if d["progress_state"] in FLAGGED_STATES]
 
     return {
         "department": department or "全部",
@@ -525,13 +536,18 @@ def weekly_report(session: Session, department: Optional[str] = None,
             "target_overdue": len(target_overdue),  # 已過自己承諾的完成日
             "target_soon": len(target_soon),      # 預計 30 天內完成
         },
-        # 清單(主管要催的兩類)
+        # 清單(主管要催/要盯的幾類)
         "need_apply_list": sorted(
             (_detail(f) for f in need_apply),
             key=lambda r: ((r["overdue_days"] is None), -(r["overdue_days"] or 0))),
         "overdue_list": sorted(
             (_detail(f) for f in overdue),
             key=lambda r: -(r["overdue_days"] or 0)),
+        "apply_intent_list": sorted(
+            (_detail(f) for f in apply_intent),
+            key=lambda r: ((r["overdue_days"] is None), -(r["overdue_days"] or 0))),
+        "flagged_list": sorted(
+            flagged_rows, key=lambda r: ((r["overdue_days"] is None), -(r["overdue_days"] or 0))),
     }
 
 

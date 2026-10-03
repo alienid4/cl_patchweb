@@ -39,6 +39,14 @@ def test_weekly_report_buckets(session):
     assert hosts_need == {"a", "e"}
     hosts_over = {x["host"] for x in r["overdue_list"]}
     assert hosts_over == {"e"}
+    # 主管週報勾稽：標「要申請展延」的出現在 apply_intent_list
+    from webvuln import cases
+    a = next(x for x in query.find(session, status="未結案", today=TODAY) if x["host"] == "a")
+    cases.set_overlay(session, a["id"], {"progress": "要申請展延"})
+    r2 = query.weekly_report(session, today=TODAY)
+    assert {x["host"] for x in r2["apply_intent_list"]} == {"a"}
+    assert r2["progress"]["apply_ext"] == 1
+    assert r2["apply_intent_list"][0]["progress_state"] == "送審中"
     # 處置落點：A、C、E 原始；B 例外管理；無首次展延
     assert r["stages"]["original"]["count"] == 3
     assert r["stages"]["exception"]["count"] == 1
