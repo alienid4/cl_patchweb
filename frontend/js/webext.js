@@ -188,7 +188,8 @@
     box.appendChild(U.el('p', { class: 'empty-hint', text: hint }));
     var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
       ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
-      ['stage', '處置階段'], ['department', '部門'], ['track_note', '追蹤備註']];
+      ['stage', '處置階段'], ['department', '部門'],
+      ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
     var heads = cols.map(function (c) { return c[1]; });
     if (canWrite()) heads.push('操作');
     var table = U.el('table', { class: 'tracking-table' });
@@ -210,19 +211,21 @@
   function editOverlay(row, done) {
     var title = (row.host || '') + ' / ' + (row.name || row.plugin_id || '');
     var owner = U.el('input', { type: 'text', value: row.owner || '' });
+    var target = U.el('input', { type: 'date', value: row.target_date || '' });
     var note = U.el('textarea', { rows: '4' });
     note.value = row.track_note || '';
-    [owner, note].forEach(function (i) { i.style.cssText = 'display:block;width:100%;margin:4px 0 12px;padding:8px;border:1px solid #e3e6ea;border-radius:6px;font-size:14px;font-family:inherit'; });
+    [owner, target, note].forEach(function (i) { i.style.cssText = 'display:block;width:100%;margin:4px 0 12px;padding:8px;border:1px solid #e3e6ea;border-radius:6px;font-size:14px;font-family:inherit'; });
     var body = U.el('div', {}, [
       U.el('p', { class: 'empty-hint', text: title }),
       U.el('label', { text: '負責人（留空＝取消覆蓋、回到 Excel 值）' }), owner,
+      U.el('label', { text: '預計完成日（承辦回報預計哪天做完；留空＝清除。供主管週報彙總）' }), target,
       U.el('label', { text: '追蹤備註（承辦回報：何時做什麼動作。只存系統，不會動到 Excel 原備註）' }), note,
     ]);
     var save = U.el('button', { class: 'btn btn-primary', text: '存檔' });
     save.addEventListener('click', async function () {
       var r = await fetch('/api/findings/' + row.id + '/overlay', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ set_owner: true, owner: owner.value, set_note: true, note: note.value })
+        body: JSON.stringify({ set_owner: true, owner: owner.value, set_target: true, target_date: target.value, set_note: true, note: note.value })
       });
       if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('存失敗：' + (e.detail || r.status), 'error'); return; }
       UI.closeModal(); UI.toast('已更新', 'success'); if (done) done();
@@ -421,10 +424,144 @@
     host.appendChild(U.el('p', { class: 'empty-hint', text: '「本期新結案」＝上期未結、這期變已結（快照比對）；「承辦聲稱未確認」＝承辦標完成但來源仍未結，可能自行浮報。' }));
   }
 
+  // ---- 主管週報（應申請未申請／已申請／預計完成彙總／落後；可列印存 PDF） ----
+  var _lastReport = null;
+  async function renderReportInto(host) {
+    if (!host) return;
+    host.innerHTML = '';
+    var s;
+    try { s = await jget('/api/report?' + qd()); }
+    catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
+    _lastReport = s;
+    var scope = (s.department && s.department !== '全部') ? s.department : '全部門';
+
+    // 標題列＋列印鈕
+    var headRow = U.el('div', { class: 'panel-head', style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap' }, [
+      U.el('h3', { text: '主管週報 — ' + scope + '（' + s.today + '）' }),
+    ]);
+    var printBtn = U.el('button', { class: 'btn btn-primary btn-sm', text: '列印 / 存 PDF' });
+    printBtn.addEventListener('click', function () { printReport(s); });
+    headRow.appendChild(printBtn);
+    host.appendChild(headRow);
+
+    var fresh = (s.freshness.days_ago == null) ? '尚無匯入' : ('資料距今 ' + s.freshness.days_ago + ' 天');
+    host.appendChild(U.el('p', { class: 'empty-hint', text: '產生時間 ' + (s.generated_at || '').replace('T', ' ') + '　·　' + fresh + '（彙總自系統內「預計完成日／追蹤備註」與備註申請紀錄）' }));
+
+    host.appendChild(group('本期概況（未結案）', [
+      card(s.unresolved, '未結案'),
+      card(s.overdue, '落後（已逾期）', true, function () { openFindings('落後（已逾期）', { band: '已逾期' }); }),
+      card(s.on_track, '如期（未逾期）'),
+      card(s.high_risk, '高風險（Critical/High）', true),
+    ]));
+
+    host.appendChild(group('申請進度', [
+      card(s.apply_universe, '需申請母體'),
+      card(s.need_apply_count, '應申請未申請（要催）', true, function () { openFindings('應申請未申請', { should_apply: 'true' }); }),
+      card(s.applied_count, '已申請處置中（例外/展延）'),
+    ]));
+
+    host.appendChild(group('預計完成彙總（需申請母體）', [
+      card(s.target.with_target, '已回報預計完成日'),
+      card(s.target.no_target, '未回報預計完成日（要催）', true),
+      card(s.target.target_overdue, '已過預計完成日', true),
+      card(s.target.target_soon, '預計 30 天內完成'),
+    ]));
+
+    reportTable(host, '應申請未申請清單（主管要催承辦去提例外／展延）', s.need_apply_list, renderReportInto);
+    reportTable(host, '落後清單（已逾真正到期日）', s.overdue_list, renderReportInto);
+
+    if (!s.need_apply_list.length && !s.overdue_list.length) {
+      host.appendChild(U.el('p', { class: 'empty-hint', text: '目前沒有要催的急件，也沒有落後項目。' }));
+    }
+  }
+
+  // 週報用的清單表（含預計完成日／追蹤備註，可改）
+  function reportTable(host, title, rows, refresh) {
+    if (!rows || !rows.length) return;
+    host.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: title + '（' + rows.length + '）' })]));
+    var w = canWrite();
+    var heads = ['負責人', '弱點', '嚴重度', '主機', '到期日', '逾期天數', '預計完成日', '追蹤備註', '部門'];
+    if (w) heads.push('操作');
+    var table = U.el('table', { class: 'tracking-table' });
+    table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
+    var tb = U.el('tbody');
+    rows.forEach(function (r) {
+      var td = r.target_date || '—';
+      if (r.target_overdue) td += '（已過）';
+      var tds = [
+        U.el('td', { text: r.owner || '未指派' }), U.el('td', { text: r.name || r.plugin_id || '' }),
+        U.el('td', { text: r.severity || '' }), U.el('td', { text: r.host || '' }),
+        U.el('td', { text: r.effective_due || '—' }),
+        U.el('td', { text: (r.overdue_days != null && r.overdue_days > 0) ? String(r.overdue_days) : '—' }),
+        U.el('td', { text: td }), U.el('td', { text: r.track_note || '' }),
+        U.el('td', { text: r.department || '' }),
+      ];
+      if (w) {
+        var b = U.el('button', { class: 'btn btn-sm', text: '改' });
+        b.addEventListener('click', function () { editOverlay(r, function () { if (refresh) refresh(document.getElementById('webext-view-body')); }); });
+        tds.push(U.el('td', {}, [b]));
+      }
+      tb.appendChild(U.el('tr', {}, tds));
+    });
+    table.appendChild(tb); host.appendChild(table); makeSortable(table);
+  }
+
+  // 列印／存 PDF：開乾淨視窗、純文字表格、觸發瀏覽器列印（可選「另存為 PDF」）
+  function printReport(s) {
+    var scope = (s.department && s.department !== '全部') ? s.department : '全部門';
+    function esc(x) { return String(x == null ? '' : x).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+    function tbl(title, rows) {
+      if (!rows || !rows.length) return '<h3>' + esc(title) + '（0）</h3><p class="muted">無。</p>';
+      var h = '<h3>' + esc(title) + '（' + rows.length + '）</h3><table><thead><tr>'
+        + ['負責人', '弱點', '嚴重度', '主機', '到期日', '逾期天數', '預計完成日', '追蹤備註', '部門']
+          .map(function (x) { return '<th>' + x + '</th>'; }).join('') + '</tr></thead><tbody>';
+      rows.forEach(function (r) {
+        var td = r.target_date || '—'; if (r.target_overdue) td += '（已過）';
+        h += '<tr>' + [r.owner || '未指派', r.name || r.plugin_id || '', r.severity || '', r.host || '',
+          r.effective_due || '—', (r.overdue_days != null && r.overdue_days > 0) ? r.overdue_days : '—',
+          td, r.track_note || '', r.department || '']
+          .map(function (x) { return '<td>' + esc(x) + '</td>'; }).join('') + '</tr>';
+      });
+      return h + '</tbody></table>';
+    }
+    var kv = function (k, v) { return '<span class="kv"><b>' + esc(v) + '</b> ' + esc(k) + '</span>'; };
+    var html = '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">'
+      + '<title>主管週報_' + esc(scope) + '_' + esc(s.today) + '</title><style>'
+      + 'body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1a1a1a;margin:28px;font-size:13px}'
+      + 'h1{font-size:20px;margin:0 0 4px}h3{margin:18px 0 6px;border-left:4px solid #1a7f4b;padding-left:8px}'
+      + '.muted{color:#777}.sub{color:#555;margin:0 0 12px}'
+      + '.kv{display:inline-block;margin:0 16px 6px 0}.kv b{font-size:16px;color:#1a7f4b}'
+      + '.block{background:#f6f8f7;border:1px solid #e3e6ea;border-radius:8px;padding:10px 12px;margin:8px 0}'
+      + 'table{border-collapse:collapse;width:100%;margin:4px 0 10px}'
+      + 'th,td{border:1px solid #d6dbdf;padding:4px 7px;text-align:left;vertical-align:top}'
+      + 'th{background:#eef3f0}@media print{button{display:none}}'
+      + '</style></head><body>'
+      + '<h1>弱點修補 主管週報</h1>'
+      + '<p class="sub">範圍：' + esc(scope) + '　|　基準日：' + esc(s.today)
+      + '　|　產生：' + esc((s.generated_at || '').replace('T', ' '))
+      + (s.freshness.days_ago == null ? '' : '　|　資料距今 ' + s.freshness.days_ago + ' 天') + '</p>'
+      + '<div class="block"><b>本期概況（未結案）</b><br>'
+      + kv('未結案', s.unresolved) + kv('落後(逾期)', s.overdue) + kv('如期', s.on_track) + kv('高風險', s.high_risk) + '</div>'
+      + '<div class="block"><b>申請進度</b><br>'
+      + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已申請處置中', s.applied_count) + '</div>'
+      + '<div class="block"><b>預計完成彙總</b><br>'
+      + kv('已回報預計日', s.target.with_target) + kv('未回報(要催)', s.target.no_target)
+      + kv('已過預計日', s.target.target_overdue) + kv('預計30天內完成', s.target.target_soon) + '</div>'
+      + tbl('應申請未申請清單', s.need_apply_list)
+      + tbl('落後清單', s.overdue_list)
+      + '<p class="muted" style="margin-top:16px">本報告彙總自系統「預計完成日／追蹤備註」與備註申請紀錄（例外管理／展延 iForm）。</p>'
+      + '</body></html>';
+    var w = window.open('', '_blank');
+    if (!w) { UI.toast('瀏覽器擋了新視窗，請允許彈出視窗後再試', 'error'); return; }
+    w.document.open(); w.document.write(html); w.document.close();
+    setTimeout(function () { try { w.focus(); w.print(); } catch (e) {} }, 300);
+  }
+
   // ===== 左側第二大項「承辦管線」（與「總覽」並列，綠色），底下放全部新功能 =====
   // 新功能小項：render=渲染進主區；action=直接動作(如下載)不切畫面
   var GOV_ITEMS = [
     { key: 'gaps', label: '缺口示警', render: renderGapsInto },
+    { key: 'report', label: '主管週報', render: renderReportInto },
     { key: 'cases', label: '申請流程管線', render: renderCasesInto },
     { key: 'closestat', label: '結案統計', render: renderCloseInto },
     // 一鍵發送＝沿用原本「Email 設定」流程(開原設定視窗)，移到此、改名；原選單項已隱藏

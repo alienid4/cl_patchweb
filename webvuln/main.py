@@ -199,6 +199,13 @@ def api_stage_stats(department: str | None = None, db: Session = Depends(get_db)
     return query.stage_stats(db, department=department)
 
 
+@app.get("/api/report")
+def api_report(department: str | None = None, owner: str | None = None,
+               db: Session = Depends(get_db)):
+    """主管週報：應申請未申請／已申請／預計完成彙總／落後。可依部門或負責人篩選。"""
+    return query.weekly_report(db, department=department, owner=owner)
+
+
 @app.get("/api/cases")
 def api_cases(status: str | None = None, department: str | None = None,
               orphan: bool | None = None, suspect: bool | None = None,
@@ -233,19 +240,23 @@ def api_case_transition(case_id: int, body: TransitionIn, request: Request,
 class OverlayIn(BaseModel):
     owner: str | None = None   # 有給才改；空字串＝清除
     note: str | None = None    # 管理追蹤備註
+    target_date: str | None = None  # 預計完成日(ISO yyyy-mm-dd)；空字串＝清除
     set_owner: bool = False     # 是否要改負責人
     set_note: bool = False      # 是否要改追蹤備註
+    set_target: bool = False    # 是否要改預計完成日
 
 
 @app.post("/api/findings/{finding_id}/overlay")
 def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
                     db: Session = Depends(get_db), user: User = Depends(require_write_role)):
-    """管理員在系統內改一筆弱點的可寫欄位（負責人／追蹤備註）：存疊加層、重匯不洗掉、不動 Excel。"""
+    """管理員在系統內改一筆弱點的可寫欄位（負責人／追蹤備註／預計完成日）：存疊加層、重匯不洗掉、不動 Excel。"""
     fields = {}
     if body.set_owner:
         fields["owner"] = body.owner
     if body.set_note:
         fields["note"] = body.note
+    if body.set_target:
+        fields["target_date"] = body.target_date
     if not fields:
         raise HTTPException(status_code=400, detail="沒有要改的欄位")
     try:

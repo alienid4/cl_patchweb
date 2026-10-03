@@ -161,12 +161,13 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             return all(t in hay for t in terms)
         fs = [f for f in fs if hit(f)]
 
-    # 管理追蹤備註(track_note)：依穩定鍵對 Case，帶進每列(系統內寫的,非 Excel 原備註)
+    # 系統內寫的疊加欄(追蹤備註/預計完成日)：依穩定鍵對 Case 帶進每列(非 Excel 原值)
     from .models import Case
-    notes = {c.vuln_key: c.track_note for c in session.execute(
-        select(Case).where(Case.track_note.isnot(None))).scalars().all() if c.track_note}
+    ov = {c.vuln_key: c for c in session.execute(
+        select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None)))).scalars().all()}
 
     def row(f: Finding) -> dict:
+        c = ov.get("|".join(vuln_key(f)))   # Case.vuln_key 是字串(| 接)
         return {
             "id": f.id, "sheet_key": f.sheet_key, "plugin_id": f.plugin_id, "name": f.name,
             "host": f.host, "severity": f.severity, "department": f.department, "owner": f.owner,
@@ -175,7 +176,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
             "should_apply": should_apply(f, today),
             "stage": f.stage, "close_status": f.close_status, "remark": f.remark,
-            "track_note": notes.get("|".join(vuln_key(f))),   # Case.vuln_key 是字串(| 接)
+            "track_note": c.track_note if c else None,
+            "target_date": (c.target_date.isoformat() if (c and c.target_date) else None),
         }
 
     return [row(f) for f in fs]
@@ -361,6 +363,98 @@ def close_stats(session: Session, department: Optional[str] = None,
                             key=lambda r: -r["closed"]),
         "prev_batch": prev.id if prev else None,
         "latest_batch": latest.id,
+    }
+
+
+def weekly_report(session: Session, department: Optional[str] = None,
+                  owner: Optional[str] = None, today: Optional[dt.date] = None) -> dict:
+    """主管週報：一份快照回答『要申請的有幾支、申請了沒、預計何時完成、落後多少』。
+
+    口徑(皆取未結案)：
+      - 應申請未申請(need_apply)：尚在原始修補期限、已過行動線→催承辦去提例外/展延(iForm)。
+      - 已申請處置中(applied)：備註有申請紀錄→stage 已成 例外/展延(備註閘門，見 logic)。
+      - 預計完成(target_date)：承辦回報的日期；彙總已填/未填、逾預計、近 30 天到期。
+      - 落後(overdue)：已過真正到期日；如期(on_track)：未逾期。
+    清單只回『應申請未申請』與『落後』(主管最需要催的兩類)，各帶預計完成日與追蹤備註。
+    """
+    today = today or dt.date.today()
+    fs = _latest_findings(session, department)
+    if owner:
+        fs = [f for f in fs if (f.owner or "").strip() == owner]
+    open_ = [f for f in fs if f.close_status == CLOSE_OPEN]
+
+    # 疊加欄(預計完成日/追蹤備註)對照
+    from .models import Case
+    ov = {c.vuln_key: c for c in session.execute(
+        select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None)))).scalars().all()}
+
+    def _c(f):
+        return ov.get("|".join(vuln_key(f)))
+
+    def _target(f):
+        c = _c(f)
+        return c.target_date if c else None
+
+    def _detail(f) -> dict:
+        c = _c(f)
+        td = c.target_date if c else None
+        return {
+            "id": f.id, "host": f.host, "owner": f.owner, "department": f.department,
+            "severity": f.severity, "name": f.name, "plugin_id": f.plugin_id,
+            "effective_due": f.effective_due.isoformat() if f.effective_due else None,
+            "overdue_days": overdue_days(f.effective_due, today),
+            "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
+            "target_date": td.isoformat() if td else None,
+            "target_overdue": bool(td and td < today),   # 已過自己承諾的完成日
+            "track_note": c.track_note if c else None,
+        }
+
+    need_apply = [f for f in open_ if should_apply(f, today)]
+    applied = [f for f in open_ if f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)]
+    overdue = [f for f in open_ if _is_overdue(f, today)]
+    on_track = [f for f in open_ if not _is_overdue(f, today)]
+
+    # 需申請母體＝應申請未申請 + 已申請(都曾需要申請決策)
+    universe = need_apply + applied
+    with_target = [f for f in universe if _target(f)]
+    no_target = [f for f in universe if not _target(f)]
+    target_overdue = [f for f in with_target if _target(f) < today]
+    target_soon = [f for f in with_target
+                   if 0 <= (_target(f) - today).days <= SOON_DAYS]
+
+    b = latest_batch(session)
+    imported = b.imported_at if b else None
+    return {
+        "department": department or "全部",
+        "owner": owner,
+        "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "today": today.isoformat(),
+        "freshness": {
+            "imported_at": imported.isoformat() if imported else None,
+            "days_ago": (today - imported.date()).days if imported else None,
+        },
+        "unresolved": len(open_),
+        "overdue": len(overdue),
+        "on_track": len(on_track),
+        "high_risk": sum(1 for f in open_ if f.severity in HIGH_RISK),
+        # 申請面
+        "need_apply_count": len(need_apply),      # 應申請未申請(要催)
+        "applied_count": len(applied),            # 已申請處置中
+        "apply_universe": len(universe),          # 需申請母體
+        # 預計完成彙總(僅母體)
+        "target": {
+            "with_target": len(with_target),
+            "no_target": len(no_target),          # 未回報預計完成日(要催)
+            "target_overdue": len(target_overdue),  # 已過自己承諾的完成日
+            "target_soon": len(target_soon),      # 預計 30 天內完成
+        },
+        # 清單(主管要催的兩類)
+        "need_apply_list": sorted(
+            (_detail(f) for f in need_apply),
+            key=lambda r: ((r["overdue_days"] is None), -(r["overdue_days"] or 0))),
+        "overdue_list": sorted(
+            (_detail(f) for f in overdue),
+            key=lambda r: -(r["overdue_days"] or 0)),
     }
 
 

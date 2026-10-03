@@ -105,6 +105,8 @@ class Case(Base):
     owner_override: Mapped[str | None] = mapped_column(String(100))
     # 管理追蹤備註（承辦回報「何時做什麼動作」管理人記這裡）；只存系統、不動 Excel 原備註
     track_note: Mapped[str | None] = mapped_column(Text)
+    # 預計完成日（承辦回報、管理人登記）；結構化欄位，供週報彙總「預計 X 完成幾支」
+    target_date: Mapped[dt.date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(30), default="未申請", index=True)
     note: Mapped[str | None] = mapped_column(Text)
     # reconcile 用

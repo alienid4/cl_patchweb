@@ -119,6 +119,9 @@ def set_overlay(session: Session, finding_id: int, fields: dict) -> dict:
     if "note" in fields:
         c.track_note = (fields["note"] or "").strip() or None
         out["note"] = c.track_note
+    if "target_date" in fields:
+        c.target_date = logic.parse_iso_date(fields["target_date"])
+        out["target_date"] = c.target_date.isoformat() if c.target_date else None
     session.commit()
     return out
 
