@@ -595,6 +595,7 @@
         r.target_date, (r.overdue_days != null ? r.overdue_days : ''), r.track_note, r.department].join(' ').toLowerCase();
       return terms.every(function (t) { return hay.indexOf(t) >= 0; });
     }
+    var refresh = function () { renderActionListInto(container, title, params); };
     function draw() {
       box.innerHTML = '';
       var terms = (search.value || '').toLowerCase().split(/\s+/).filter(function (t) { return t; });
@@ -603,17 +604,40 @@
         box.appendChild(U.el('p', { class: 'empty-hint', text: terms.length ? '找不到符合「' + search.value.trim() + '」的項目。' : '目前無項目 👍' }));
         return;
       }
-      var heads = _TODO_COLS.map(function (c) { return c[1]; });
-      heads.push('操作');   // 固定有(🔍看原始；可寫入再加 ✏️)
+      // 以負責人分組(主角度)：先列每位負責人幾隻，點名字展開明細
+      var groups = {};
+      shown.forEach(function (r) { var k = ((r.owner || '').trim()) || '— 未指派'; (groups[k] = groups[k] || []).push(r); });
+      var keys = Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; });
+      box.appendChild(U.el('p', { class: 'empty-hint', text: '共 ' + keys.length + ' 位負責人、' + shown.length + ' 筆；點負責人展開明細。' }));
       var table = U.el('table', { class: 'tracking-table' });
-      table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
+      table.appendChild(U.el('thead', {}, [U.el('tr', {}, ['負責人', '筆數', '其中逾期'].map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
-      shown.forEach(function (r) {
-        var tds = _TODO_COLS.map(function (c) { return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); });
-        tds.push(opsCell(r, function () { renderActionListInto(container, title, params); }));
-        tb.appendChild(U.el('tr', {}, tds));
+      keys.forEach(function (k) {
+        var grp = groups[k];
+        var od = grp.filter(function (r) { return r.overdue_days != null && r.overdue_days > 0; }).length;
+        var nameTd = U.el('td', { text: '▸ ' + k, style: 'font-weight:600;color:#1a7f4b;cursor:pointer' });
+        var head = U.el('tr', { style: 'cursor:pointer' }, [nameTd,
+          U.el('td', { text: String(grp.length) }),
+          U.el('td', { text: od ? String(od) : '—', style: od ? 'color:#c0392b;font-weight:600' : '' })]);
+        // 展開的明細(該負責人的清單，含 🔍/✏️)
+        var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
+        var ih = _TODO_COLS.map(function (c) { return c[1]; }); ih.push('操作');
+        inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
+        var itb = U.el('tbody');
+        grp.forEach(function (r) {
+          var tds = _TODO_COLS.map(function (c) { return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); });
+          tds.push(opsCell(r, refresh));
+          itb.appendChild(U.el('tr', {}, tds));
+        });
+        inner.appendChild(itb);
+        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: '3', style: 'background:#f6f8f7;padding:6px' }, [inner])]);
+        head.addEventListener('click', function () {
+          var hid = detail.classList.toggle('hidden');
+          nameTd.textContent = (hid ? '▸ ' : '▾ ') + k;
+        });
+        tb.appendChild(head); tb.appendChild(detail);
       });
-      table.appendChild(tb); box.appendChild(table); makeSortable(table);
+      table.appendChild(tb); box.appendChild(table);
     }
     search.addEventListener('input', draw);
     draw();
