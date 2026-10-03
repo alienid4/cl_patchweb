@@ -161,6 +161,11 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             return all(t in hay for t in terms)
         fs = [f for f in fs if hit(f)]
 
+    # 管理追蹤備註(track_note)：依穩定鍵對 Case，帶進每列(系統內寫的,非 Excel 原備註)
+    from .models import Case
+    notes = {c.vuln_key: c.track_note for c in session.execute(
+        select(Case).where(Case.track_note.isnot(None))).scalars().all() if c.track_note}
+
     def row(f: Finding) -> dict:
         return {
             "id": f.id, "sheet_key": f.sheet_key, "plugin_id": f.plugin_id, "name": f.name,
@@ -170,6 +175,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
             "should_apply": should_apply(f, today),
             "stage": f.stage, "close_status": f.close_status, "remark": f.remark,
+            "track_note": notes.get("|".join(vuln_key(f))),   # Case.vuln_key 是字串(| 接)
         }
 
     return [row(f) for f in fs]

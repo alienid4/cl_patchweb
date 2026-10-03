@@ -83,31 +83,49 @@ def apply_owner_overrides(session: Session, batch: ImportBatch) -> int:
     return n
 
 
-def set_owner(session: Session, finding_id: int, owner: Optional[str]) -> dict:
-    """管理員改負責人：以該 finding 的穩定鍵記在 Case.owner_override，並即時套到最新快照
-    所有同鍵 finding（不必重匯就看得到）。owner 空字串/None＝清除覆蓋、回到 Excel 值。"""
+def _get_or_create_case(session: Session, f0: Finding) -> Case:
+    c = session.execute(select(Case).where(Case.vuln_key == key_str(f0))).scalars().first()
+    if c is None:
+        c = Case(vuln_key=key_str(f0), sheet_key=f0.sheet_key, plugin_id=f0.plugin_id, host=f0.host,
+                 department=f0.department, owner=f0.owner, status=logic.CASE_NEW,
+                 last_seen_batch_id=f0.batch_id, is_orphan=False)
+        session.add(c)
+    return c
+
+
+def set_overlay(session: Session, finding_id: int, fields: dict) -> dict:
+    """管理員在系統內改一筆弱點的可寫欄位（存疊加層、重匯不洗掉、不動 Excel）。
+    fields 只改有給的鍵：
+      - 'owner' → Case.owner_override，並即時套到最新快照同鍵 finding 的 owner
+      - 'note'  → Case.track_note（管理追蹤備註，純系統、不碰 Excel 原備註）
+    空字串＝清除該覆蓋。"""
     f0 = session.get(Finding, finding_id)
     if f0 is None:
         raise ValueError("弱點不存在")
     vk = key_str(f0)
-    ov = (owner or "").strip() or None
-    c = session.execute(select(Case).where(Case.vuln_key == vk)).scalars().first()
-    if c is None:
-        c = Case(vuln_key=vk, sheet_key=f0.sheet_key, plugin_id=f0.plugin_id, host=f0.host,
-                 department=f0.department, owner=f0.owner, status=logic.CASE_NEW,
-                 last_seen_batch_id=f0.batch_id, is_orphan=False)
-        session.add(c)
-    c.owner_override = ov
-    # 即時套到最新那批所有同鍵 finding
-    latest = query.latest_batch(session)
-    changed = 0
-    if latest:
-        for f in session.execute(select(Finding).where(Finding.batch_id == latest.id)).scalars().all():
-            if key_str(f) == vk:
-                f.owner = ov if ov else f.owner  # 清除時保留當下顯示(下次重匯回 Excel 值)
-                changed += 1
+    c = _get_or_create_case(session, f0)
+    out = {"vuln_key": vk, "updated": 0}
+
+    if "owner" in fields:
+        ov = (fields["owner"] or "").strip() or None
+        c.owner_override = ov
+        latest = query.latest_batch(session)
+        if latest and ov:
+            for f in session.execute(select(Finding).where(Finding.batch_id == latest.id)).scalars().all():
+                if key_str(f) == vk:
+                    f.owner = ov
+                    out["updated"] += 1
+        out["owner"] = ov
+    if "note" in fields:
+        c.track_note = (fields["note"] or "").strip() or None
+        out["note"] = c.track_note
     session.commit()
-    return {"vuln_key": vk, "owner": ov, "updated": changed}
+    return out
+
+
+def set_owner(session: Session, finding_id: int, owner: Optional[str]) -> dict:
+    """相容舊呼叫：只改負責人。"""
+    return set_overlay(session, finding_id, {"owner": owner})
 
 
 def transition(session: Session, case_id: int, to: str, note: Optional[str] = None) -> Case:

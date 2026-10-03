@@ -112,3 +112,24 @@ def test_owner_override_survives_reimport(session):
     latest = query.latest_batch(session)
     newf = session.query(F).filter_by(batch_id=latest.id).one()
     assert newf.owner == "張三"   # 重匯後仍是改過的名字
+
+
+def test_track_note_overlay(session):
+    from webvuln.models import Finding as F
+    f = FindingIn
+    importer.create_batch(session, ImportIn(findings=[
+        f(host="h9", plugin_id="p9", sheet_key="s", owner="網路組", close_status="未結案"),
+    ]))
+    fid = session.query(F).one().id
+    # 改負責人＋追蹤備註
+    cases.set_overlay(session, fid, {"owner": "李四", "note": "承辦回報 10/20 前完成修補"})
+    rows = query.find(session, status="未結案")
+    assert rows[0]["owner"] == "李四"
+    assert rows[0]["track_note"] == "承辦回報 10/20 前完成修補"
+    # 重匯(Excel 原值)→ 覆蓋與備註都還在
+    importer.create_batch(session, ImportIn(findings=[
+        f(host="h9", plugin_id="p9", sheet_key="s", owner="網路組", close_status="未結案"),
+    ]))
+    rows2 = query.find(session, status="未結案")
+    assert rows2[0]["owner"] == "李四"
+    assert rows2[0]["track_note"] == "承辦回報 10/20 前完成修補"

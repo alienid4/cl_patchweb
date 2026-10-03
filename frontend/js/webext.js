@@ -188,7 +188,7 @@
     box.appendChild(U.el('p', { class: 'empty-hint', text: hint }));
     var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
       ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
-      ['stage', '處置階段'], ['department', '部門']];
+      ['stage', '處置階段'], ['department', '部門'], ['track_note', '追蹤備註']];
     var heads = cols.map(function (c) { return c[1]; });
     if (canWrite()) heads.push('操作');
     var table = U.el('table', { class: 'tracking-table' });
@@ -206,19 +206,31 @@
     table.appendChild(tb); box.appendChild(table); makeSortable(table);
   }
 
-  // 管理員改負責人：跳提示輸入新名字 → 存系統(疊加層)
-  async function editOwner(row, done) {
-    var cur = row.owner || '';
-    var name = window.prompt('改負責人（' + (row.host || '') + ' / ' + (row.name || row.plugin_id || '') + '）\n原：' + cur + '\n輸入新負責人（留空＝取消覆蓋，回到 Excel 值）：', cur);
-    if (name === null) return;  // 取消
-    var r = await fetch('/api/findings/' + row.id + '/owner', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: name })
+  // 管理員編輯一筆弱點的可寫欄位(負責人＋追蹤備註)：開視窗、存系統疊加層、重匯不洗掉、不動 Excel
+  function editOverlay(row, done) {
+    var title = (row.host || '') + ' / ' + (row.name || row.plugin_id || '');
+    var owner = U.el('input', { type: 'text', value: row.owner || '' });
+    var note = U.el('textarea', { rows: '4' });
+    note.value = row.track_note || '';
+    [owner, note].forEach(function (i) { i.style.cssText = 'display:block;width:100%;margin:4px 0 12px;padding:8px;border:1px solid #e3e6ea;border-radius:6px;font-size:14px;font-family:inherit'; });
+    var body = U.el('div', {}, [
+      U.el('p', { class: 'empty-hint', text: title }),
+      U.el('label', { text: '負責人（留空＝取消覆蓋、回到 Excel 值）' }), owner,
+      U.el('label', { text: '追蹤備註（承辦回報：何時做什麼動作。只存系統，不會動到 Excel 原備註）' }), note,
+    ]);
+    var save = U.el('button', { class: 'btn btn-primary', text: '存檔' });
+    save.addEventListener('click', async function () {
+      var r = await fetch('/api/findings/' + row.id + '/overlay', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ set_owner: true, owner: owner.value, set_note: true, note: note.value })
+      });
+      if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('存失敗：' + (e.detail || r.status), 'error'); return; }
+      UI.closeModal(); UI.toast('已更新', 'success'); if (done) done();
     });
-    if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('改失敗：' + (e.detail || r.status), 'error'); return; }
-    var j = await r.json();
-    UI.toast('已改負責人（同弱點 ' + j.updated + ' 筆）', 'success');
-    if (done) done();
+    UI.openModal('編輯弱點（承辦管理）', body, { footer: save });
+    setTimeout(function () { owner.focus(); }, 0);
   }
+  var editOwner = editOverlay;  // 相容舊呼叫名
 
   // ---- 登入 ----
   async function refreshMe() {

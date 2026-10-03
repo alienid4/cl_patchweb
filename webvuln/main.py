@@ -230,20 +230,30 @@ def api_case_transition(case_id: int, body: TransitionIn, request: Request,
     return {"id": c.id, "status": c.status, "note": c.note}
 
 
-class OwnerIn(BaseModel):
-    owner: str | None = None
+class OverlayIn(BaseModel):
+    owner: str | None = None   # 有給才改；空字串＝清除
+    note: str | None = None    # 管理追蹤備註
+    set_owner: bool = False     # 是否要改負責人
+    set_note: bool = False      # 是否要改追蹤備註
 
 
-@app.post("/api/findings/{finding_id}/owner")
-def api_set_owner(finding_id: int, body: OwnerIn, request: Request,
-                  db: Session = Depends(get_db), user: User = Depends(require_write_role)):
-    """管理員改負責人（存疊加層、重匯不洗掉、即時套到最新快照）。需登入(承辦/管理員)。"""
+@app.post("/api/findings/{finding_id}/overlay")
+def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
+                    db: Session = Depends(get_db), user: User = Depends(require_write_role)):
+    """管理員在系統內改一筆弱點的可寫欄位（負責人／追蹤備註）：存疊加層、重匯不洗掉、不動 Excel。"""
+    fields = {}
+    if body.set_owner:
+        fields["owner"] = body.owner
+    if body.set_note:
+        fields["note"] = body.note
+    if not fields:
+        raise HTTPException(status_code=400, detail="沒有要改的欄位")
     try:
-        r = cases.set_owner(db, finding_id, body.owner)
+        r = cases.set_overlay(db, finding_id, fields)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    security.log_audit(db, username=user.username, action="set_owner",
-                       target=f"vuln:{r['vuln_key']}", detail=f"→{r['owner']}（{r['updated']}筆）",
+    security.log_audit(db, username=user.username, action="set_overlay",
+                       target=f"vuln:{r['vuln_key']}", detail=str({k: v for k, v in r.items() if k in fields}),
                        ip=_client_ip(request))
     return r
 
