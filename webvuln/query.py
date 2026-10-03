@@ -79,6 +79,17 @@ def departments(session: Session) -> list[str]:
     return sorted(d for d in rows if d)
 
 
+def owners(session: Session) -> list[str]:
+    """最新快照的既有負責人清單(去重排序)，供編輯視窗可搜尋下拉。"""
+    b = latest_batch(session)
+    if not b:
+        return []
+    rows = session.execute(
+        select(Finding.owner).where(Finding.batch_id == b.id).distinct()
+    ).scalars().all()
+    return sorted(o.strip() for o in rows if o and o.strip())
+
+
 def summary(session: Session, department: Optional[str] = None,
             today: Optional[dt.date] = None) -> dict:
     today = today or dt.date.today()
@@ -128,11 +139,12 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
          owner: Optional[str] = None, severity: Optional[str] = None,
          band: Optional[str] = None, keyword: Optional[str] = None,
          sheet_key: Optional[str] = None, stage: Optional[str] = None,
-         only_should_apply: bool = False, applied: bool = False,
+         only_should_apply: bool = False, applied: bool = False, apply_intent: bool = False,
          no_owner: bool = False, no_due: bool = False,
          today: Optional[dt.date] = None) -> list[dict]:
     """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
-    only_should_apply/no_owner/no_due 為缺口/行動線清單；applied=已申請處置中(例外/展延)。"""
+    only_should_apply/no_owner/no_due 為缺口/行動線清單；applied=已申請處置中(例外/展延，官方)；
+    apply_intent=管理人標「要申請展延/例外」(送審中，尚未在 Excel 反映)。"""
     today = today or dt.date.today()
     fs = _latest_findings(session, department)
 
@@ -148,6 +160,12 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if f.stage == stage]
     if applied:  # 已申請處置中：備註有申請紀錄→階段已成 例外/展延(備註閘門)
         fs = [f for f in fs if f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)]
+    if apply_intent:  # 管理人標「要申請展延/例外」(不論官方階段，含尚未反映的送審中)
+        from .models import Case as _C
+        from .logic import PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC
+        _ks = {c.vuln_key for c in session.execute(
+            select(_C).where(_C.status.in_((PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC)))).scalars().all()}
+        fs = [f for f in fs if "|".join(vuln_key(f)) in _ks]
     if band:
         fs = [f for f in fs if _band(f, today) == band]
     if only_should_apply:

@@ -137,6 +137,12 @@ def api_departments(db: Session = Depends(get_db)):
     return query.departments(db)
 
 
+@app.get("/api/owners")
+def api_owners(db: Session = Depends(get_db)):
+    """既有負責人清單，供編輯視窗可搜尋下拉(負責人可新增、部門不可)。"""
+    return query.owners(db)
+
+
 @app.get("/api/summary")
 def api_summary(department: str | None = None, db: Session = Depends(get_db)):
     return query.summary(db, department=department)
@@ -154,6 +160,7 @@ def api_findings(
     stage: str | None = None,
     should_apply: bool = False,
     applied: bool = False,
+    apply_intent: bool = False,
     no_owner: bool = False,
     no_due: bool = False,
     db: Session = Depends(get_db),
@@ -161,7 +168,7 @@ def api_findings(
     return query.find(db, department=department, status=status, owner=owner,
                       severity=severity, band=band, keyword=keyword, sheet_key=sheet_key,
                       stage=stage, only_should_apply=should_apply, applied=applied,
-                      no_owner=no_owner, no_due=no_due)
+                      apply_intent=apply_intent, no_owner=no_owner, no_due=no_due)
 
 
 @app.get("/api/ranking")

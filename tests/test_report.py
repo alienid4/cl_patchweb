@@ -98,6 +98,20 @@ def test_find_applied_filter(session):
     assert all(r["stage"] in ("例外管理中", "首次展延中") for r in rows)
 
 
+def test_find_apply_intent_and_owners(session):
+    from webvuln import cases
+    _load(session)
+    # 幫 a(原始階段)標「要申請展延」→ 應出現在 apply_intent，即使官方還是原始
+    a = session.query(Finding).filter_by(host="a").one()
+    cases.set_overlay(session, a.id, {"progress": "要申請展延"})
+    rows = query.find(session, apply_intent=True, status="全部", today=TODAY)
+    assert {r["host"] for r in rows} == {"a"}
+    assert rows[0]["stage"] == "原始修補期限"          # 官方還沒變,但被 apply_intent 撈到(勾稽)
+    assert rows[0]["progress_state"] == "送審中"        # 標在匯入後 → 送審中
+    # owners 清單
+    assert "玄慈" in query.owners(session)
+
+
 def test_find_includes_raw_for_export(session):
     # 匯出「原始整列」靠 query.find 帶回 raw(原欄名→原值)
     importer.create_batch(session, ImportIn(findings=[

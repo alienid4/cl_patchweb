@@ -245,11 +245,25 @@
     table.appendChild(tb); box.appendChild(table); makeSortable(table);
   }
 
-  // 管理員編輯一筆弱點的可寫欄位(負責人＋追蹤備註)：開視窗、存系統疊加層、重匯不洗掉、不動 Excel
-  function editOverlay(row, done) {
+  // 既有部門/負責人清單(可搜尋下拉用)；開一次抓、之後快取
+  var _deptList = null, _ownerList = null;
+  async function ensureLists() {
+    if (_deptList && _ownerList) return;
+    try { _deptList = await jget('/api/departments'); } catch (e) { _deptList = _deptList || []; }
+    try { _ownerList = await jget('/api/owners'); } catch (e) { _ownerList = _ownerList || []; }
+  }
+  function _datalist(id, items) {
+    return U.el('datalist', { id: id }, (items || []).map(function (v) { return U.el('option', { value: v }); }));
+  }
+
+  // 管理員編輯一筆弱點的可寫欄位：開視窗、存系統疊加層、重匯不洗掉、不動 Excel
+  async function editOverlay(row, done) {
+    await ensureLists();
     var title = (row.host || '') + ' / ' + (row.name || row.plugin_id || '');
-    var owner = U.el('input', { type: 'text', value: row.owner || '' });
-    var dept = U.el('input', { type: 'text', value: row.department || '' });
+    // 負責人：可搜尋下拉＋可新增(找不到就打新名字,有人離職/新進)
+    var owner = U.el('input', { type: 'text', value: row.owner || '', list: 'webext-owners', autocomplete: 'off', placeholder: '可輸入搜尋；找不到可直接打新名字' });
+    // 部門：可搜尋下拉，但只能選現有(存檔時驗證)，避免打錯多出部門
+    var dept = U.el('input', { type: 'text', value: row.department || '', list: 'webext-depts', autocomplete: 'off', placeholder: '從清單選（避免打錯新增部門）' });
     var target = U.el('input', { type: 'date', value: row.target_date || '' });
     var progress = U.el('select', {}, [
       U.el('option', { value: '', text: '未標記' }),
@@ -269,9 +283,17 @@
       U.el('label', { text: '處理進度（系統內自己標，不碰 Excel；結論仍以資安 Excel 為主）' }), progress,
       U.el('label', { text: '預計完成日（承辦回報預計哪天做完；留空＝清除。供主管週報彙總）' }), target,
       U.el('label', { text: '追蹤備註（承辦回報：何時做什麼動作。只存系統，不會動到 Excel 原備註）' }), note,
+      _datalist('webext-owners', _ownerList),
+      _datalist('webext-depts', _deptList),
     ]);
     var save = U.el('button', { class: 'btn btn-primary', text: '存檔' });
     save.addEventListener('click', async function () {
+      // 部門只能選現有(避免打錯多出部門)；留空＝清除回 Excel 值
+      var dv = (dept.value || '').trim();
+      if (dv && (_deptList || []).indexOf(dv) < 0) {
+        UI.toast('部門「' + dv + '」不在清單中。請從既有部門選擇（避免打錯新增部門）；留空＝回到 Excel 值。', 'error');
+        dept.focus(); return;
+      }
       var r = await fetch('/api/findings/' + row.id + '/overlay', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ set_owner: true, owner: owner.value, set_department: true, department: dept.value, set_target: true, target_date: target.value, set_progress: true, progress: progress.value, set_note: true, note: note.value })
@@ -340,12 +362,15 @@
     var exc = (s.stages && s.stages.exception) ? s.stages.exception.count : 0;
     var ext = (s.stages && s.stages.extension) ? s.stages.extension.count : 0;
     var total = (s.applied_count != null) ? s.applied_count : (exc + ext);
+    var pg = s.progress || {};
+    var intent = (pg.apply_ext || 0) + (pg.apply_exc || 0);   // 管理人標「要申請」的(送審中)
 
     host.appendChild(U.el('p', { class: 'empty-hint',
-      text: '「已申請處置中」＝備註已有申請紀錄（例外／展延）的弱點，在這裡追它們的預計完成日有沒有如期。承辦去 iForm 申請、下次匯入後會自動進來，狀態由備註自動判定，不需手動改。' }));
+      text: '送審進度＝整個申請流程的勾稽。「要申請（送審中）」是你標了要申請、但資安 Excel 還沒反映的（對帳狀態看送審中/待查）；資安核准、備註出現後會自動移到「已申請處置中」。結論一律以資安 Excel 為主。' }));
 
     renderTabs(host, [
-      { label: '全部處理中（' + total + '）', render: function (c) { renderActionListInto(c, '已申請處置中（例外／展延）', { applied: 'true' }); } },
+      { label: '要申請·送審中（' + intent + '）', render: function (c) { renderActionListInto(c, '要申請（送審中：我標了要申請，Excel 尚未反映）', { apply_intent: 'true' }); } },
+      { label: '已申請處置中（' + total + '）', render: function (c) { renderActionListInto(c, '已申請處置中（例外／展延，Excel 已反映）', { applied: 'true' }); } },
       { label: '例外管理（' + exc + '）', render: function (c) { renderActionListInto(c, '例外管理中', { stage: '例外管理中' }); } },
       { label: '首次展延（' + ext + '）', render: function (c) { renderActionListInto(c, '首次展延中', { stage: '首次展延中' }); } },
     ], 'cases');
@@ -953,7 +978,17 @@
   function start() {
     wirePersist();
     wireNewFeatures();
-    loadFromServer();  // 有伺服器資料就自動載入；沒有則維持原本上傳畫面
+    // 防「上傳畫面一閃」：開場先同步藏上傳區＋顯示載入中，待快照載入後決定
+    var up = document.getElementById('upload-section');
+    if (up) up.classList.add('hidden');
+    var loading = U.el('div', { id: 'webext-boot',
+      style: 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:18px;color:#1a7f4b;background:#fff;z-index:60' },
+      [U.el('span', { text: '載入中…' })]);
+    document.body.appendChild(loading);
+    loadFromServer().then(function (ok) {   // 有伺服器資料就自動載入
+      if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+      if (!ok && up) up.classList.remove('hidden');   // 沒資料→回到上傳畫面
+    });
   }
 
   if (document.readyState === 'loading') {
