@@ -319,6 +319,40 @@ def _is_overdue(f: Finding, today: dt.date) -> bool:
     return od is not None and od > 0
 
 
+def owner_summary(session: Session, department: Optional[str] = None,
+                  today: Optional[dt.date] = None) -> list[dict]:
+    """負責人角度（主管要的『誰還有幾隻、各自什麼狀態』）：
+    每位負責人未結案 總數 ＋ 處置階段分佈(原始/首次展延/例外管理) ＋ 等複掃(自行結案請複審) ＋ 逾期。
+    stage 合計＝total；rescan/overdue 為疊加標記(子集)。依逾期、總數排序。"""
+    from collections import defaultdict
+    from .models import Case
+    from .logic import PROGRESS_RESCAN, PROGRESS_VALUES
+    today = today or dt.date.today()
+    fs = [f for f in _latest_findings(session, department) if f.close_status == CLOSE_OPEN]
+    prog = {c.vuln_key: c.status for c in session.execute(
+        select(Case).where(Case.status.in_(PROGRESS_VALUES))).scalars().all()}
+
+    agg: dict = defaultdict(lambda: {"total": 0, "original": 0, "extension": 0, "exception": 0,
+                                     "other": 0, "rescan": 0, "overdue": 0, "_depts": set()})
+    for f in fs:
+        name = (f.owner or "").strip() or "— 未指派"
+        a = agg[name]
+        a["total"] += 1
+        if f.stage == STAGE_ORIGINAL: a["original"] += 1
+        elif f.stage == STAGE_EXTENSION: a["extension"] += 1
+        elif f.stage == STAGE_EXCEPTION: a["exception"] += 1
+        else: a["other"] += 1
+        if _is_overdue(f, today): a["overdue"] += 1
+        if prog.get("|".join(vuln_key(f))) == PROGRESS_RESCAN: a["rescan"] += 1
+        if f.department: a["_depts"].add(f.department)
+    rows = []
+    for name, a in agg.items():
+        depts = sorted(a.pop("_depts"))
+        rows.append({"owner": name, "department": "、".join(depts), **a})
+    rows.sort(key=lambda r: (-r["overdue"], -r["total"]))
+    return rows
+
+
 def _ranking(session: Session, key_fn, department: Optional[str], today: dt.date) -> list[dict]:
     fs = _latest_findings(session, department)
     agg: dict = defaultdict(lambda: {"unresolved": 0, "overdue": 0, "should_apply": 0,

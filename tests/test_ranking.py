@@ -30,6 +30,23 @@ def test_ranking_by_owner(session):
     assert qiao["overdue"] == 1 and qiao["closed"] == 1
 
 
+def test_owner_summary(session):
+    from webvuln import cases
+    from webvuln.models import Finding
+    _load(session)
+    # 幫玄慈一筆標等複掃
+    a1 = session.query(Finding).filter_by(host="a1").one()
+    cases.set_overlay(session, a1.id, {"progress": "等複掃"})
+    rows = query.owner_summary(session, today=TODAY)
+    xuan = next(x for x in rows if x["owner"] == "玄慈")
+    assert xuan["total"] == 2 and xuan["overdue"] == 2
+    assert xuan["original"] == 2                 # 都還原始階段
+    assert xuan["original"] + xuan["extension"] + xuan["exception"] + xuan["other"] == xuan["total"]
+    assert xuan["rescan"] == 1                   # 標了一筆等複掃
+    qiao = next(x for x in rows if x["owner"] == "喬峰")
+    assert qiao["total"] == 1                    # 已結那筆不算
+
+
 def test_sla(session):
     _load(session)
     s = {row["severity"]: row for row in query.sla(session, today=TODAY)}

@@ -495,6 +495,39 @@
     ], 'duesoon');
   }
 
+  // ---- 負責人追蹤（主管角度：誰還有幾隻＋狀態分佈）----
+  async function renderOwnerInto(host) {
+    if (!host) return;
+    host.innerHTML = ''; host.classList.remove('webext-rpt');
+    var rows;
+    try { rows = await jget('/api/owner-summary?' + qd()); }
+    catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
+    host.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人未結案「幾隻＋狀態」。處置階段(原始／首次展延／例外管理)相加＝未結；等複掃＝自行回報做完·等資安複審(疊加)；逾期(疊加)。點負責人看他的全部。' }));
+    host.appendChild(headWithExport('負責人追蹤（' + rows.length + ' 人）',
+      [['owner', '負責人'], ['department', '部門'], ['total', '未結'], ['original', '原始'],
+       ['extension', '首次展延'], ['exception', '例外管理'], ['rescan', '等複掃'], ['overdue', '逾期']],
+      function () { return rows; }));
+    if (!rows.length) { host.appendChild(U.el('p', { class: 'empty-hint', text: '無未結案。' })); return; }
+    var cols = [['owner', '負責人'], ['department', '部門'], ['total', '未結'], ['original', '原始'],
+      ['extension', '首次展延'], ['exception', '例外管理'], ['rescan', '等複掃'], ['overdue', '逾期']];
+    var table = U.el('table', { class: 'tracking-table' });
+    table.appendChild(U.el('thead', {}, [U.el('tr', {}, cols.map(function (c) { return U.el('th', { text: c[1] }); }))]));
+    var tb = U.el('tbody');
+    rows.forEach(function (r) {
+      var tds = cols.map(function (c) {
+        var td = U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
+        if (c[0] === 'owner' && r.owner && r.owner !== '— 未指派') {
+          td.style.cssText = 'color:#1a7f4b;cursor:pointer;font-weight:600'; td.title = '看這位負責人的全部未結';
+          td.addEventListener('click', function () { openFindings(r.owner + ' 的未結弱點', { owner: r.owner }); });
+        }
+        if (c[0] === 'overdue' && r.overdue) td.style.color = '#c0392b';
+        return td;
+      });
+      tb.appendChild(U.el('tr', {}, tds));
+    });
+    table.appendChild(tb); host.appendChild(table); makeSortable(table);
+  }
+
   // 待辦清單的單一清單：搜尋 + 可改(負責人/預計完成日/備註) + 完整/簡易匯出
   var _TODO_COLS = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
     ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
@@ -895,6 +928,7 @@
   var GOV_ITEMS = [
     { key: 'todo', label: '待辦清單', render: renderTodoInto },     // 做：要處理的清單都在這
     { key: 'duesoon', label: '到期倒數', render: renderDueSoonInto }, // 做：依距到期天數看 30/60/90
+    { key: 'byowner', label: '負責人追蹤', render: renderOwnerInto }, // 做：主管角度「誰還有幾隻＋狀態」
     { key: 'cases', label: '送審進度', render: renderCasesInto },   // 做：例外/展延申請跑簽到核准
     { key: 'report', label: '主管週報', render: renderReportInto }, // 報：給主管的固定報告
     { key: 'closestat', label: '結案稽核', render: renderCloseInto }, // 查：結案驗證/浮報

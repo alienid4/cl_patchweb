@@ -143,6 +143,12 @@ def api_owners(db: Session = Depends(get_db)):
     return query.owners(db)
 
 
+@app.get("/api/owner-summary")
+def api_owner_summary(department: str | None = None, db: Session = Depends(get_db)):
+    """負責人角度：誰還有幾隻＋狀態分佈(原始/展延/例外/等複掃/逾期)。"""
+    return query.owner_summary(db, department=department)
+
+
 @app.get("/api/summary")
 def api_summary(department: str | None = None, db: Session = Depends(get_db)):
     return query.summary(db, department=department)
