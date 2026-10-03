@@ -684,6 +684,38 @@
       { label: '90 天以上', value: d.d90plus || 0, color: DUE_COLOR.d90plus, key: 'd90plus' },
     ].map(function (it) { if (onBucket) it.onClick = function () { onBucket(it.key, it.label); }; return it; });
   }
+  // 內嵌 SVG 折線圖：labels=X 軸字串；lines=[{name,color,values[]}]。可列印、無外部庫。
+  // 1 點時只畫點；2 點以上連線。數字直接標在點上(主管一眼看走勢)。
+  function svgLineChart(host, labels, lines, title) {
+    ensureChartStyle();
+    if (title) host.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: title })]));
+    var n = labels.length;
+    var W = 640, H = 190, padL = 44, padR = 14, padT = 16, padB = 34;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    var maxV = 1; lines.forEach(function (ln) { ln.values.forEach(function (v) { if (v > maxV) maxV = v; }); });
+    function xFor(i) { return n <= 1 ? padL + plotW / 2 : padL + i * plotW / (n - 1); }
+    function yFor(v) { return padT + (1 - v / maxV) * plotH; }
+    var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); };
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" style="max-width:680px;height:auto;font-family:inherit" xmlns="http://www.w3.org/2000/svg">';
+    svg += '<line x1="' + padL + '" y1="' + yFor(0) + '" x2="' + (W - padR) + '" y2="' + yFor(0) + '" stroke="#e3e6ea"/>';
+    svg += '<line x1="' + padL + '" y1="' + yFor(maxV) + '" x2="' + (W - padR) + '" y2="' + yFor(maxV) + '" stroke="#eef3f0"/>';
+    svg += '<text x="' + (padL - 6) + '" y="' + (yFor(maxV) + 4) + '" text-anchor="end" font-size="11" fill="#999">' + maxV + '</text>';
+    svg += '<text x="' + (padL - 6) + '" y="' + (yFor(0) + 4) + '" text-anchor="end" font-size="11" fill="#999">0</text>';
+    labels.forEach(function (lb, i) { svg += '<text x="' + xFor(i) + '" y="' + (H - 12) + '" text-anchor="middle" font-size="11" fill="#777">' + esc(lb) + '</text>'; });
+    lines.forEach(function (ln) {
+      if (n >= 2) { var pts = ln.values.map(function (v, i) { return xFor(i) + ',' + yFor(v); }).join(' '); svg += '<polyline fill="none" stroke="' + ln.color + '" stroke-width="2.5" points="' + pts + '"/>'; }
+      ln.values.forEach(function (v, i) {
+        svg += '<circle cx="' + xFor(i) + '" cy="' + yFor(v) + '" r="3.5" fill="' + ln.color + '"/>';
+        svg += '<text x="' + xFor(i) + '" y="' + (yFor(v) - 7) + '" text-anchor="middle" font-size="11" font-weight="700" fill="' + ln.color + '">' + v + '</text>';
+      });
+    });
+    svg += '</svg>';
+    var box = U.el('div', { style: 'margin:6px 0 8px' }); box.innerHTML = svg; host.appendChild(box);
+    var lg = U.el('div', { class: 'wx-legend', style: 'flex-direction:row;gap:16px;margin-bottom:12px' });
+    lines.forEach(function (ln) { lg.appendChild(U.el('div', { class: 'wx-leg' }, [U.el('span', { class: 'wx-sw', style: 'background:' + ln.color }), U.el('span', { text: ln.name })])); });
+    host.appendChild(lg);
+  }
+
   // 由 severity 物件組出嚴重度圓餅 items（含下鑽）
   function severityItems(sev, onSev) {
     sev = sev || {};
@@ -863,6 +895,9 @@
       if (!(s.by_closer && s.by_closer.length)) { c0.appendChild(U.el('p', { class: 'empty-hint', text: '本期無新結案。' })); return; }
       c0.appendChild(headWithExport('本期結案（依結案人）',
         [['name', '結案人'], ['closed', '本期結案']], function () { return s.by_closer; }));
+      // 長條圖：誰本期結最多，一眼看出(由多到少)
+      var sorted = s.by_closer.slice().sort(function (a, b) { return (b.closed || 0) - (a.closed || 0); });
+      hbarChart(c0, sorted.map(function (r) { return { label: r.name || '（未填）', value: r.closed || 0, color: '#1a7f4b' }; }));
       var table = U.el('table', { class: 'tracking-table' });
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, [U.el('th', { text: '結案人' }), U.el('th', { text: '本期結案' })])]));
       var tb = U.el('tbody');
@@ -1015,6 +1050,17 @@
           hbarChart(bar, dueBucketItems(s.due_buckets, function (key) { openFindings(bl[key] + '（到期倒數）', bp[key]); }));
           vis.appendChild(pie); vis.appendChild(bar);
           c.appendChild(vis);
+          // 未結趨勢折線（主管愛看走勢）：≥2 批才畫（資料越多越有用）
+          var trendBox = U.el('div'); c.appendChild(trendBox);
+          var tp = {}; if (s.department && s.department !== '全部') tp.department = s.department;
+          jget('/api/trend?' + qd(tp)).then(function (tr) {
+            if (!tr || tr.length < 2) return;
+            var labels = tr.map(function (x) { return (x.date || '').slice(5); });   // MM-DD
+            svgLineChart(trendBox, labels, [
+              { name: '未結', color: '#1a7f4b', values: tr.map(function (x) { return x.open; }) },
+              { name: '其中逾期', color: '#c0392b', values: tr.map(function (x) { return x.overdue; }) },
+            ], '未結趨勢（每次匯入）');
+          }).catch(function () { });
           if (s.change && s.change.has_prev) {
             kpiCards(c, '本週變化（本批 vs 上批）', [
               { label: '上批未結', value: s.change.prev },
@@ -1050,24 +1096,6 @@
             { label: '等複掃', value: pg.rescan || 0 },
             { label: '需追查 ⚠️', value: pg.flagged || 0, danger: true },
           ]);
-      } },
-      { label: '負責人', render: function (c) {
-          c.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人「近期到期」還有幾隻（橫條＝數量、紅段＝逾期）。明年才到期的預設不看；切範圍看變化（各範圍含已逾期）。點負責人看他的全部。' }));
-          var rRange = '90';
-          c.appendChild(U.el('div', {}, [U.el('label', { text: '到期範圍　', style: 'font-size:14px' }),
-            rangePills(rRange, function (v) { rRange = v; drawBars(); })]));
-          var bbox = U.el('div'); c.appendChild(bbox);
-          function drawBars() {
-            bbox.innerHTML = '';
-            var p = {}; if (rRange) p.due_max = rRange; if (_dueLeadOn) p.lead = DUE_LEAD_DAYS;
-            jget('/api/owner-summary?' + qd(p)).then(function (rows) {
-              ownerBars(bbox, rows, function (r) {
-                var d = { owner: r.owner }; if (rRange) d.due_max = rRange; if (_dueLeadOn) d.lead = DUE_LEAD_DAYS;
-                openFindings(r.owner + ' · 近期未結', d);
-              });
-            }).catch(function () { bbox.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); });
-          }
-          drawBars();
       } },
       { label: '處置落點', render: function (c) { renderStageLanding(c, s); } },
       { label: '應申請未申請（' + s.need_apply_list.length + '）', render: function (c) {

@@ -480,6 +480,33 @@ def _two_latest_batches(session: Session):
     return (bs[0] if bs else None, bs[1] if len(bs) > 1 else None)
 
 
+def trend(session: Session, department: Optional[str] = None,
+          today: Optional[dt.date] = None, limit: int = 12) -> list[dict]:
+    """未結趨勢：每次匯入(批)當下的未結數與其中逾期數，依時間排序。供主管週報折線。
+
+    歷史批留著(is_latest 只標最新；舊批的 finding 仍在)，所以能回看每批的未結量。
+    """
+    today = today or dt.date.today()
+    batches = session.execute(
+        select(ImportBatch).order_by(ImportBatch.imported_at.asc(), ImportBatch.id.asc())
+    ).scalars().all()
+    if limit and len(batches) > limit:
+        batches = batches[-limit:]        # 只看最近 N 批
+    out = []
+    for b in batches:
+        q = select(Finding).where(Finding.batch_id == b.id, Finding.close_status == CLOSE_OPEN)
+        if department and department != "全部":
+            q = q.where(Finding.department == department)
+        rows = session.execute(q).scalars().all()
+        out.append({
+            "imported_at": b.imported_at.isoformat() if b.imported_at else None,
+            "date": b.imported_at.date().isoformat() if b.imported_at else None,
+            "open": len(rows),
+            "overdue": sum(1 for f in rows if _is_overdue(f, today)),
+        })
+    return out
+
+
 def close_stats(session: Session, department: Optional[str] = None,
                 today: Optional[dt.date] = None) -> dict:
     """結案統計：本期新結案（上期未結、這期已結）＋依結案人。來源(Excel)確認為準。

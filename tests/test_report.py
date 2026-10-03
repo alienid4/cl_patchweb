@@ -152,6 +152,24 @@ def test_find_includes_raw_for_export(session):
     assert list(rows[0]["raw"].keys()) == ["編號", "主機IP", "備註", "風險值"]  # 原欄序保留
 
 
+def test_trend_per_batch(session):
+    f = FindingIn
+    importer.create_batch(session, ImportIn(findings=[
+        f(host="x", plugin_id="p", sheet_key="s", remediation_due="2026-04-01", close_status="未結案"),
+        f(host="y", plugin_id="p", sheet_key="s", remediation_due="2026-04-01", close_status="未結案"),
+    ]))
+    importer.create_batch(session, ImportIn(findings=[
+        f(host="x", plugin_id="p", sheet_key="s", remediation_due="2026-04-01", close_status="未結案"),
+        f(host="y", plugin_id="p", sheet_key="s", remediation_due="2026-04-01", close_status="已結案"),
+        f(host="z", plugin_id="p", sheet_key="s", remediation_due="2026-12-01", close_status="未結案"),
+    ]))
+    tr = query.trend(session, today=TODAY)
+    assert len(tr) == 2
+    assert tr[0]["open"] == 2 and tr[1]["open"] == 2      # 批1:x,y；批2:x,z(y 結案)
+    assert tr[0]["overdue"] == 2                          # x,y 都逾期(2026-04-01 < 2026-05-10)
+    assert tr[1]["overdue"] == 1                          # 只 x 逾期(z 到期 12-01 未逾期)
+
+
 def test_report_endpoint(client):
     client.post("/api/import", json={"findings": [
         {"host": "a", "severity": "High", "remediation_due": "2026-04-01", "close_status": "未結案"},

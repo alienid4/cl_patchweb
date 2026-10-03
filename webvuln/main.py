@@ -208,6 +208,12 @@ def api_close_stats(department: str | None = None, db: Session = Depends(get_db)
     return query.close_stats(db, department=department)
 
 
+@app.get("/api/trend")
+def api_trend(department: str | None = None, limit: int = 12, db: Session = Depends(get_db)):
+    """未結趨勢：每次匯入當下的未結數／逾期數（供主管週報折線）。"""
+    return query.trend(db, department=department, limit=limit)
+
+
 @app.get("/api/snapshot")
 def api_snapshot(db: Session = Depends(get_db)):
     """最新快照原封內容（各表欄序＋raw 列），供前端重建 workbook 餵回原本 render。"""
