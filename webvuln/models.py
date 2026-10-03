@@ -101,6 +101,8 @@ class Case(Base):
     host: Mapped[str | None] = mapped_column(String(200))
     department: Mapped[str | None] = mapped_column(String(200), index=True)
     owner: Mapped[str | None] = mapped_column(String(100), index=True)  # 去正規化：最新快照的承辦
+    # 管理員在系統內改的負責人（覆蓋 Excel 來的值）；重匯時套回 finding，不會被洗掉
+    owner_override: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(30), default="未申請", index=True)
     note: Mapped[str | None] = mapped_column(Text)
     # reconcile 用

@@ -36,12 +36,37 @@ engine: Engine = _make_engine(DB_URL)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, class_=Session)
 
 
+# 既有 DB 用 create_all 建(非 alembic)時，create_all 不會對既有表「加欄」。
+# 這裡列出後來才加的欄，啟動時缺就補(SQLite ADD COLUMN)，讓正式機免手動 ALTER。
+_ENSURE_COLUMNS = {
+    "case_overlay": [("owner_override", "VARCHAR(100)")],
+}
+
+
+def _ensure_columns(eng: Engine) -> None:
+    if eng.url.get_backend_name() != "sqlite":
+        return  # 其他 DB 走 alembic
+    from sqlalchemy import text
+    with eng.begin() as conn:
+        for table, cols in _ENSURE_COLUMNS.items():
+            exists = conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            if not exists:
+                continue
+            have = {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
+            for name, decl in cols:
+                if name not in have:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
 def init_db(target_engine: Engine | None = None) -> None:
-    """建表。SQLite 檔不存在時先建父資料夾。"""
+    """建表。SQLite 檔不存在時先建父資料夾。對既有 DB 補後加的欄位。"""
     eng = target_engine or engine
     if eng.url.get_backend_name() == "sqlite" and eng.url.database not in (None, "", ":memory:"):
         Path(eng.url.database).parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(eng)
+    _ensure_columns(eng)
 
 
 def get_session() -> Session:

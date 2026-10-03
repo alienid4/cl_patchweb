@@ -31,6 +31,18 @@ def test_effective_due_needs_remark():
     assert logic.compute_effective_due(None, None, None) is None
 
 
+def test_applied_keyword_C():
+    """C 折衷：含申請動作的自由寫法也算；『排除/解除』不算。"""
+    for rm in ("例外管理(iForm_1)", "例外申請#25", "已簽核例外(202304004)", "已申請例外#9"):
+        assert logic._applied_exc(rm) is True, rm
+    for rm in ("例外狀況已排除", "例外已解除", "設備待汰換", ""):
+        assert logic._applied_exc(rm) is False, rm
+    for rm in ("首次展延(iForm_2)", "已展延", "展延申請單#123", "已申請展延iform#456"):
+        assert logic._applied_ext(rm) is True, rm
+    for rm in ("設備待汰換", ""):
+        assert logic._applied_ext(rm) is False, rm
+
+
 def test_stage_needs_remark():
     d = dt.date(2026, 5, 1)
     assert logic.compute_stage(d, d, d, "例外管理(iForm_1)") == logic.STAGE_EXCEPTION

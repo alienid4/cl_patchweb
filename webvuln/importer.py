@@ -61,4 +61,6 @@ def create_batch(session: Session, data: ImportIn) -> ImportBatch:
     # 承辦疊加層：把新快照對到既有 case（見 W3）。import 內部呼叫，避免循環匯入放這。
     from . import cases
     cases.reconcile(session, batch)
+    # 管理員改過的負責人（owner_override）在重匯時套回本批 finding（Excel 值被覆蓋，不被洗掉）
+    cases.apply_owner_overrides(session, batch)
     return batch

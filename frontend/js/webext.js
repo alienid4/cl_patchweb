@@ -183,19 +183,41 @@
     try { rows = await jget('/api/findings?' + qd(Object.assign({ status: '未結案' }, params || {}))); }
     catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
     if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '無資料' })); return; }
-    box.appendChild(U.el('p', { class: 'empty-hint', text: '共 ' + rows.length + ' 筆（點欄位排序）' }));
+    var hint = '共 ' + rows.length + ' 筆（點欄位排序）';
+    if (canWrite()) hint += '；負責人欄可點「改」重新指派（存系統、重匯不會被蓋掉）';
+    box.appendChild(U.el('p', { class: 'empty-hint', text: hint }));
     var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
       ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
       ['stage', '處置階段'], ['department', '部門']];
+    var heads = cols.map(function (c) { return c[1]; });
+    if (canWrite()) heads.push('操作');
     var table = U.el('table', { class: 'tracking-table' });
-    table.appendChild(U.el('thead', {}, [U.el('tr', {}, cols.map(function (c) { return U.el('th', { text: c[1] }); }))]));
+    table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
     var tb = U.el('tbody');
     rows.forEach(function (r) {
-      tb.appendChild(U.el('tr', {}, cols.map(function (c) {
-        return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
-      })));
+      var tds = cols.map(function (c) { return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); });
+      if (canWrite()) {
+        var btn = U.el('button', { class: 'btn btn-sm', text: '改' });
+        btn.addEventListener('click', function () { editOwner(r, function () { openFindings(title, params); }); });
+        tds.push(U.el('td', {}, [btn]));
+      }
+      tb.appendChild(U.el('tr', {}, tds));
     });
     table.appendChild(tb); box.appendChild(table); makeSortable(table);
+  }
+
+  // 管理員改負責人：跳提示輸入新名字 → 存系統(疊加層)
+  async function editOwner(row, done) {
+    var cur = row.owner || '';
+    var name = window.prompt('改負責人（' + (row.host || '') + ' / ' + (row.name || row.plugin_id || '') + '）\n原：' + cur + '\n輸入新負責人（留空＝取消覆蓋，回到 Excel 值）：', cur);
+    if (name === null) return;  // 取消
+    var r = await fetch('/api/findings/' + row.id + '/owner', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: name })
+    });
+    if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('改失敗：' + (e.detail || r.status), 'error'); return; }
+    var j = await r.json();
+    UI.toast('已改負責人（同弱點 ' + j.updated + ' 筆）', 'success');
+    if (done) done();
   }
 
   // ---- 登入 ----

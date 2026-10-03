@@ -230,6 +230,24 @@ def api_case_transition(case_id: int, body: TransitionIn, request: Request,
     return {"id": c.id, "status": c.status, "note": c.note}
 
 
+class OwnerIn(BaseModel):
+    owner: str | None = None
+
+
+@app.post("/api/findings/{finding_id}/owner")
+def api_set_owner(finding_id: int, body: OwnerIn, request: Request,
+                  db: Session = Depends(get_db), user: User = Depends(require_write_role)):
+    """管理員改負責人（存疊加層、重匯不洗掉、即時套到最新快照）。需登入(承辦/管理員)。"""
+    try:
+        r = cases.set_owner(db, finding_id, body.owner)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    security.log_audit(db, username=user.username, action="set_owner",
+                       target=f"vuln:{r['vuln_key']}", detail=f"→{r['owner']}（{r['updated']}筆）",
+                       ip=_client_ip(request))
+    return r
+
+
 @app.get("/api/export")
 def api_export(batch_id: int | None = None, department: str | None = None,
                db: Session = Depends(get_db)):

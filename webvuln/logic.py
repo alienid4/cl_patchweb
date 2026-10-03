@@ -57,15 +57,27 @@ def parse_iso_date(value) -> Optional[dt.date]:
         return None
 
 
-# 備註裡的「申請紀錄」關鍵字：有寫才代表真的申請過(見下)。
-# 來源格式例：「例外管理(iForm_202605008)」「首次展延(iForm_26013068698)」，可多筆。
-EXC_KEYWORD = "例外管理"
-EXT_KEYWORD = "首次展延"
+# 備註裡的「申請紀錄」判定（C 折衷，2026-10-03 對真實資料校準）：
+# 標準寫法是「例外管理(iForm_…)」「首次展延(iForm_…)」，但實務上有人工自由寫法
+# （例外申請#…、已簽核例外、已展延、展延申請單#… 等）。C＝出現對應詞＋申請動作就算，
+# 並排除「排除/解除」這種消去語。備註空＝沒申請。
+_APPLY_ACTION = ("申請", "管理", "簽核", "核准")  # ＋ iForm 編號(見下)
 
 
-def _applied(remark, keyword: str) -> bool:
-    """備註是否出現該申請紀錄。備註空＝沒申請。"""
-    return bool(remark) and keyword in str(remark)
+def _has_action(s: str) -> bool:
+    return any(k in s for k in _APPLY_ACTION) or ("iform" in s.lower())
+
+
+def _applied_exc(remark) -> bool:
+    """備註是否代表『已申請例外』：含「例外」＋申請動作，且非「排除/解除」。"""
+    s = str(remark or "")
+    return ("例外" in s) and _has_action(s) and ("排除" not in s) and ("解除" not in s)
+
+
+def _applied_ext(remark) -> bool:
+    """備註是否代表『已申請展延』：含「展延」＋(申請動作 或『已展延』)。"""
+    s = str(remark or "")
+    return ("展延" in s) and (_has_action(s) or ("已展延" in s))
 
 
 def compute_effective_due(exception_due, first_extension_due, remediation_due,
@@ -76,18 +88,18 @@ def compute_effective_due(exception_due, first_extension_due, remediation_due,
       - 否則 備註有「首次展延」且首次展延上限有填 → 用首次展延上限
       - 否則 → 一律用修補期限（原始）
     優先序 例外管理 > 首次展延 > 原始修補期限。"""
-    if exception_due and _applied(remark, EXC_KEYWORD):
+    if exception_due and _applied_exc(remark):
         return exception_due
-    if first_extension_due and _applied(remark, EXT_KEYWORD):
+    if first_extension_due and _applied_ext(remark):
         return first_extension_due
     return remediation_due
 
 
 def compute_stage(exception_due, first_extension_due, remediation_due=None, remark=None) -> str:
     """處置階段，判法同 compute_effective_due（備註要有對應申請紀錄才算展延/例外）。"""
-    if exception_due and _applied(remark, EXC_KEYWORD):
+    if exception_due and _applied_exc(remark):
         return STAGE_EXCEPTION
-    if first_extension_due and _applied(remark, EXT_KEYWORD):
+    if first_extension_due and _applied_ext(remark):
         return STAGE_EXTENSION
     return STAGE_ORIGINAL
 

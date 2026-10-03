@@ -161,6 +161,22 @@
     return node;
   }
 
+  // [CL_WebVuln 加] 備註申請紀錄判定(C 折衷，與後端 logic.py 同規則)。
+  // 展延/例外的日期要「備註有對應申請紀錄」才算；備註空＝沒申請。
+  function _hasAction(s) {
+    s = s || '';
+    return s.indexOf('申請') >= 0 || s.indexOf('管理') >= 0 || s.indexOf('簽核') >= 0 ||
+           s.indexOf('核准') >= 0 || s.toLowerCase().indexOf('iform') >= 0;
+  }
+  function appliedExc(remark) {
+    var s = remark || '';
+    return s.indexOf('例外') >= 0 && _hasAction(s) && s.indexOf('排除') < 0 && s.indexOf('解除') < 0;
+  }
+  function appliedExt(remark) {
+    var s = remark || '';
+    return s.indexOf('展延') >= 0 && (_hasAction(s) || s.indexOf('已展延') >= 0);
+  }
+
   global.Utils = {
     stripTime: stripTime,
     today: today,
@@ -173,5 +189,7 @@
     esc: esc,
     num: num,
     el: el,
+    appliedExc: appliedExc,
+    appliedExt: appliedExt,
   };
 })(window);

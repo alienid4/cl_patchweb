@@ -103,10 +103,8 @@
     // 要「備註有對應申請紀錄」才算數（備註空＝沒申請）。否則一律用修補期限。
     // 備註格式例：「例外管理(iForm_…)」「首次展延(iForm_…)」。
     var remarkRaw = U.normStr(pick(row, map.remark));
-    var hasExc = remarkRaw.indexOf('例外管理') >= 0;
-    var hasExt = remarkRaw.indexOf('首次展延') >= 0;
-    var realDue = (exc && hasExc) ? exc
-                : (ext && hasExt) ? ext
+    var realDue = (exc && U.appliedExc(remarkRaw)) ? exc
+                : (ext && U.appliedExt(remarkRaw)) ? ext
                 : (fix || other || null);
     var daysLeft = U.daysFromToday(realDue);
 

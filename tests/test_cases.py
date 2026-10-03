@@ -92,3 +92,23 @@ def test_endpoint_read_and_write_requires_login(client, engine, monkeypatch):
     client.post("/api/login", json={"username": "staff", "password": "pw12345"})
     r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
     assert r.status_code == 200 and r.json()["status"] == "待主管"
+
+
+def test_owner_override_survives_reimport(session):
+    f = FindingIn
+    importer.create_batch(session, ImportIn(findings=[
+        f(host="h1", plugin_id="p1", sheet_key="s", owner="網路組", close_status="未結案"),
+    ]))
+    fid = session.query(__import__("webvuln.models", fromlist=["Finding"]).Finding).one().id
+    # 改負責人
+    r = cases.set_owner(session, fid, "張三")
+    assert r["owner"] == "張三" and r["updated"] == 1
+    from webvuln.models import Finding as F
+    assert session.query(F).filter_by(batch_id=session.query(F).one().batch_id).one().owner == "張三"
+    # 重匯(Excel 仍寫網路組)→ 覆蓋套回,不被洗掉
+    importer.create_batch(session, ImportIn(findings=[
+        f(host="h1", plugin_id="p1", sheet_key="s", owner="網路組", close_status="未結案"),
+    ]))
+    latest = query.latest_batch(session)
+    newf = session.query(F).filter_by(batch_id=latest.id).one()
+    assert newf.owner == "張三"   # 重匯後仍是改過的名字

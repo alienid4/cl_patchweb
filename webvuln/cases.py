@@ -65,6 +65,51 @@ def reconcile(session: Session, batch: ImportBatch) -> dict:
     return {"created": created, "updated": updated, "orphaned": orphaned}
 
 
+def apply_owner_overrides(session: Session, batch: ImportBatch) -> int:
+    """把管理員改過的負責人(Case.owner_override)套回本批 finding。重匯後呼叫→不被 Excel 洗掉。"""
+    overrides = {c.vuln_key: c.owner_override for c in
+                 session.execute(select(Case).where(Case.owner_override.isnot(None))).scalars().all()
+                 if c.owner_override}
+    if not overrides:
+        return 0
+    n = 0
+    for f in session.execute(select(Finding).where(Finding.batch_id == batch.id)).scalars().all():
+        ov = overrides.get(key_str(f))
+        if ov and f.owner != ov:
+            f.owner = ov
+            n += 1
+    if n:
+        session.commit()
+    return n
+
+
+def set_owner(session: Session, finding_id: int, owner: Optional[str]) -> dict:
+    """管理員改負責人：以該 finding 的穩定鍵記在 Case.owner_override，並即時套到最新快照
+    所有同鍵 finding（不必重匯就看得到）。owner 空字串/None＝清除覆蓋、回到 Excel 值。"""
+    f0 = session.get(Finding, finding_id)
+    if f0 is None:
+        raise ValueError("弱點不存在")
+    vk = key_str(f0)
+    ov = (owner or "").strip() or None
+    c = session.execute(select(Case).where(Case.vuln_key == vk)).scalars().first()
+    if c is None:
+        c = Case(vuln_key=vk, sheet_key=f0.sheet_key, plugin_id=f0.plugin_id, host=f0.host,
+                 department=f0.department, owner=f0.owner, status=logic.CASE_NEW,
+                 last_seen_batch_id=f0.batch_id, is_orphan=False)
+        session.add(c)
+    c.owner_override = ov
+    # 即時套到最新那批所有同鍵 finding
+    latest = query.latest_batch(session)
+    changed = 0
+    if latest:
+        for f in session.execute(select(Finding).where(Finding.batch_id == latest.id)).scalars().all():
+            if key_str(f) == vk:
+                f.owner = ov if ov else f.owner  # 清除時保留當下顯示(下次重匯回 Excel 值)
+                changed += 1
+    session.commit()
+    return {"vuln_key": vk, "owner": ov, "updated": changed}
+
+
 def transition(session: Session, case_id: int, to: str, note: Optional[str] = None) -> Case:
     """推進申請管線狀態；非法轉移丟 ValueError（呼叫端轉 400）。"""
     if to not in logic.CASE_STATUSES:
