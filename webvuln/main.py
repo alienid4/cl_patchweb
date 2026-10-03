@@ -153,13 +153,15 @@ def api_findings(
     sheet_key: str | None = None,
     stage: str | None = None,
     should_apply: bool = False,
+    applied: bool = False,
     no_owner: bool = False,
     no_due: bool = False,
     db: Session = Depends(get_db),
 ):
     return query.find(db, department=department, status=status, owner=owner,
                       severity=severity, band=band, keyword=keyword, sheet_key=sheet_key,
-                      stage=stage, only_should_apply=should_apply, no_owner=no_owner, no_due=no_due)
+                      stage=stage, only_should_apply=should_apply, applied=applied,
+                      no_owner=no_owner, no_due=no_due)
 
 
 @app.get("/api/ranking")

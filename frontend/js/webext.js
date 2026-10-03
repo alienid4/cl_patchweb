@@ -318,81 +318,37 @@
     if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('失敗：' + (e.detail || r.status), 'error'); return; }
     UI.toast('已更新狀態', 'success'); if (rerender) rerender();
   }
+  // 送審進度＝「已申請處置中」：備註已有申請紀錄(例外/展延)的弱點，追它們的預計完成日。
+  // 狀態改成看備註自動算(方案A)：不再手動推關卡、不列全量案件。
   async function renderCasesInto(host) {
     if (!host) return;
     host.innerHTML = ''; host.classList.remove('webext-rpt');
-    var s, cases;
-    try { s = await jget('/api/summary?' + qd()); cases = await jget('/api/cases?' + qd()); }
+    var s;
+    try { s = await jget('/api/report?' + qd()); }
     catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
-    // 只算「仍在來源」的案件(active)；已消失(orphan)預設隱藏,避免舊/測試資料干擾
-    var active = cases.filter(function (c) { return !c.is_orphan; });
-    var orphan = cases.length - active.length;
-    var cnt = {}; PIPE.forEach(function (k) { cnt[k] = 0; });
-    var suspect = 0;
-    active.forEach(function (c) { if (c.status in cnt) cnt[c.status]++; if (c.suspect) suspect++; });
+    var exc = (s.stages && s.stages.exception) ? s.stages.exception.count : 0;
+    var ext = (s.stages && s.stages.extension) ? s.stages.extension.count : 0;
+    var total = (s.applied_count != null) ? s.applied_count : (exc + ext);
 
-    // 頁籤一：關卡總覽（送審各關卡計數，可下鑽）
-    function overviewTab(c0) {
-      c0.appendChild(group('送審關卡', PIPE.map(function (k) {
-        return card(cnt[k], k, k === '未申請' || k === '退回補件',
-          function () { openCasesModal(k + ' 案件', { status: k }); });
-      })));
-      c0.appendChild(U.el('div', { class: 'scope-info' }, [U.el('span', {
-        html: '可疑聲稱 <b>' + suspect + '</b>　·　'
-          + (me.open_write ? '（目前免登入模式，可直接推進狀態）'
-             : me.authenticated ? '（登入身分：' + (me.display_name || me.username) + '，可推進狀態）'
-             : '（登入後可推進狀態）') })]));
-    }
-    // 頁籤二：案件清單（可推進狀態、可匯出）；已消失預設隱藏＋可清除
-    function listTab(c0) {
-      if (orphan) {
-        var note = U.el('div', { class: 'scope-info' }, [U.el('span', {
-          html: '已隱藏 <b>' + orphan + '</b> 筆「已消失」案件（來源已無此弱點，多半已修復/移除或為舊測試資料）。' })]);
-        if (canWrite()) {
-          var pb = U.el('button', { class: 'btn btn-sm', text: '清除已消失', style: 'margin-left:8px' });
-          pb.addEventListener('click', function () { purgeOrphans(function () { renderCasesInto(host); }); });
-          note.firstChild.appendChild(document.createTextNode(' '));
-          note.firstChild.appendChild(pb);
-        }
-        c0.appendChild(note);
-      }
-      if (!active.length) { c0.appendChild(U.el('p', { class: 'empty-hint', text: '無案件。' })); return; }
-      c0.appendChild(headWithExport('申請案件清單（' + active.length + '）',
-        [['host', '主機'], ['plugin_id', 'Plugin'], ['owner', '負責人'], ['department', '部門'], ['status', '狀態'], ['source', '來源']],
-        function () {
-          return active.map(function (c) {
-            return { host: c.host || '', plugin_id: c.plugin_id || '', owner: c.owner || '未指派',
-              department: c.department || '', status: c.status + (c.suspect ? '（可疑）' : ''),
-              source: c.source_closed ? '已結' : '未結' };
-          });
-        }));
-      var table = U.el('table', { class: 'tracking-table' });
-      var thead = U.el('tr', {}, ['主機', 'Plugin', '負責人', '部門', '狀態', '來源', '操作'].map(function (h) { return U.el('th', { text: h }); }));
-      table.appendChild(U.el('thead', {}, [thead]));
-      var tb = U.el('tbody');
-      active.slice(0, 300).forEach(function (c) {
-        var ops = U.el('td');
-        if (canWrite()) {
-          (NEXT[c.status] || []).forEach(function (to) {
-            var b = U.el('button', { class: 'btn btn-sm', text: '→' + to, style: 'margin:1px' });
-            b.addEventListener('click', function () { transition(c.id, to, function () { renderCasesInto(host); }); });
-            ops.appendChild(b);
-          });
-          if (!(NEXT[c.status] || []).length) ops.textContent = '—';
-        } else { ops.textContent = ''; }
-        var stTxt = c.status + (c.suspect ? '（可疑）' : '');
-        tb.appendChild(U.el('tr', {}, [
-          U.el('td', { text: c.host || '' }), U.el('td', { text: c.plugin_id || '' }),
-          U.el('td', { text: c.owner || '未指派' }), U.el('td', { text: c.department || '' }),
-          U.el('td', { text: stTxt }), U.el('td', { text: c.source_closed ? '已結' : '未結' }), ops,
-        ]));
-      });
-      table.appendChild(tb); c0.appendChild(table); makeSortable(table);
-    }
+    host.appendChild(U.el('p', { class: 'empty-hint',
+      text: '「已申請處置中」＝備註已有申請紀錄（例外／展延）的弱點，在這裡追它們的預計完成日有沒有如期。承辦去 iForm 申請、下次匯入後會自動進來，狀態由備註自動判定，不需手動改。' }));
+
     renderTabs(host, [
-      { label: '關卡總覽', render: overviewTab },
-      { label: '案件清單（' + active.length + '）', render: listTab },
+      { label: '全部處理中（' + total + '）', render: function (c) { renderActionListInto(c, '已申請處置中（例外／展延）', { applied: 'true' }); } },
+      { label: '例外管理（' + exc + '）', render: function (c) { renderActionListInto(c, '例外管理中', { stage: '例外管理中' }); } },
+      { label: '首次展延（' + ext + '）', render: function (c) { renderActionListInto(c, '首次展延中', { stage: '首次展延中' }); } },
     ], 'cases');
+
+    // 維護：清除舊/測試資料殘留、來源已消失的追蹤紀錄(orphan case overlay)
+    if (canWrite()) {
+      var m = U.el('div', { class: 'scope-info', style: 'margin-top:14px' },
+        [U.el('span', { text: '維護：舊／測試資料殘留、來源已消失的追蹤紀錄可在此清除。' })]);
+      var pb = U.el('button', { class: 'btn btn-sm', text: '清除已消失追蹤紀錄', style: 'margin-left:8px' });
+      pb.addEventListener('click', function () { purgeOrphans(); });
+      m.firstChild.appendChild(document.createTextNode(' '));
+      m.firstChild.appendChild(pb);
+      host.appendChild(m);
+    }
   }
 
   // 清除「已消失」案件（來源已無的 orphan case）；需寫入權限，後端 require_write_role

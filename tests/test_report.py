@@ -89,6 +89,15 @@ def test_target_date_overlay_survives_reimport(session):
     assert rows3[0]["target_date"] is None
 
 
+def test_find_applied_filter(session):
+    # applied=已申請處置中：只留 stage 為 例外管理中/首次展延中(備註閘門)
+    _load(session)
+    rows = query.find(session, applied=True, today=TODAY)
+    hosts = {r["host"] for r in rows}
+    assert hosts == {"b"}           # 只有 b 是例外管理(備註有 iForm)
+    assert all(r["stage"] in ("例外管理中", "首次展延中") for r in rows)
+
+
 def test_find_includes_raw_for_export(session):
     # 匯出「原始整列」靠 query.find 帶回 raw(原欄名→原值)
     importer.create_batch(session, ImportIn(findings=[

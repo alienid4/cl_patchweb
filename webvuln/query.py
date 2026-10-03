@@ -128,11 +128,11 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
          owner: Optional[str] = None, severity: Optional[str] = None,
          band: Optional[str] = None, keyword: Optional[str] = None,
          sheet_key: Optional[str] = None, stage: Optional[str] = None,
-         only_should_apply: bool = False,
+         only_should_apply: bool = False, applied: bool = False,
          no_owner: bool = False, no_due: bool = False,
          today: Optional[dt.date] = None) -> list[dict]:
     """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
-    only_should_apply/no_owner/no_due 為缺口/行動線清單。"""
+    only_should_apply/no_owner/no_due 為缺口/行動線清單；applied=已申請處置中(例外/展延)。"""
     today = today or dt.date.today()
     fs = _latest_findings(session, department)
 
@@ -146,6 +146,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if f.sheet_key == sheet_key]
     if stage:
         fs = [f for f in fs if f.stage == stage]
+    if applied:  # 已申請處置中：備註有申請紀錄→階段已成 例外/展延(備註閘門)
+        fs = [f for f in fs if f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)]
     if band:
         fs = [f for f in fs if _band(f, today) == band]
     if only_should_apply:
