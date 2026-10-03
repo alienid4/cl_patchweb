@@ -178,6 +178,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             "stage": f.stage, "close_status": f.close_status, "remark": f.remark,
             "track_note": c.track_note if c else None,
             "target_date": (c.target_date.isoformat() if (c and c.target_date) else None),
+            "raw": f.raw or {},   # 原始整列(原欄名→原值)，供「匯出此清單」帶出全部原始欄位
         }
 
     return [row(f) for f in fs]
@@ -407,6 +408,7 @@ def weekly_report(session: Session, department: Optional[str] = None,
             "target_date": td.isoformat() if td else None,
             "target_overdue": bool(td and td < today),   # 已過自己承諾的完成日
             "track_note": c.track_note if c else None,
+            "raw": f.raw or {},   # 原始整列，供「匯出此清單」帶出全部原始欄位
         }
 
     need_apply = [f for f in open_ if should_apply(f, today)]

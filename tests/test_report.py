@@ -89,6 +89,18 @@ def test_target_date_overlay_survives_reimport(session):
     assert rows3[0]["target_date"] is None
 
 
+def test_find_includes_raw_for_export(session):
+    # 匯出「原始整列」靠 query.find 帶回 raw(原欄名→原值)
+    importer.create_batch(session, ImportIn(findings=[
+        FindingIn(host="h1", plugin_id="p1", sheet_key="s", close_status="未結案",
+                  remediation_due="2026-04-01",
+                  raw={"編號": "0001", "主機IP": "h1", "備註": "", "風險值": "High"}),
+    ]))
+    rows = query.find(session, status="未結案", today=TODAY)
+    assert rows[0]["raw"]["編號"] == "0001"
+    assert list(rows[0]["raw"].keys()) == ["編號", "主機IP", "備註", "風險值"]  # 原欄序保留
+
+
 def test_report_endpoint(client):
     client.post("/api/import", json={"findings": [
         {"host": "a", "severity": "High", "remediation_due": "2026-04-01", "close_status": "未結案"},

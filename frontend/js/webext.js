@@ -233,7 +233,7 @@
     var exportBtn = U.el('button', { class: 'btn btn-secondary', text: '匯出此清單 (CSV)' });
     exportBtn.addEventListener('click', function () {
       if (!curRows.length) { UI.toast('沒有可匯出的資料', 'error'); return; }
-      exportRowsCSV(cols, curRows, title);
+      exportRawCSV(curRows, title);   // 匯出原始整列(全部欄位)，非螢幕上的精簡欄
     });
     UI.openModal(title, box, { footer: exportBtn });
     var rows;
@@ -457,9 +457,7 @@
     }
     function topTab(c0) {
       if (!top.length) { c0.appendChild(U.el('p', { class: 'empty-hint', text: '目前無「應提申請未提」的急件。' })); return; }
-      c0.appendChild(headWithExport('最急（應提申請未提，前 10；匯出為全部 ' + top.length + ' 筆）',
-        [['owner', '負責人'], ['name', '弱點'], ['severity', '嚴重度'], ['host', '主機'], ['plugin_id', 'Plugin'],
-         ['effective_due', '到期日'], ['overdue_days', '逾期天數'], ['department', '部門']],
+      c0.appendChild(headWithRawExport('最急（應提申請未提，前 10；匯出為全部 ' + top.length + ' 筆原始欄位）',
         function () { return top; }));
       var w = canWrite();
       var heads = ['負責人', '弱點', '嚴重度', '主機', '逾期天數', '部門'];
@@ -640,6 +638,36 @@
     if (UI && UI.toast) UI.toast('已匯出此清單 CSV', 'success');
   }
 
+  // 匯出「原始整列」：每筆帶回原始 Excel 的全部欄位(原欄名、原欄序)，只是列是眼前子集。
+  // 欄序＝各筆 raw 鍵的有序聯集(raw 保留匯入時的原欄序)。不幫使用者篩欄。
+  function exportRawCSV(rows, title) {
+    rows = rows || [];
+    var cols = [], seen = {};
+    rows.forEach(function (r) {
+      var raw = r && r.raw ? r.raw : null;
+      if (raw) Object.keys(raw).forEach(function (k) { if (!seen[k]) { seen[k] = 1; cols.push([k, k]); } });
+    });
+    if (!cols.length) {   // 沒有 raw(理論上不會)→退回顯示欄,至少匯得出東西
+      if (UI && UI.toast) UI.toast('這份清單沒有原始欄位可匯出', 'error');
+      return;
+    }
+    exportRowsCSV(cols, rows.map(function (r) { return (r && r.raw) ? r.raw : {}; }), title);
+  }
+
+  // 標題 + 「匯出此清單」(原始整欄版)：給弱點明細清單用。
+  function headWithRawExport(title, getRows) {
+    var head = U.el('div', { class: 'panel-head', style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' },
+      [U.el('h3', { text: title })]);
+    var b = U.el('button', { class: 'btn btn-secondary btn-sm', text: '匯出此清單 (CSV)' });
+    b.addEventListener('click', function () {
+      var rows = getRows() || [];
+      if (!rows.length) { if (UI && UI.toast) UI.toast('沒有可匯出的資料', 'error'); return; }
+      exportRawCSV(rows, title);
+    });
+    head.appendChild(b);
+    return head;
+  }
+
   // 通用「標題 + 匯出此清單」：任何統計/清單都掛得上。getRows 回傳當下要匯出的資料(子集)。
   function headWithExport(title, cols, getRows) {
     var head = U.el('div', { class: 'panel-head', style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' },
@@ -696,10 +724,7 @@
   // 週報用的清單表（含預計完成日／追蹤備註，可改）。showDept=false 時隱藏部門欄。回傳是否有畫出表格。
   function reportTable(host, title, rows, refresh, showDept) {
     if (!rows || !rows.length) return false;
-    var expCols = [['owner', '負責人'], ['name', '弱點'], ['severity', '嚴重度'], ['host', '主機'],
-      ['effective_due', '到期日'], ['overdue_days', '逾期天數'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
-    if (showDept) expCols.push(['department', '部門']);
-    host.appendChild(headWithExport(title + '（' + rows.length + '）', expCols, function () { return rows; }));
+    host.appendChild(headWithRawExport(title + '（' + rows.length + '）', function () { return rows; }));
     var w = canWrite();
     var heads = ['負責人', '弱點', '嚴重度', '主機', '到期日', '逾期天數', '預計完成日', '追蹤備註'];
     if (showDept) heads.push('部門');
