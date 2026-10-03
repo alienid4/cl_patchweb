@@ -552,15 +552,16 @@
   async function renderOwnerInto(host) {
     if (!host) return;
     host.innerHTML = ''; host.classList.remove('webext-rpt');
-    host.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人未結案「幾隻＋狀態」。處置階段(原始／首次展延／例外管理)相加＝未結；等複掃＝自行回報做完·等資安複審(疊加)；逾期(疊加)。點負責人看他的全部。' }));
-    // 到期範圍選擇：只看近期到期的
+    host.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人「近期到期」還有幾隻（明年才到期的＝還沒到期，預設不看）。切到期範圍看各負責人怎麼變化；處置階段相加＝該範圍未結；等複掃/逾期為疊加。點負責人看他的全部。' }));
+    // 到期範圍選擇：預設聚焦近期(不預設全部，避免被遠期灌水)
     var sel = U.el('select', { style: 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:8px;font-size:14px;margin:0 0 10px' }, [
-      U.el('option', { value: '', text: '到期範圍：全部' }),
-      U.el('option', { value: '15', text: '15 天內到期（含逾期）' }),
+      U.el('option', { value: '14', text: '14 天內到期（含逾期）' }),
       U.el('option', { value: '30', text: '30 天內到期（含逾期）' }),
       U.el('option', { value: '60', text: '60 天內到期（含逾期）' }),
       U.el('option', { value: '90', text: '90 天內到期（含逾期）' }),
+      U.el('option', { value: '', text: '全部（含遠期，較少用）' }),
     ]);
+    sel.value = '90';   // 預設 90 天內(近期焦點)
     host.appendChild(U.el('div', {}, [U.el('label', { text: '到期範圍　', style: 'font-size:14px' }), sel]));
     host.appendChild(leadToggle(function () { draw(); }));   // 含申請提前量開關(與到期倒數共用狀態)
     var box = U.el('div'); host.appendChild(box);
@@ -844,10 +845,29 @@
           ]);
       } },
       { label: '負責人', render: function (c) {
-          c.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人未結數（橫條長度＝數量，紅段＝逾期）。點負責人看他的全部。' }));
-          jget('/api/owner-summary?' + qd()).then(function (rows) {
-            ownerBars(c, rows, function (r) { openFindings(r.owner + ' · 全部未結', { owner: r.owner }); });
-          }).catch(function () { c.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); });
+          c.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人「近期到期」還有幾隻（橫條＝數量、紅段＝逾期）。明年才到期的預設不看；切範圍看變化。點負責人看他的全部。' }));
+          var rsel = U.el('select', { style: 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:8px;font-size:14px;margin:0 0 10px' }, [
+            U.el('option', { value: '14', text: '14 天內到期（含逾期）' }),
+            U.el('option', { value: '30', text: '30 天內到期（含逾期）' }),
+            U.el('option', { value: '60', text: '60 天內到期（含逾期）' }),
+            U.el('option', { value: '90', text: '90 天內到期（含逾期）' }),
+            U.el('option', { value: '', text: '全部（含遠期）' }),
+          ]);
+          rsel.value = '90';
+          c.appendChild(U.el('div', {}, [U.el('label', { text: '到期範圍　', style: 'font-size:14px' }), rsel]));
+          var bbox = U.el('div'); c.appendChild(bbox);
+          function drawBars() {
+            bbox.innerHTML = '';
+            var p = {}; if (rsel.value) p.due_max = rsel.value; if (_dueLeadOn) p.lead = DUE_LEAD_DAYS;
+            jget('/api/owner-summary?' + qd(p)).then(function (rows) {
+              ownerBars(bbox, rows, function (r) {
+                var d = { owner: r.owner }; if (rsel.value) d.due_max = rsel.value; if (_dueLeadOn) d.lead = DUE_LEAD_DAYS;
+                openFindings(r.owner + ' · 近期未結', d);
+              });
+            }).catch(function () { bbox.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); });
+          }
+          rsel.addEventListener('change', drawBars);
+          drawBars();
       } },
       { label: '處置落點', render: function (c) { renderStageLanding(c, s); } },
       { label: '應申請未申請（' + s.need_apply_list.length + '）', render: function (c) {
