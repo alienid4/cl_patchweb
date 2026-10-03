@@ -219,7 +219,7 @@
     var curRows = [];   // 載入後填入,供「匯出」用(匯的是眼前這份子集)
     var footer = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' },
       listExportButtons(function () { return curRows; }, title));   // 完整/簡易 兩顆
-    UI.openModal(title, box, { footer: footer });
+    UI.openModal(title, box, { footer: footer, wide: true });   // 寬版(近滿版)：欄多，免左右拉
     var rows;
     try { rows = await jget('/api/findings?' + qd(Object.assign({ status: '未結案' }, params || {}))); }
     catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }

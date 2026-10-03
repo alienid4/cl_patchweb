@@ -391,6 +391,7 @@ th.th-sort { cursor: pointer; user-select: none; white-space: nowrap; }
   max-height: 88vh; display: flex; flex-direction: column; overflow: hidden;
   animation: pop .2s ease;
 }
+.modal.modal-wide { max-width: 96vw; max-height: 92vh; }   /* 下鑽等寬表格：近滿版，免左右拉 */
 @keyframes pop { from { transform: scale(.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .modal-header {
   display: flex; align-items: center; justify-content: space-between;

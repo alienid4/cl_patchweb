@@ -47,6 +47,10 @@
 
     stickyNow = !!opts.sticky;
 
+    // 寬版(近滿版)：下鑽等寬表格用，免得一直左右拉。opts.wide=true 時加 .modal-wide。
+    var modalEl = overlay.querySelector('.modal');
+    if (modalEl) modalEl.classList.toggle('modal-wide', !!opts.wide);
+
     titleEl.textContent = title;
     bodyEl.innerHTML = '';
     footEl.innerHTML = '';

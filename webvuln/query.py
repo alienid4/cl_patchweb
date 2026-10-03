@@ -573,23 +573,28 @@ def weekly_report(session: Session, department: Optional[str] = None,
     _b = latest_batch(session)
     imported = _b.imported_at if _b else None
 
-    # 本週變化(週對週)：拿最新批 vs 上一批的「未結弱點(穩定鍵)」比對(主管最在意變多還變少)
+    # 本週變化(週對週)：用「穩定鍵的多重集合(保留重複列)」比對。
+    # 計列數(非去重鍵)，讓「本批未結」＝未結案(302)、與對帳健檢一致；
+    # 用 Counter 相減算新增/解決，淨變化＝新增−解決 精準兜得起來(重複列也算對)。
+    from collections import Counter
     _latest_b, _prev_b = _two_latest_batches(session)
     def _open_keys(batch):
         if not batch:
-            return set()
+            return Counter()
         q = select(Finding).where(Finding.batch_id == batch.id, Finding.close_status == CLOSE_OPEN)
         if department and department != "全部":
             q = q.where(Finding.department == department)
+        rows = session.execute(q).scalars().all()
         if owner:
-            return {"|".join(vuln_key(f)) for f in session.execute(q).scalars().all()
-                    if (f.owner or "").strip() == owner}
-        return {"|".join(vuln_key(f)) for f in session.execute(q).scalars().all()}
+            rows = [f for f in rows if (f.owner or "").strip() == owner]
+        return Counter("|".join(vuln_key(f)) for f in rows)   # 多重集合：同鍵重複列各算一次
     if _prev_b:
         _cur_k = _open_keys(_latest_b); _prv_k = _open_keys(_prev_b)
-        change = {"has_prev": True, "prev": len(_prv_k), "now": len(_cur_k),
-                  "delta": len(_cur_k) - len(_prv_k),
-                  "new": len(_cur_k - _prv_k), "resolved": len(_prv_k - _cur_k)}
+        _now = sum(_cur_k.values()); _prev = sum(_prv_k.values())   # 列數(與未結案同口徑)
+        change = {"has_prev": True, "prev": _prev, "now": _now,
+                  "delta": _now - _prev,
+                  "new": sum((_cur_k - _prv_k).values()),          # 這批多出來的列
+                  "resolved": sum((_prv_k - _cur_k).values())}      # 上批有、這批沒了的列
     else:
         change = {"has_prev": False}
 
