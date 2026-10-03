@@ -226,7 +226,7 @@
     if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '無資料' })); return; }
     curRows = rows;
     var hint = '共 ' + rows.length + ' 筆（點欄位排序）';
-    if (canWrite()) hint += '；負責人欄可點「改」重新指派（存系統、重匯不會被蓋掉）';
+    if (canWrite()) hint += '；點 ✏️ 可編輯負責人／進度／預計完成日／備註（存系統、重匯不會被蓋掉）';
     box.appendChild(U.el('p', { class: 'empty-hint', text: hint }));
     var heads = cols.map(function (c) { return c[1]; });
     if (canWrite()) heads.push('操作');
@@ -236,7 +236,7 @@
     rows.forEach(function (r) {
       var tds = cols.map(function (c) { return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); });
       if (canWrite()) {
-        var btn = U.el('button', { class: 'btn btn-sm', text: '改' });
+        var btn = U.el('button', { class: 'btn btn-sm', text: '✏️', title: '編輯' });
         btn.addEventListener('click', function () { editOwner(r, function () { openFindings(title, params); }); });
         tds.push(U.el('td', {}, [btn]));
       }
@@ -454,7 +454,7 @@
       shown.forEach(function (r) {
         var tds = _TODO_COLS.map(function (c) { return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); });
         if (w) {
-          var b = U.el('button', { class: 'btn btn-sm', text: '改' });
+          var b = U.el('button', { class: 'btn btn-sm', text: '✏️', title: '編輯' });
           b.addEventListener('click', function () { editOverlay(r, function () { renderActionListInto(container, title, params); }); });
           tds.push(U.el('td', {}, [b]));
         }
@@ -738,7 +738,7 @@
       ];
       if (showDept) tds.push(U.el('td', { text: r.department || '' }));
       if (w) {
-        var b = U.el('button', { class: 'btn btn-sm', text: '改' });
+        var b = U.el('button', { class: 'btn btn-sm', text: '✏️', title: '編輯' });
         b.addEventListener('click', function () { editOverlay(r, function () { if (refresh) refresh(document.getElementById('webext-view-body')); }); });
         tds.push(U.el('td', {}, [b]));
       }
