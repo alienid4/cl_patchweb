@@ -469,12 +469,14 @@
     var s;
     try { s = await jget('/api/summary?' + qd()); }
     catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
-    renderTabs(host, [
+    var tabs = [
       { label: '待申請（' + s.should_apply + '）', render: function (c) { renderActionListInto(c, '待申請（應提例外／展延未提）', { should_apply: 'true' }); } },
       { label: '已逾期（' + s.overdue + '）', render: function (c) { renderActionListInto(c, '已逾期', { band: '已逾期' }); } },
-      { label: '無人負責（' + s.gaps.no_owner + '）', render: function (c) { renderActionListInto(c, '無人負責', { no_owner: 'true' }); } },
-      { label: '無到期日（' + s.gaps.no_due + '）', render: function (c) { renderActionListInto(c, '無到期日', { no_due: 'true' }); } },
-    ], 'todo');
+    ];
+    // 無人負責／無到期日：有資料才顯示該頁籤(為 0 時是空的，收起來少雜訊)
+    if (s.gaps.no_owner) tabs.push({ label: '無人負責（' + s.gaps.no_owner + '）', render: function (c) { renderActionListInto(c, '無人負責', { no_owner: 'true' }); } });
+    if (s.gaps.no_due) tabs.push({ label: '無到期日（' + s.gaps.no_due + '）', render: function (c) { renderActionListInto(c, '無到期日', { no_due: 'true' }); } });
+    renderTabs(host, tabs, 'todo');
   }
 
   // ---- 到期倒數（依倒數天數分桶：已逾期／30天內／31–60／61–90／90天以上）----
@@ -510,6 +512,42 @@
     ], 'duesoon');
   }
 
+  // 視覺長條排行：橫條長度＝數量、紅段＝逾期，一眼看出誰多少(直白)。rows 需含 owner/total/overdue。
+  function ensureBarStyle() {
+    if (document.getElementById('webext-bar-style')) return;
+    var st = U.el('style', { id: 'webext-bar-style' });
+    st.textContent =
+      '.obar-row{display:flex;align-items:center;gap:10px;margin:5px 0}'
+      + '.obar-name{width:120px;flex:0 0 auto;text-align:right;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+      + '.obar-name.clk{color:#1a7f4b;cursor:pointer}'
+      + '.obar-track{position:relative;flex:1;height:24px;background:#eef3f0;border-radius:5px;overflow:hidden;min-width:60px}'
+      + '.obar-fill{position:absolute;left:0;top:0;height:100%;background:#1a7f4b}'
+      + '.obar-od{position:absolute;left:0;top:0;height:100%;background:#c0392b}'
+      + '.obar-num{flex:0 0 auto;min-width:130px;font-weight:700}'
+      + '.obar-num .od{color:#c0392b}';
+    document.head.appendChild(st);
+  }
+  function ownerBars(host, rows, onClick) {
+    ensureBarStyle();
+    if (!rows || !rows.length) { host.appendChild(U.el('p', { class: 'empty-hint', text: '無未結案。' })); return; }
+    var max = Math.max.apply(null, rows.map(function (r) { return r.total || 0; })) || 1;
+    rows.forEach(function (r) {
+      var row = U.el('div', { class: 'obar-row' });
+      var named = r.owner && r.owner !== '— 未指派';
+      var name = U.el('div', { class: 'obar-name' + (named && onClick ? ' clk' : ''), text: r.owner, title: r.owner });
+      var track = U.el('div', { class: 'obar-track' }, [
+        U.el('div', { class: 'obar-fill', style: 'width:' + Math.max(Math.round((r.total || 0) / max * 100), 2) + '%' }),
+        U.el('div', { class: 'obar-od', style: 'width:' + Math.round((r.overdue || 0) / max * 100) + '%' }),
+      ]);
+      var num = U.el('div', { class: 'obar-num' });
+      num.appendChild(U.el('span', { text: String(r.total || 0) + ' 支' }));
+      if (r.overdue) num.appendChild(U.el('span', { class: 'od', text: '（逾期 ' + r.overdue + '）' }));
+      row.appendChild(name); row.appendChild(track); row.appendChild(num);
+      if (named && onClick) { name.addEventListener('click', function () { onClick(r); }); track.style.cursor = 'pointer'; track.addEventListener('click', function () { onClick(r); }); }
+      host.appendChild(row);
+    });
+  }
+
   // ---- 負責人追蹤（主管角度：誰還有幾隻＋狀態分佈；可選到期範圍）----
   async function renderOwnerInto(host) {
     if (!host) return;
@@ -538,6 +576,13 @@
       var label = sel.value ? ('（' + sel.value + ' 天內到期，' + rows.length + ' 人）') : ('（' + rows.length + ' 人）');
       box.appendChild(headWithExport('負責人追蹤' + label, cols, function () { return rows; }));
       if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: sel.value ? '此範圍內無未結案。' : '無未結案。' })); return; }
+      // 視覺排行：橫條長度＝未結數、紅段＝逾期，一眼看出誰多少(點進去看他全部)
+      var barsBox = U.el('div', { style: 'margin:4px 0 16px' }); box.appendChild(barsBox);
+      ownerBars(barsBox, rows, function (r) {
+        var d = { owner: r.owner }; if (sel.value) d.due_max = sel.value; if (lead) d.lead = lead;
+        openFindings(r.owner + ' · 全部未結', d);
+      });
+      box.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '明細（點數字下鑽各狀態）' })]));
       // 每個數字欄對應的下鑽條件(帶 owner＋目前到期範圍/提前量)
       var DRILL = {
         total: {}, original: { stage: '原始修補期限' }, extension: { stage: '首次展延中' },
@@ -797,6 +842,12 @@
             { label: '等複掃（回報做完）', value: pg.rescan || 0 },
             { label: '需追查 ⚠️（說要申請/做完卻未反映）', value: pg.flagged || 0, danger: true },
           ]);
+      } },
+      { label: '負責人', render: function (c) {
+          c.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人未結數（橫條長度＝數量，紅段＝逾期）。點負責人看他的全部。' }));
+          jget('/api/owner-summary?' + qd()).then(function (rows) {
+            ownerBars(c, rows, function (r) { openFindings(r.owner + ' · 全部未結', { owner: r.owner }); });
+          }).catch(function () { c.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); });
       } },
       { label: '處置落點', render: function (c) { renderStageLanding(c, s); } },
       { label: '應申請未申請（' + s.need_apply_list.length + '）', render: function (c) {
