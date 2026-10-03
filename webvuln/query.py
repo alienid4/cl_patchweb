@@ -101,6 +101,18 @@ def summary(session: Session, department: Optional[str] = None,
     for f in open_:
         bands[_band(f, today)] += 1
 
+    # 到期倒數桶(互斥，依距到期天數)：已逾期/30天內/31–60/61–90/90天以上/無到期日
+    due = {"overdue": 0, "d30": 0, "d31_60": 0, "d61_90": 0, "d90plus": 0, "no_due": 0}
+    for f in open_:
+        if not f.effective_due:
+            due["no_due"] += 1; continue
+        d = (f.effective_due - today).days
+        if d < 0: due["overdue"] += 1
+        elif d <= 30: due["d30"] += 1
+        elif d <= 60: due["d31_60"] += 1
+        elif d <= 90: due["d61_90"] += 1
+        else: due["d90plus"] += 1
+
     sev = {k: 0 for k in SEVERITIES}
     for f in open_:
         if f.severity in sev:
@@ -118,6 +130,7 @@ def summary(session: Session, department: Optional[str] = None,
         "closed": len(done),
         "close_rate": round(len(done) / total * 100, 1) if total else 0.0,
         "bands": bands,          # 互斥；相加＝unresolved（對帳）
+        "due_buckets": due,      # 到期倒數桶(互斥)：overdue/d30/d31_60/d61_90/d90plus/no_due
         "severity": sev,
         # 行動線：應提申請未提
         "should_apply": sum(1 for f in open_ if should_apply(f, today)),
@@ -141,6 +154,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
          sheet_key: Optional[str] = None, stage: Optional[str] = None,
          only_should_apply: bool = False, applied: bool = False, apply_intent: bool = False,
          no_owner: bool = False, no_due: bool = False,
+         due_min: Optional[int] = None, due_max: Optional[int] = None,
          today: Optional[dt.date] = None) -> list[dict]:
     """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
     only_should_apply/no_owner/no_due 為缺口/行動線清單；applied=已申請處置中(例外/展延，官方)；
@@ -174,6 +188,12 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if not (f.owner or "").strip()]
     if no_due:
         fs = [f for f in fs if not f.effective_due]
+    if due_min is not None or due_max is not None:  # 距到期天數範圍(到期倒數)；無到期日排除
+        def _dd(f):
+            return (f.effective_due - today).days if f.effective_due else None
+        fs = [f for f in fs if _dd(f) is not None
+              and (due_min is None or _dd(f) >= due_min)
+              and (due_max is None or _dd(f) <= due_max)]
     if keyword:
         terms = [t.lower() for t in keyword.split() if t.strip()]
         def hit(f: Finding) -> bool:

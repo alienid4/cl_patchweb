@@ -163,12 +163,15 @@ def api_findings(
     apply_intent: bool = False,
     no_owner: bool = False,
     no_due: bool = False,
+    due_min: int | None = None,
+    due_max: int | None = None,
     db: Session = Depends(get_db),
 ):
     return query.find(db, department=department, status=status, owner=owner,
                       severity=severity, band=band, keyword=keyword, sheet_key=sheet_key,
                       stage=stage, only_should_apply=should_apply, applied=applied,
-                      apply_intent=apply_intent, no_owner=no_owner, no_due=no_due)
+                      apply_intent=apply_intent, no_owner=no_owner, no_due=no_due,
+                      due_min=due_min, due_max=due_max)
 
 
 @app.get("/api/ranking")

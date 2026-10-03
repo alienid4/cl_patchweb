@@ -477,6 +477,24 @@
     ], 'todo');
   }
 
+  // ---- 到期倒數（依距到期天數分桶：已逾期／30天內／31–60／61–90／90天以上）----
+  async function renderDueSoonInto(host) {
+    if (!host) return;
+    host.innerHTML = ''; host.classList.remove('webext-rpt');
+    var s;
+    try { s = await jget('/api/summary?' + qd()); }
+    catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
+    var d = s.due_buckets || {};
+    host.appendChild(U.el('p', { class: 'empty-hint', text: '依「距真正到期日」分桶（未結案）；例外/展延已核准的會落在它延後後的到期日。無到期日的不在此（見待辦清單）。' }));
+    renderTabs(host, [
+      { label: '已逾期（' + (d.overdue || 0) + '）', render: function (c) { renderActionListInto(c, '已逾期', { band: '已逾期' }); } },
+      { label: '30天內（' + (d.d30 || 0) + '）', render: function (c) { renderActionListInto(c, '30 天內到期', { due_min: '0', due_max: '30' }); } },
+      { label: '31–60天（' + (d.d31_60 || 0) + '）', render: function (c) { renderActionListInto(c, '31–60 天到期', { due_min: '31', due_max: '60' }); } },
+      { label: '61–90天（' + (d.d61_90 || 0) + '）', render: function (c) { renderActionListInto(c, '61–90 天到期', { due_min: '61', due_max: '90' }); } },
+      { label: '90天以上（' + (d.d90plus || 0) + '）', render: function (c) { renderActionListInto(c, '90 天以上到期（較安全）', { due_min: '91' }); } },
+    ], 'duesoon');
+  }
+
   // 待辦清單的單一清單：搜尋 + 可改(負責人/預計完成日/備註) + 完整/簡易匯出
   var _TODO_COLS = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
     ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
@@ -876,6 +894,7 @@
   // 架構：看(總覽,原生)／做(待辦清單+送審進度)／報(主管週報)／查(結案稽核)
   var GOV_ITEMS = [
     { key: 'todo', label: '待辦清單', render: renderTodoInto },     // 做：要處理的清單都在這
+    { key: 'duesoon', label: '到期倒數', render: renderDueSoonInto }, // 做：依距到期天數看 30/60/90
     { key: 'cases', label: '送審進度', render: renderCasesInto },   // 做：例外/展延申請跑簽到核准
     { key: 'report', label: '主管週報', render: renderReportInto }, // 報：給主管的固定報告
     { key: 'closestat', label: '結案稽核', render: renderCloseInto }, // 查：結案驗證/浮報

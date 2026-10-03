@@ -47,6 +47,28 @@ def test_gaps(session):
     assert len(query.find(session, no_due=True, today=TODAY)) == 1
 
 
+def test_due_buckets_and_range(session):
+    # 建不同到期距離的未結案：逾期、20天、45天、75天、120天
+    base = dt.date(2026, 5, 10)
+    def due(days): return (base + dt.timedelta(days=days)).isoformat()
+    importer.create_batch(session, ImportIn(findings=[
+        FindingIn(host="od", remediation_due=due(-5), close_status="未結案"),
+        FindingIn(host="d20", remediation_due=due(20), close_status="未結案"),
+        FindingIn(host="d45", remediation_due=due(45), close_status="未結案"),
+        FindingIn(host="d75", remediation_due=due(75), close_status="未結案"),
+        FindingIn(host="d120", remediation_due=due(120), close_status="未結案"),
+    ]))
+    s = query.summary(session, today=base)
+    b = s["due_buckets"]
+    assert (b["overdue"], b["d30"], b["d31_60"], b["d61_90"], b["d90plus"]) == (1, 1, 1, 1, 1)
+    # 範圍篩選：31–60 天只回 d45
+    rows = query.find(session, due_min=31, due_max=60, today=base)
+    assert {r["host"] for r in rows} == {"d45"}
+    # 90 天以上只回 d120
+    rows2 = query.find(session, due_min=91, today=base)
+    assert {r["host"] for r in rows2} == {"d120"}
+
+
 def test_freshness(session):
     _load(session, imported=dt.datetime(2026, 5, 3, 9, 0))
     s = query.summary(session, today=TODAY)
