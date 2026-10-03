@@ -213,7 +213,7 @@
   async function openFindings(title, params) {
     var box = U.el('div');
     var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
-      ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
+      ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['overdue_days', '逾期天數'],
       ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
       ['department', '部門'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
     var curRows = [];   // 載入後填入,供「匯出」用(匯的是眼前這份子集)
@@ -255,28 +255,58 @@
       });
       table.appendChild(tb); listBox.appendChild(table); makeSortable(table);
     }
+    // 依弱點彙總的排序狀態（點表頭切換；預設台數多→少）
+    var SEV_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };
+    var _pSort = { key: 'count', dir: -1 };
     function drawPlugin() {
       var groups = {};
       rows.forEach(function (r) { var k = (r.plugin_id || '') + '|' + (r.name || ''); (groups[k] = groups[k] || []).push(r); });
-      var keys = Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; });
+      // 每個弱點彙總成一列的聚合值（供排序與顯示）
+      var aggs = Object.keys(groups).map(function (k) {
+        var grp = groups[k], r0 = grp[0];
+        var od = grp.filter(function (x) { return x.overdue_days != null && x.overdue_days > 0; }).length;
+        function minDate(field) { var ds = grp.map(function (x) { return x[field]; }).filter(Boolean).sort(); return ds.length ? ds[0] : ''; }
+        function dueTxt(field) { var ds = {}; grp.forEach(function (x) { if (x[field]) ds[x[field]] = 1; }); var ks = Object.keys(ds).sort(); return ks.length <= 1 ? (ks[0] || '—') : (ks[0] + ' 等'); }
+        return { k: k, grp: grp, r0: r0, count: grp.length, od: od,
+          name: r0.name || r0.plugin_id || '', sev: SEV_RANK[r0.severity] || 0,
+          effMin: minDate('effective_due'), origMin: minDate('remediation_due'),
+          effTxt: dueTxt('effective_due'), origTxt: dueTxt('remediation_due'),
+          stage: r0.stage || '', plugin: r0.plugin_id || '' };
+      });
+      aggs.sort(function (a, b) {
+        var kf = _pSort.key, va = a[kf], vb = b[kf];
+        if (va < vb) return -1 * _pSort.dir; if (va > vb) return 1 * _pSort.dir;
+        return b.count - a.count;   // 同值再以台數多者在前
+      });
       var table = U.el('table', { class: 'tracking-table' });
-      table.appendChild(U.el('thead', {}, [U.el('tr', {},
-        ['弱點', 'Plugin', '嚴重度', '台數', '到期日', '處置階段', '其中逾期'].map(function (h) { return U.el('th', { text: h }); }))]));
+      // 可排序表頭：[顯示字, 排序鍵]；點擊切換升降序
+      var HEADS = [['弱點', 'name'], ['Plugin', 'plugin'], ['嚴重度', 'sev'], ['台數', 'count'],
+        ['到期日', 'effMin'], ['原始期限', 'origMin'], ['處置階段', 'stage'], ['其中逾期', 'od']];
+      var htr = U.el('tr', {});
+      HEADS.forEach(function (h) {
+        var arrow = _pSort.key === h[1] ? (_pSort.dir === 1 ? ' ▲' : ' ▼') : '';
+        var th = U.el('th', { text: h[0] + arrow, style: 'cursor:pointer;user-select:none' });
+        th.title = '點擊依此欄排序';
+        th.addEventListener('click', function () {
+          if (_pSort.key === h[1]) _pSort.dir *= -1;
+          else { _pSort.key = h[1]; _pSort.dir = (h[1] === 'count' || h[1] === 'sev' || h[1] === 'od') ? -1 : 1; }
+          draw();
+        });
+        htr.appendChild(th);
+      });
+      table.appendChild(U.el('thead', {}, [htr]));
       var tb = U.el('tbody');
-      var icols = [['host', '主機'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
+      var icols = [['host', '主機'], ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
-      keys.forEach(function (k) {
-        var grp = groups[k]; var r0 = grp[0];
-        var od = grp.filter(function (x) { return x.overdue_days != null && x.overdue_days > 0; }).length;
-        var dues = {}; grp.forEach(function (x) { if (x.effective_due) dues[x.effective_due] = 1; });
-        var dueTxt = Object.keys(dues).length <= 1 ? (r0.effective_due || '—') : (Object.keys(dues).sort()[0] + ' 等');
-        var nameTd = U.el('td', { text: '▸ ' + (r0.name || r0.plugin_id || ''), style: 'white-space:normal;font-weight:600;color:#1a7f4b;cursor:pointer;min-width:240px' });
+      aggs.forEach(function (a) {
+        var grp = a.grp, r0 = a.r0;
+        var nameTd = U.el('td', { text: '▸ ' + a.name, style: 'white-space:normal;font-weight:600;color:#1a7f4b;cursor:pointer;min-width:240px' });
         var head = U.el('tr', { style: 'cursor:pointer' }, [nameTd,
-          U.el('td', { text: r0.plugin_id || '' }), U.el('td', { text: r0.severity || '' }),
-          U.el('td', { text: String(grp.length), style: 'font-weight:700' }),
-          U.el('td', { text: dueTxt }), U.el('td', { text: r0.stage || '' }),
-          U.el('td', { text: od ? String(od) : '—', style: od ? 'color:#c0392b;font-weight:600' : '' })]);
+          U.el('td', { text: a.plugin }), U.el('td', { text: r0.severity || '' }),
+          U.el('td', { text: String(a.count), style: 'font-weight:700' }),
+          U.el('td', { text: a.effTxt }), U.el('td', { text: a.origTxt }), U.el('td', { text: a.stage }),
+          U.el('td', { text: a.od ? String(a.od) : '—', style: a.od ? 'color:#c0392b;font-weight:600' : '' })]);
         // 展開：這個弱點影響的主機
         var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
         var ih = icols.map(function (c) { return c[1]; }); ih.push('操作');
@@ -287,9 +317,9 @@
           tds.push(opsCell(r, self));
           itb.appendChild(U.el('tr', {}, tds));
         });
-        inner.appendChild(itb);
-        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: '7', style: 'background:#f6f8f7;padding:6px' }, [inner])]);
-        head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + (r0.name || r0.plugin_id || ''); });
+        inner.appendChild(itb); makeSortable(inner);
+        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(HEADS.length), style: 'background:#f6f8f7;padding:6px' }, [inner])]);
+        head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + a.name; });
         tb.appendChild(head); tb.appendChild(detail);
       });
       table.appendChild(tb); listBox.appendChild(table);
@@ -560,6 +590,13 @@
     host.appendChild(U.el('p', { class: 'empty-hint', text: '依「' + basis + '」倒數分桶（未結案）。「已逾期」在含提前量時＝已過行動期限（再不動手，申請跑完就來不及）。無到期日的不在此（見待辦清單）。' }));
     host.appendChild(leadToggle(function () { renderDueSoonInto(host); }));
     var pm = function (extra) { var p = Object.assign({}, extra); if (lead) p.lead = lead; return p; };
+    // 長條圖：各到期桶數量一眼看出近期壓力（紅＝已逾期），點長條下鑽該桶明細。
+    var bparam = { overdue: { due_max: '-1' }, d30: { due_min: '0', due_max: '30' },
+      d31_60: { due_min: '31', due_max: '60' }, d61_90: { due_min: '61', due_max: '90' }, d90plus: { due_min: '91' } };
+    var blabel = { overdue: _dueLeadOn ? '已過行動期限' : '已逾期', d30: '30 天內', d31_60: '31–60 天', d61_90: '61–90 天', d90plus: '90 天以上' };
+    hbarChart(host, dueBucketItems(d, function (key) {
+      openFindings(blabel[key] + '（到期倒數）', pm(bparam[key]));
+    }));
     renderTabs(host, [
       { label: '已逾期（' + (d.overdue || 0) + '）', render: function (c) { renderActionListInto(c, _dueLeadOn ? '已過行動期限' : '已逾期', pm({ due_max: '-1' })); } },
       { label: '30天內（' + (d.d30 || 0) + '）', render: function (c) { renderActionListInto(c, '30 天內' + (_dueLeadOn ? '要動手' : '到期'), pm({ due_min: '0', due_max: '30' })); } },
@@ -605,21 +642,127 @@
     });
   }
 
+  // ===== 圖表元件（純 CSS/conic-gradient，穩健、可列印、重繪不漏）=====
+  // 顏色表：嚴重度／到期倒數桶／處置階段（與系統既有色系一致）
+  var SEV_COLOR = { Critical: '#b71c1c', High: '#e64a19', Medium: '#f9a825', Low: '#43a047', Unknown: '#90a4ae' };
+  var DUE_COLOR = { overdue: '#c0392b', d30: '#e64a19', d31_60: '#f9a825', d61_90: '#7cb342', d90plus: '#90a4ae' };
+  function ensureChartStyle() {
+    if (document.getElementById('webext-chart-style')) return;
+    var st = U.el('style', { id: 'webext-chart-style' });
+    st.textContent =
+      '.wx-chart{display:flex;align-items:center;gap:22px;flex-wrap:wrap;margin:8px 0 18px}'
+      + '.wx-donut{width:150px;height:150px;border-radius:50%;flex:0 0 auto;position:relative}'
+      + '.wx-donut::after{content:"";position:absolute;inset:30%;background:#fff;border-radius:50%}'
+      + '.wx-donut .wx-mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1;pointer-events:none}'
+      + '.wx-donut .wx-mid b{font-size:26px;line-height:1;color:#1a1a1a}'
+      + '.wx-donut .wx-mid span{font-size:12px;color:#777}'
+      + '.wx-legend{display:flex;flex-direction:column;gap:5px;font-size:14px}'
+      + '.wx-leg{display:flex;align-items:center;gap:8px;cursor:default}'
+      + '.wx-leg.clk{cursor:pointer}.wx-leg.clk:hover{text-decoration:underline}'
+      + '.wx-sw{width:14px;height:14px;border-radius:3px;flex:0 0 auto;display:inline-block}'
+      + '.wx-leg .n{color:#777;margin-left:2px}'
+      + '@media print{.wx-donut{-webkit-print-color-adjust:exact;print-color-adjust:exact}}';
+    document.head.appendChild(st);
+  }
+  // 甜甜圈：items=[{label,value,color,onClick?}]；中心顯示總數。總數 0 時顯示灰圈。
+  function donutChart(host, items, centerLabel) {
+    ensureChartStyle();
+    var total = items.reduce(function (s, i) { return s + (i.value || 0); }, 0);
+    var wrap = U.el('div', { class: 'wx-chart' });
+    var stops = [], acc = 0;
+    items.forEach(function (it) {
+      if (!it.value) return;
+      var frac = total ? it.value / total * 100 : 0;
+      stops.push(it.color + ' ' + acc.toFixed(3) + '% ' + (acc + frac).toFixed(3) + '%');
+      acc += frac;
+    });
+    var bg = stops.length ? 'conic-gradient(' + stops.join(',') + ')' : '#eef3f0';
+    var donut = U.el('div', { class: 'wx-donut', style: 'background:' + bg });
+    donut.appendChild(U.el('div', { class: 'wx-mid' }, [
+      U.el('b', { text: String(total) }), U.el('span', { text: centerLabel || '總數' }),
+    ]));
+    wrap.appendChild(donut);
+    var legend = U.el('div', { class: 'wx-legend' });
+    items.forEach(function (it) {
+      var pct = total ? Math.round((it.value || 0) / total * 100) : 0;
+      var row = U.el('div', { class: 'wx-leg' + (it.onClick && it.value ? ' clk' : '') }, [
+        U.el('span', { class: 'wx-sw', style: 'background:' + it.color }),
+        U.el('span', { text: it.label }),
+        U.el('span', { class: 'n', text: '　' + (it.value || 0) + '（' + pct + '%）' }),
+      ]);
+      if (it.onClick && it.value) row.addEventListener('click', it.onClick);
+      legend.appendChild(row);
+    });
+    wrap.appendChild(legend);
+    host.appendChild(wrap);
+  }
+  // 彩色水平長條：items=[{label,value,color,onClick?}]；長度＝數量占最大值比例。
+  function hbarChart(host, items) {
+    ensureBarStyle();
+    var max = Math.max.apply(null, items.map(function (i) { return i.value || 0; })) || 1;
+    var box = U.el('div', { style: 'margin:6px 0 16px' });
+    items.forEach(function (it) {
+      var row = U.el('div', { class: 'obar-row' });
+      var name = U.el('div', { class: 'obar-name' + (it.onClick && it.value ? ' clk' : ''), text: it.label, title: it.label });
+      var fill = U.el('div', { class: 'obar-fill', style: 'width:' + Math.max(Math.round((it.value || 0) / max * 100), it.value ? 2 : 0) + '%' + (it.color ? ';background:' + it.color : '') });
+      var track = U.el('div', { class: 'obar-track' }, [fill]);
+      var num = U.el('div', { class: 'obar-num', text: String(it.value || 0) + ' 支' });
+      if (it.onClick && it.value) {
+        name.addEventListener('click', it.onClick);
+        track.style.cursor = 'pointer'; track.addEventListener('click', it.onClick);
+      }
+      row.appendChild(name); row.appendChild(track); row.appendChild(num);
+      box.appendChild(row);
+    });
+    host.appendChild(box);
+  }
+  // 由 due_buckets 物件組出到期倒數的長條 items（含下鑽），basisLead 決定下鑽是否帶提前量。
+  function dueBucketItems(d, onBucket) {
+    d = d || {};
+    return [
+      { label: '已逾期', value: d.overdue || 0, color: DUE_COLOR.overdue, key: 'overdue' },
+      { label: '30 天內', value: d.d30 || 0, color: DUE_COLOR.d30, key: 'd30' },
+      { label: '31–60 天', value: d.d31_60 || 0, color: DUE_COLOR.d31_60, key: 'd31_60' },
+      { label: '61–90 天', value: d.d61_90 || 0, color: DUE_COLOR.d61_90, key: 'd61_90' },
+      { label: '90 天以上', value: d.d90plus || 0, color: DUE_COLOR.d90plus, key: 'd90plus' },
+    ].map(function (it) { if (onBucket) it.onClick = function () { onBucket(it.key, it.label); }; return it; });
+  }
+  // 由 severity 物件組出嚴重度圓餅 items（含下鑽）
+  function severityItems(sev, onSev) {
+    sev = sev || {};
+    return ['Critical', 'High', 'Medium', 'Low'].map(function (k) {
+      var it = { label: k, value: sev[k] || 0, color: SEV_COLOR[k] };
+      if (onSev) it.onClick = function () { onSev(k); };
+      return it;
+    }).filter(function (it) { return it.value > 0; });
+  }
+
+  // 到期範圍膠囊頁籤：統一用「到期倒數」那款綠色 pill 風格(取代下拉)。onPick(value)；value ''＝全部。
+  var RANGE_OPTS = [['14', '14 天內'], ['30', '30 天內'], ['60', '60 天內'], ['90', '90 天內'], ['', '全部']];
+  function rangePills(current, onPick) {
+    var nav = U.el('nav', { class: 'subtabs', style: 'margin:4px 0 12px' });
+    var btns = [];
+    RANGE_OPTS.forEach(function (o) {
+      var b = U.el('button', { class: 'subtab-btn' + (o[0] === current ? ' active' : ''), text: o[1] });
+      b.addEventListener('click', function () {
+        btns.forEach(function (x) { x.classList.remove('active'); });
+        b.classList.add('active');
+        onPick(o[0]);
+      });
+      btns.push(b); nav.appendChild(b);
+    });
+    return nav;
+  }
+
   // ---- 負責人追蹤（主管角度：誰還有幾隻＋狀態分佈；可選到期範圍）----
   async function renderOwnerInto(host) {
     if (!host) return;
     host.innerHTML = ''; host.classList.remove('webext-rpt');
-    host.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人「近期到期」還有幾隻（明年才到期的＝還沒到期，預設不看）。切到期範圍看各負責人怎麼變化；處置階段相加＝該範圍未結；等複掃/逾期為疊加。點負責人看他的全部。' }));
-    // 到期範圍選擇：預設聚焦近期(不預設全部，避免被遠期灌水)
-    var sel = U.el('select', { style: 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:8px;font-size:14px;margin:0 0 10px' }, [
-      U.el('option', { value: '14', text: '14 天內到期（含逾期）' }),
-      U.el('option', { value: '30', text: '30 天內到期（含逾期）' }),
-      U.el('option', { value: '60', text: '60 天內到期（含逾期）' }),
-      U.el('option', { value: '90', text: '90 天內到期（含逾期）' }),
-      U.el('option', { value: '', text: '全部（含遠期，較少用）' }),
-    ]);
-    sel.value = '90';   // 預設 90 天內(近期焦點)
-    host.appendChild(U.el('div', {}, [U.el('label', { text: '到期範圍　', style: 'font-size:14px' }), sel]));
+    host.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人「近期到期」還有幾隻（明年才到期的＝還沒到期，預設不看）。切到期範圍看各負責人怎麼變化；各範圍含已逾期。處置階段相加＝該範圍未結；等複掃/逾期為疊加。點負責人看他的全部。' }));
+    // 到期範圍：統一用膠囊頁籤(同「到期倒數」)，預設聚焦近期 90 天
+    var curRange = '90';
+    host.appendChild(U.el('div', {}, [U.el('label', { text: '到期範圍　', style: 'font-size:14px' }),
+      rangePills(curRange, function (v) { curRange = v; draw(); })]));
     host.appendChild(leadToggle(function () { draw(); }));   // 含申請提前量開關(與到期倒數共用狀態)
     var box = U.el('div'); host.appendChild(box);
     var cols = [['owner', '負責人'], ['department', '部門'], ['total', '未結'], ['original', '原始'],
@@ -627,17 +770,17 @@
     async function draw() {
       box.innerHTML = '';
       var lead = _dueLeadOn ? DUE_LEAD_DAYS : 0;
-      var p = {}; if (sel.value) p.due_max = sel.value; if (lead) p.lead = lead;
+      var p = {}; if (curRange) p.due_max = curRange; if (lead) p.lead = lead;
       var rows;
       try { rows = await jget('/api/owner-summary?' + qd(p)); }
       catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
-      var label = sel.value ? ('（' + sel.value + ' 天內到期，' + rows.length + ' 人）') : ('（' + rows.length + ' 人）');
+      var label = curRange ? ('（' + curRange + ' 天內到期，' + rows.length + ' 人）') : ('（' + rows.length + ' 人）');
       box.appendChild(headWithExport('負責人追蹤' + label, cols, function () { return rows; }));
-      if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: sel.value ? '此範圍內無未結案。' : '無未結案。' })); return; }
+      if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: curRange ? '此範圍內無未結案。' : '無未結案。' })); return; }
       // 視覺排行：橫條長度＝未結數、紅段＝逾期，一眼看出誰多少(點進去看他全部)
       var barsBox = U.el('div', { style: 'margin:4px 0 16px' }); box.appendChild(barsBox);
       ownerBars(barsBox, rows, function (r) {
-        var d = { owner: r.owner }; if (sel.value) d.due_max = sel.value; if (lead) d.lead = lead;
+        var d = { owner: r.owner }; if (curRange) d.due_max = curRange; if (lead) d.lead = lead;
         openFindings(r.owner + ' · 全部未結', d);
       });
       box.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '明細（點數字下鑽各狀態）' })]));
@@ -660,7 +803,7 @@
             td.style.color = (key === 'overdue' && r.overdue) ? '#c0392b' : '#1a7f4b';
             td.title = '點我看明細';
             var base = Object.assign({ owner: r.owner }, DRILL[key] || {});
-            if (sel.value) base.due_max = sel.value;
+            if (curRange) base.due_max = curRange;
             if (lead) base.lead = lead;
             var ttl = r.owner + ' · ' + (key === 'owner' || key === 'total' ? '全部未結' : c[1]);
             td.addEventListener('click', (function (p, t) { return function () { openFindings(t, p); }; })(base, ttl));
@@ -673,7 +816,6 @@
       });
       table.appendChild(tb); box.appendChild(table); makeSortable(table);
     }
-    sel.addEventListener('change', draw);
     draw();
   }
 
@@ -865,6 +1007,21 @@
     // Excel 式頁籤：總覽(KPI 三表) / 處置落點 / 應申請未申請 / 落後，一次一張、不用長捲
     renderTabs(host, [
       { label: '總覽', render: function (c) {
+          // 視覺摘要：嚴重度圓餅(風險結構) + 到期倒數長條(近期壓力)，皆可點下鑽。
+          var vis = U.el('div', { style: 'display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;margin:4px 0 10px' });
+          var pie = U.el('div', { style: 'flex:1 1 300px;min-width:280px' });
+          pie.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '嚴重度分佈（未結案）' })]));
+          var sevItems = severityItems(s.severity, function (k) { openFindings(k + '（嚴重度）', { severity: k }); });
+          if (sevItems.length) donutChart(pie, sevItems, '未結');
+          else pie.appendChild(U.el('p', { class: 'empty-hint', text: '無未結案。' }));
+          var bar = U.el('div', { style: 'flex:1 1 300px;min-width:280px' });
+          bar.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '到期倒數（未結案·真正到期日）' })]));
+          var bp = { overdue: { band: '已逾期' }, d30: { due_min: '0', due_max: '30' },
+            d31_60: { due_min: '31', due_max: '60' }, d61_90: { due_min: '61', due_max: '90' }, d90plus: { due_min: '91' } };
+          var bl = { overdue: '已逾期', d30: '30 天內', d31_60: '31–60 天', d61_90: '61–90 天', d90plus: '90 天以上' };
+          hbarChart(bar, dueBucketItems(s.due_buckets, function (key) { openFindings(bl[key] + '（到期倒數）', bp[key]); }));
+          vis.appendChild(pie); vis.appendChild(bar);
+          c.appendChild(vis);
           if (s.change && s.change.has_prev) {
             kpiTable(c, '本週變化（本批 vs 上批匯入）', [
               { label: '上批未結', value: s.change.prev },
@@ -902,28 +1059,21 @@
           ]);
       } },
       { label: '負責人', render: function (c) {
-          c.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人「近期到期」還有幾隻（橫條＝數量、紅段＝逾期）。明年才到期的預設不看；切範圍看變化。點負責人看他的全部。' }));
-          var rsel = U.el('select', { style: 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:8px;font-size:14px;margin:0 0 10px' }, [
-            U.el('option', { value: '14', text: '14 天內到期（含逾期）' }),
-            U.el('option', { value: '30', text: '30 天內到期（含逾期）' }),
-            U.el('option', { value: '60', text: '60 天內到期（含逾期）' }),
-            U.el('option', { value: '90', text: '90 天內到期（含逾期）' }),
-            U.el('option', { value: '', text: '全部（含遠期）' }),
-          ]);
-          rsel.value = '90';
-          c.appendChild(U.el('div', {}, [U.el('label', { text: '到期範圍　', style: 'font-size:14px' }), rsel]));
+          c.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人「近期到期」還有幾隻（橫條＝數量、紅段＝逾期）。明年才到期的預設不看；切範圍看變化（各範圍含已逾期）。點負責人看他的全部。' }));
+          var rRange = '90';
+          c.appendChild(U.el('div', {}, [U.el('label', { text: '到期範圍　', style: 'font-size:14px' }),
+            rangePills(rRange, function (v) { rRange = v; drawBars(); })]));
           var bbox = U.el('div'); c.appendChild(bbox);
           function drawBars() {
             bbox.innerHTML = '';
-            var p = {}; if (rsel.value) p.due_max = rsel.value; if (_dueLeadOn) p.lead = DUE_LEAD_DAYS;
+            var p = {}; if (rRange) p.due_max = rRange; if (_dueLeadOn) p.lead = DUE_LEAD_DAYS;
             jget('/api/owner-summary?' + qd(p)).then(function (rows) {
               ownerBars(bbox, rows, function (r) {
-                var d = { owner: r.owner }; if (rsel.value) d.due_max = rsel.value; if (_dueLeadOn) d.lead = DUE_LEAD_DAYS;
+                var d = { owner: r.owner }; if (rRange) d.due_max = rRange; if (_dueLeadOn) d.lead = DUE_LEAD_DAYS;
                 openFindings(r.owner + ' · 近期未結', d);
               });
             }).catch(function () { bbox.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); });
           }
-          rsel.addEventListener('change', drawBars);
           drawBars();
       } },
       { label: '處置落點', render: function (c) { renderStageLanding(c, s); } },
@@ -1054,6 +1204,14 @@
       var b = r.b || {}; return { 處置階段: r.label, 筆數: b.count || 0, 其中逾期: (b.overdue == null ? '' : b.overdue),
         最早落點: b.earliest_due || '', 最晚落點: b.latest_due || '' };
     });
+    // 圓餅：三關占比一眼看結構（原始＝還沒去申請、展延/例外＝已列管），點圖例下鑽。
+    var STG_COLOR = { '原始修補期限': '#e64a19', '首次展延中': '#f9a825', '例外管理中': '#1a7f4b', '其他': '#90a4ae' };
+    var pieItems = rows.map(function (r) {
+      var b = r.b || {};
+      return { label: r.label, value: b.count || 0, color: STG_COLOR[r.key] || '#90a4ae',
+        onClick: r.key ? function () { openFindings(r.label + '（處置落點）', { stage: r.key }); } : null };
+    }).filter(function (it) { return it.value > 0; });
+    if (pieItems.length) donutChart(host, pieItems, '未結');
     host.appendChild(headWithExport('處置落點（未結案；點筆數看每筆到期日）',
       [['處置階段', '處置階段'], ['筆數', '筆數'], ['其中逾期', '其中逾期'], ['最早落點', '最早落點（到期日）'], ['最晚落點', '最晚落點（到期日）']],
       function () { return expRows; }));
@@ -1175,15 +1333,16 @@
   // 新功能小項：render=渲染進主區；action=直接動作(如下載)不切畫面
   // 架構：看(總覽,原生)／做(待辦清單+送審進度)／報(主管週報)／查(結案稽核)
   var GOV_ITEMS = [
-    { key: 'byowner', label: '負責人追蹤', render: renderOwnerInto }, // 主角度：誰還有幾隻＋狀態(每格可下鑽)
-    { key: 'todo', label: '待辦清單', render: renderTodoInto },     // 做：要處理的清單都在這
-    { key: 'duesoon', label: '到期倒數', render: renderDueSoonInto }, // 做：依距到期天數看 30/60/90
-    { key: 'cases', label: '送審進度', render: renderCasesInto },   // 做：例外/展延申請跑簽到核准
-    { key: 'report', label: '主管週報', render: renderReportInto }, // 報：給主管的固定報告
-    { key: 'closestat', label: '結案稽核', render: renderCloseInto }, // 查：結案驗證/浮報
-    { key: 'reconcile', label: '對帳健檢', render: renderReconcileInto }, // 查：數字自我對帳(不靠AI)
+    // 開發期暫加 A/B/C… 代號方便對話指稱；開發完畢再拿掉(搜 'DEV-LETTER' 一次清)
+    { key: 'byowner', label: 'A. 負責人追蹤', render: renderOwnerInto }, // 主角度：誰還有幾隻＋狀態(每格可下鑽)
+    { key: 'todo', label: 'B. 待辦清單', render: renderTodoInto },     // 做：要處理的清單都在這
+    { key: 'duesoon', label: 'C. 到期倒數', render: renderDueSoonInto }, // 做：依距到期天數看 30/60/90
+    { key: 'cases', label: 'D. 送審進度', render: renderCasesInto },   // 做：例外/展延申請跑簽到核准
+    { key: 'report', label: 'E. 主管週報', render: renderReportInto }, // 報：給主管的固定報告
+    { key: 'closestat', label: 'F. 結案稽核', render: renderCloseInto }, // 查：結案驗證/浮報
+    { key: 'reconcile', label: 'G. 對帳健檢', render: renderReconcileInto }, // 查：數字自我對帳(不靠AI)
     // 一鍵發送＝沿用原本「Email 設定」流程(開原設定視窗)；日後 B(自動寄週報)再接進主管週報
-    { key: 'email', label: '一鍵發送', action: function () {
+    { key: 'email', label: 'H. 一鍵發送', action: function () {
         var b = document.getElementById('email-settings-btn'); if (b) b.click();
       } },
   ];

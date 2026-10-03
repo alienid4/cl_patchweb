@@ -291,6 +291,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             "id": f.id, "sheet_key": f.sheet_key, "plugin_id": f.plugin_id, "name": f.name,
             "host": f.host, "severity": f.severity, "department": f.department, "owner": f.owner,
             "effective_due": f.effective_due.isoformat() if f.effective_due else None,
+            "remediation_due": f.remediation_due.isoformat() if f.remediation_due else None,  # 原始/應計修補期限(展延前)
             "overdue_days": overdue_days(f.effective_due, today),
             "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
             "should_apply": should_apply(f, today),
@@ -628,6 +629,22 @@ def weekly_report(session: Session, department: Optional[str] = None,
     stages["other"] = {"count": len(open_) - stage_known, "overdue": None,
                        "earliest_due": None, "latest_due": None}
 
+    # 嚴重度分佈(未結案)＋到期倒數桶：供主管週報「總覽」畫圓餅/長條(一眼看風險結構與近期壓力)
+    sev_dist = {k: 0 for k in SEVERITIES}
+    for f in open_:
+        if f.severity in sev_dist:
+            sev_dist[f.severity] += 1
+    due_buckets = {"overdue": 0, "d30": 0, "d31_60": 0, "d61_90": 0, "d90plus": 0, "no_due": 0}
+    for f in open_:
+        if not f.effective_due:
+            due_buckets["no_due"] += 1; continue
+        d = (f.effective_due - today).days
+        if d < 0: due_buckets["overdue"] += 1
+        elif d <= 30: due_buckets["d30"] += 1
+        elif d <= 60: due_buckets["d31_60"] += 1
+        elif d <= 90: due_buckets["d61_90"] += 1
+        else: due_buckets["d90plus"] += 1
+
     # 需申請母體＝應申請未申請 + 已申請(都曾需要申請決策)
     universe = need_apply + applied
     with_target = [f for f in universe if _target(f)]
@@ -674,6 +691,8 @@ def weekly_report(session: Session, department: Optional[str] = None,
         "applied_count": len(applied),            # 已申請處置中
         "apply_universe": len(universe),          # 需申請母體
         "stages": stages,                         # 處置落點：原始/首次展延/例外管理各計數與到期區間
+        "severity": sev_dist,                     # 嚴重度分佈(未結案)：供圓餅
+        "due_buckets": due_buckets,               # 到期倒數桶(未結案,真正到期日)：供長條
         # 處理進度分佈(管理人手動標)：要申請展延/例外、處理中、等複掃，及需追查(⚠️)總數
         "progress": {
             "wip": pcount[PROGRESS_WIP],
