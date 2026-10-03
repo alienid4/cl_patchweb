@@ -185,21 +185,28 @@
     })(i, ths[i]);
   }
 
-  // 下鑽：開視窗顯示 /api/findings 篩出的明細（可排序）
+  // 下鑽：開視窗顯示 /api/findings 篩出的明細（可排序、可匯出此清單）
   async function openFindings(title, params) {
     var box = U.el('div');
-    UI.openModal(title, box);
-    var rows;
-    try { rows = await jget('/api/findings?' + qd(Object.assign({ status: '未結案' }, params || {}))); }
-    catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
-    if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '無資料' })); return; }
-    var hint = '共 ' + rows.length + ' 筆（點欄位排序）';
-    if (canWrite()) hint += '；負責人欄可點「改」重新指派（存系統、重匯不會被蓋掉）';
-    box.appendChild(U.el('p', { class: 'empty-hint', text: hint }));
     var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
       ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
       ['stage', '處置階段'], ['department', '部門'],
       ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
+    var curRows = [];   // 載入後填入,供「匯出此清單」用(匯的是眼前這份子集)
+    var exportBtn = U.el('button', { class: 'btn btn-secondary', text: '匯出此清單 (CSV)' });
+    exportBtn.addEventListener('click', function () {
+      if (!curRows.length) { UI.toast('沒有可匯出的資料', 'error'); return; }
+      exportRowsCSV(cols, curRows, title);
+    });
+    UI.openModal(title, box, { footer: exportBtn });
+    var rows;
+    try { rows = await jget('/api/findings?' + qd(Object.assign({ status: '未結案' }, params || {}))); }
+    catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
+    if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '無資料' })); return; }
+    curRows = rows;
+    var hint = '共 ' + rows.length + ' 筆（點欄位排序）';
+    if (canWrite()) hint += '；負責人欄可點「改」重新指派（存系統、重匯不會被蓋掉）';
+    box.appendChild(U.el('p', { class: 'empty-hint', text: hint }));
     var heads = cols.map(function (c) { return c[1]; });
     if (canWrite()) heads.push('操作');
     var table = U.el('table', { class: 'tracking-table' });
@@ -319,6 +326,15 @@
     host.appendChild(hint);
     // 案件表
     if (!cases.length) { host.appendChild(U.el('p', { class: 'empty-hint', text: '無案件。' })); return; }
+    host.appendChild(headWithExport('申請案件清單（' + cases.length + '）',
+      [['host', '主機'], ['plugin_id', 'Plugin'], ['owner', '負責人'], ['department', '部門'], ['status', '狀態'], ['source', '來源']],
+      function () {
+        return cases.map(function (c) {
+          return { host: c.host || '', plugin_id: c.plugin_id || '', owner: c.owner || '未指派',
+            department: c.department || '', status: c.status + (c.suspect ? '（可疑）' : '') + (c.is_orphan ? '（已消失）' : ''),
+            source: c.source_closed ? '已結' : '未結' };
+        });
+      }));
     var table = U.el('table', { class: 'tracking-table' });
     var thead = U.el('tr', {}, ['主機', 'Plugin', '負責人', '部門', '狀態', '來源', '操作'].map(function (h) { return U.el('th', { text: h }); }));
     table.appendChild(U.el('thead', {}, [thead]));
@@ -348,13 +364,22 @@
   // 下鑽：開視窗顯示 /api/cases 某關卡的案件（可排序）
   async function openCasesModal(title, params) {
     var box = U.el('div');
-    UI.openModal(title, box);
+    var cols = [['host', '主機'], ['plugin_id', 'Plugin'], ['owner', '負責人'], ['department', '部門'], ['status', '狀態'], ['source_closed', '來源']];
+    var curRows = [];
+    var exportBtn = U.el('button', { class: 'btn btn-secondary', text: '匯出此清單 (CSV)' });
+    exportBtn.addEventListener('click', function () {
+      if (!curRows.length) { UI.toast('沒有可匯出的資料', 'error'); return; }
+      exportRowsCSV(cols.map(function (c) { return [c[0], c[1]]; }),
+        curRows.map(function (r) { return Object.assign({}, r, { source_closed: r.source_closed ? '已結' : '未結', owner: r.owner || '未指派' }); }),
+        title);
+    });
+    UI.openModal(title, box, { footer: exportBtn });
     var rows;
     try { rows = await jget('/api/cases?' + qd(params || {})); }
     catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
     if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '無案件' })); return; }
+    curRows = rows;
     box.appendChild(U.el('p', { class: 'empty-hint', text: '共 ' + rows.length + ' 筆（點欄位排序）' }));
-    var cols = [['host', '主機'], ['plugin_id', 'Plugin'], ['owner', '負責人'], ['department', '部門'], ['status', '狀態'], ['source_closed', '來源']];
     var table = U.el('table', { class: 'tracking-table' });
     table.appendChild(U.el('thead', {}, [U.el('tr', {}, cols.map(function (c) { return U.el('th', { text: c[1] }); }))]));
     var tb = U.el('tbody');
@@ -386,7 +411,10 @@
     ]));
     top.sort(function (a, b) { return (b.overdue_days == null ? -1e9 : b.overdue_days) - (a.overdue_days == null ? -1e9 : a.overdue_days); });
     if (top.length) {
-      host.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '最急（應提申請未提，前 10）' })]));
+      host.appendChild(headWithExport('最急（應提申請未提，前 10；匯出為全部 ' + top.length + ' 筆）',
+        [['owner', '負責人'], ['name', '弱點'], ['severity', '嚴重度'], ['host', '主機'], ['plugin_id', 'Plugin'],
+         ['effective_due', '到期日'], ['overdue_days', '逾期天數'], ['department', '部門']],
+        function () { return top; }));
       var w = canWrite();
       var heads = ['負責人', '弱點', '嚴重度', '主機', '逾期天數', '部門'];
       if (w) heads.push('操作');
@@ -425,6 +453,8 @@
       card(s.claimed_unconfirmed, '承辦聲稱未確認(可疑)', true),
     ]));
     if (s.by_closer && s.by_closer.length) {
+      host.appendChild(headWithExport('本期結案（依結案人）',
+        [['name', '結案人'], ['closed', '本期結案']], function () { return s.by_closer; }));
       var table = U.el('table', { class: 'tracking-table' });
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, [U.el('th', { text: '結案人' }), U.el('th', { text: '本期結案' })])]));
       var tb = U.el('tbody');
@@ -444,8 +474,6 @@
     catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
     _lastReport = s;
     var scope = (s.department && s.department !== '全部') ? s.department : '全部門';
-    ensureReportStyle();
-    host.classList.add('webext-rpt');   // 讓本頁 KPI 卡走等寬 grid(大小一致、對齊)
 
     // 標題列＋列印鈕
     var headRow = U.el('div', { class: 'panel-head', style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap' }, [
@@ -459,27 +487,27 @@
     var fresh = (s.freshness.days_ago == null) ? '尚無匯入' : ('資料距今 ' + s.freshness.days_ago + ' 天');
     host.appendChild(U.el('p', { class: 'empty-hint', text: '產生時間 ' + (s.generated_at || '').replace('T', ' ') + '　·　' + fresh + '（彙總自系統內「預計完成日／追蹤備註」與備註申請紀錄）' }));
 
-    host.appendChild(group('本期概況（未結案）', [
-      card(s.unresolved, '未結案'),
-      card(s.overdue, '落後（已逾期）', true, function () { openFindings('落後（已逾期）', { band: '已逾期' }); }),
-      card(s.on_track, '如期（未逾期）'),
-      card(s.high_risk, '高風險（Critical/High）', true),
-    ]));
+    kpiTable(host, '本期概況（未結案）', [
+      { label: '未結案', value: s.unresolved },
+      { label: '落後（已逾期）', value: s.overdue, danger: true, drill: function () { openFindings('落後（已逾期）', { band: '已逾期' }); } },
+      { label: '如期（未逾期）', value: s.on_track },
+      { label: '高風險（Critical/High）', value: s.high_risk, danger: true },
+    ]);
 
-    host.appendChild(group('申請進度', [
-      card(s.apply_universe, '需申請母體'),
-      card(s.need_apply_count, '應申請未申請（要催）', true, function () { openFindings('應申請未申請', { should_apply: 'true' }); }),
-      card(s.applied_count, '已申請處置中（例外/展延）'),
-    ]));
+    kpiTable(host, '申請進度', [
+      { label: '需申請母體', value: s.apply_universe },
+      { label: '應申請未申請（要催）', value: s.need_apply_count, danger: true, drill: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
+      { label: '已申請處置中（例外/展延）', value: s.applied_count },
+    ]);
 
     renderStageLanding(host, s);   // 處置落點：原始/首次展延/例外管理 各落在哪、幾筆、到期區間
 
-    host.appendChild(group('預計完成彙總（需申請母體）', [
-      card(s.target.with_target, '已回報預計完成日'),
-      card(s.target.no_target, '未回報預計完成日（要催）', true),
-      card(s.target.target_overdue, '已過預計完成日', true),
-      card(s.target.target_soon, '預計 30 天內完成'),
-    ]));
+    kpiTable(host, '預計完成彙總（需申請母體）', [
+      { label: '已回報預計完成日', value: s.target.with_target },
+      { label: '未回報預計完成日（要催）', value: s.target.no_target, danger: true },
+      { label: '已過預計完成日', value: s.target.target_overdue, danger: true },
+      { label: '預計 30 天內完成', value: s.target.target_soon },
+    ]);
 
     // 選了特定部門 → 清單裡每列部門都一樣,「部門」欄多餘,隱藏(全部門時才顯示,用來分辨)
     var showDept = !(s.department && s.department !== '全部');
@@ -513,14 +541,58 @@
     draw();
   }
 
-  // 一次性注入：讓主管週報的 KPI 卡走等寬 grid(大小一致、整齊對齊)
-  function ensureReportStyle() {
-    if (document.getElementById('webext-rpt-style')) return;
-    var st = U.el('style', { id: 'webext-rpt-style' });
-    st.textContent =
-      '.webext-rpt .metric-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;align-items:stretch}'
-      + '.webext-rpt .metric-card{width:auto;min-width:0;min-height:74px;display:flex;flex-direction:column;justify-content:center}';
-    document.head.appendChild(st);
+  // KPI 指標表：統一成與「處置落點」同款綠底表格(項目｜數值)；數值可標紅、可下鑽；整表可匯出。
+  function kpiTable(host, title, rows) {
+    host.appendChild(headWithExport(title, [['label', '項目'], ['value', '數值']], function () { return rows; }));
+    var table = U.el('table', { class: 'tracking-table', style: 'max-width:480px' });
+    table.appendChild(U.el('thead', {}, [U.el('tr', {}, [U.el('th', { text: '項目' }), U.el('th', { text: '數值' })])]));
+    var tb = U.el('tbody');
+    rows.forEach(function (r) {
+      var v = U.el('td', { text: (r.value == null ? '—' : String(r.value)) });
+      if (r.danger && r.value) v.style.color = '#c0392b';
+      if (r.drill && r.value) {
+        v.style.cursor = 'pointer'; v.style.fontWeight = '600'; v.title = '點我看明細';
+        if (!r.danger) v.style.color = '#1a7f4b';
+        v.addEventListener('click', r.drill);
+      }
+      tb.appendChild(U.el('tr', {}, [U.el('td', { text: r.label }), v]));
+    });
+    table.appendChild(tb); host.appendChild(table);
+  }
+
+  // 匯出此清單(CSV)：把「眼前這份子集」依目前欄位匯出(非全量)。cols=[[key,表頭],…]。
+  function exportRowsCSV(cols, rows, title) {
+    var headers = cols.map(function (c) { return c[1]; });
+    var lines = [headers].concat(rows.map(function (r) {
+      return cols.map(function (c) { return r[c[0]] == null ? '' : r[c[0]]; });
+    }));
+    var csv = lines.map(function (arr) {
+      return arr.map(function (v) {
+        var sVal = String(v);
+        if (/[",\n]/.test(sVal)) sVal = '"' + sVal.replace(/"/g, '""') + '"';
+        return sVal;
+      }).join(',');
+    }).join('\r\n');
+    var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });  // BOM 讓 Excel 認 UTF-8
+    var url = URL.createObjectURL(blob);
+    var a = U.el('a', { href: url, download: (title || '弱點清單').replace(/[\\\/:*?"<>|]/g, '_') + '.csv' });
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    if (UI && UI.toast) UI.toast('已匯出此清單 CSV', 'success');
+  }
+
+  // 通用「標題 + 匯出此清單」：任何統計/清單都掛得上。getRows 回傳當下要匯出的資料(子集)。
+  function headWithExport(title, cols, getRows) {
+    var head = U.el('div', { class: 'panel-head', style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' },
+      [U.el('h3', { text: title })]);
+    var b = U.el('button', { class: 'btn btn-secondary btn-sm', text: '匯出此清單 (CSV)' });
+    b.addEventListener('click', function () {
+      var rows = getRows() || [];
+      if (!rows.length) { if (UI && UI.toast) UI.toast('沒有可匯出的資料', 'error'); return; }
+      exportRowsCSV(cols, rows, title);
+    });
+    head.appendChild(b);
+    return head;
   }
 
   // 處置落點：目前未結案各筆的「真正到期日」落在哪一關,幾筆、到期日區間、其中逾期(可點下鑽看每筆)
@@ -532,7 +604,13 @@
       { key: '例外管理中', label: '例外管理（列管）', b: st.exception },
     ];
     if (st.other && st.other.count) rows.push({ key: null, label: '未定／其他', b: st.other });
-    host.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '處置落點（未結案；點筆數看每筆到期日）' })]));
+    var expRows = rows.map(function (r) {
+      var b = r.b || {}; return { 處置階段: r.label, 筆數: b.count || 0, 其中逾期: (b.overdue == null ? '' : b.overdue),
+        最早落點: b.earliest_due || '', 最晚落點: b.latest_due || '' };
+    });
+    host.appendChild(headWithExport('處置落點（未結案；點筆數看每筆到期日）',
+      [['處置階段', '處置階段'], ['筆數', '筆數'], ['其中逾期', '其中逾期'], ['最早落點', '最早落點（到期日）'], ['最晚落點', '最晚落點（到期日）']],
+      function () { return expRows; }));
     var table = U.el('table', { class: 'tracking-table' });
     table.appendChild(U.el('thead', {}, [U.el('tr', {},
       ['處置階段', '筆數', '其中逾期', '最早落點（到期日）', '最晚落點（到期日）'].map(function (h) { return U.el('th', { text: h }); }))]));
@@ -559,7 +637,10 @@
   // 週報用的清單表（含預計完成日／追蹤備註，可改）。showDept=false 時隱藏部門欄。回傳是否有畫出表格。
   function reportTable(host, title, rows, refresh, showDept) {
     if (!rows || !rows.length) return false;
-    host.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: title + '（' + rows.length + '）' })]));
+    var expCols = [['owner', '負責人'], ['name', '弱點'], ['severity', '嚴重度'], ['host', '主機'],
+      ['effective_due', '到期日'], ['overdue_days', '逾期天數'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
+    if (showDept) expCols.push(['department', '部門']);
+    host.appendChild(headWithExport(title + '（' + rows.length + '）', expCols, function () { return rows; }));
     var w = canWrite();
     var heads = ['負責人', '弱點', '嚴重度', '主機', '到期日', '逾期天數', '預計完成日', '追蹤備註'];
     if (showDept) heads.push('部門');
