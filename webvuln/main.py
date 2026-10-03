@@ -229,10 +229,12 @@ def api_purge_orphans(request: Request, db: Session = Depends(get_db),
 
 class OverlayIn(BaseModel):
     owner: str | None = None   # 有給才改；空字串＝清除
+    department: str | None = None  # 部門(負責人可能是別單位)；空字串＝清除
     note: str | None = None    # 管理追蹤備註
     target_date: str | None = None  # 預計完成日(ISO yyyy-mm-dd)；空字串＝清除
     progress: str | None = None  # 處理進度(處理中/等複掃)；空字串＝清除
     set_owner: bool = False     # 是否要改負責人
+    set_department: bool = False  # 是否要改部門
     set_note: bool = False      # 是否要改追蹤備註
     set_target: bool = False    # 是否要改預計完成日
     set_progress: bool = False  # 是否要改處理進度
@@ -245,6 +247,8 @@ def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
     fields = {}
     if body.set_owner:
         fields["owner"] = body.owner
+    if body.set_department:
+        fields["department"] = body.department
     if body.set_note:
         fields["note"] = body.note
     if body.set_target:

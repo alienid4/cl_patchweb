@@ -66,17 +66,24 @@ def reconcile(session: Session, batch: ImportBatch) -> dict:
 
 
 def apply_owner_overrides(session: Session, batch: ImportBatch) -> int:
-    """把管理員改過的負責人(Case.owner_override)套回本批 finding。重匯後呼叫→不被 Excel 洗掉。"""
-    overrides = {c.vuln_key: c.owner_override for c in
-                 session.execute(select(Case).where(Case.owner_override.isnot(None))).scalars().all()
-                 if c.owner_override}
-    if not overrides:
+    """把管理員改過的負責人/部門(Case.owner_override/department_override)套回本批 finding。
+    重匯後呼叫→不被 Excel 洗掉。回傳套用筆數(欄位計)。"""
+    cs = session.execute(select(Case).where(
+        (Case.owner_override.isnot(None)) | (Case.department_override.isnot(None)))).scalars().all()
+    owners = {c.vuln_key: c.owner_override for c in cs if c.owner_override}
+    depts = {c.vuln_key: c.department_override for c in cs if c.department_override}
+    if not owners and not depts:
         return 0
     n = 0
     for f in session.execute(select(Finding).where(Finding.batch_id == batch.id)).scalars().all():
-        ov = overrides.get(key_str(f))
+        k = key_str(f)
+        ov = owners.get(k)
         if ov and f.owner != ov:
             f.owner = ov
+            n += 1
+        dv = depts.get(k)
+        if dv and f.department != dv:
+            f.department = dv
             n += 1
     if n:
         session.commit()
@@ -116,6 +123,16 @@ def set_overlay(session: Session, finding_id: int, fields: dict) -> dict:
                     f.owner = ov
                     out["updated"] += 1
         out["owner"] = ov
+    if "department" in fields:
+        dv = (fields["department"] or "").strip() or None
+        c.department_override = dv
+        c.department = dv or c.department
+        latest = query.latest_batch(session)
+        if latest and dv:
+            for f in session.execute(select(Finding).where(Finding.batch_id == latest.id)).scalars().all():
+                if key_str(f) == vk:
+                    f.department = dv
+        out["department"] = dv
     if "note" in fields:
         c.track_note = (fields["note"] or "").strip() or None
         out["note"] = c.track_note

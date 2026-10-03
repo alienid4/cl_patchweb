@@ -140,6 +140,25 @@ def test_purge_orphans(session):
     assert session.query(Case).filter_by(vuln_key="s|p1|h1").one().is_orphan is False  # 仍在的不動
 
 
+def test_department_override_survives_reimport(session):
+    f = FindingIn
+    importer.create_batch(session, ImportIn(findings=[
+        f(host="h5", plugin_id="p5", sheet_key="s", owner="林楚諺", department="網路組", close_status="未結案"),
+    ]))
+    fid = session.query(Finding).one().id
+    # 改部門(此負責人其實屬資訊架構部)
+    r = cases.set_overlay(session, fid, {"department": "資訊架構部"})
+    assert r["department"] == "資訊架構部"
+    rows = query.find(session, status="未結案")
+    assert rows[0]["department"] == "資訊架構部"
+    # 重匯(Excel 仍寫網路組) → 覆蓋套回，不被洗掉
+    importer.create_batch(session, ImportIn(findings=[
+        f(host="h5", plugin_id="p5", sheet_key="s", owner="林楚諺", department="網路組", close_status="未結案"),
+    ]))
+    rows2 = query.find(session, status="未結案")
+    assert rows2[0]["department"] == "資訊架構部"
+
+
 def test_track_note_overlay(session):
     from webvuln.models import Finding as F
     f = FindingIn

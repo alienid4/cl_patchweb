@@ -40,7 +40,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 # 這裡列出後來才加的欄，啟動時缺就補(SQLite ADD COLUMN)，讓正式機免手動 ALTER。
 _ENSURE_COLUMNS = {
     "case_overlay": [("owner_override", "VARCHAR(100)"), ("track_note", "TEXT"),
-                     ("target_date", "DATE")],
+                     ("target_date", "DATE"), ("department_override", "VARCHAR(200)")],
 }
 
 

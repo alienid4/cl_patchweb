@@ -103,6 +103,8 @@ class Case(Base):
     owner: Mapped[str | None] = mapped_column(String(100), index=True)  # 去正規化：最新快照的承辦
     # 管理員在系統內改的負責人（覆蓋 Excel 來的值）；重匯時套回 finding，不會被洗掉
     owner_override: Mapped[str | None] = mapped_column(String(100))
+    # 管理員在系統內改的部門（負責人可能是別單位的人）；重匯時套回 finding，不會被洗掉
+    department_override: Mapped[str | None] = mapped_column(String(200))
     # 管理追蹤備註（承辦回報「何時做什麼動作」管理人記這裡）；只存系統、不動 Excel 原備註
     track_note: Mapped[str | None] = mapped_column(Text)
     # 預計完成日（承辦回報、管理人登記）；結構化欄位，供週報彙總「預計 X 完成幾支」
