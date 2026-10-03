@@ -165,7 +165,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
 
     # 系統內寫的疊加欄(追蹤備註/預計完成日/處理進度)：依穩定鍵對 Case 帶進每列(非 Excel 原值)
     from .models import Case
-    from .logic import PROGRESS_VALUES, classify_rescan, CLOSE_DONE
+    from .logic import PROGRESS_VALUES, classify_progress, CLOSE_DONE
     ov = {c.vuln_key: c for c in session.execute(
         select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None))
                            | (Case.status.in_(PROGRESS_VALUES)))).scalars().all()}
@@ -175,8 +175,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
     def row(f: Finding) -> dict:
         c = ov.get("|".join(vuln_key(f)))   # Case.vuln_key 是字串(| 接)
         progress = (c.status if (c and c.status in PROGRESS_VALUES) else "")
-        rescan = classify_rescan(progress, f.close_status == CLOSE_DONE,
-                                 (c.status_changed_at if c else None), _imp)
+        pstate = classify_progress(progress, f.close_status == CLOSE_DONE, f.stage,
+                                   (c.status_changed_at if c else None), _imp)
         return {
             "id": f.id, "sheet_key": f.sheet_key, "plugin_id": f.plugin_id, "name": f.name,
             "host": f.host, "severity": f.severity, "department": f.department, "owner": f.owner,
@@ -187,8 +187,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             "stage": f.stage, "close_status": f.close_status, "remark": f.remark,
             "track_note": c.track_note if c else None,
             "target_date": (c.target_date.isoformat() if (c and c.target_date) else None),
-            "progress": progress,          # 管理人手動標(處理中/等複掃/'')
-            "rescan_state": rescan,        # 等複掃對帳三態(已確認結案/等複掃確認/可疑待查/None)
+            "progress": progress,          # 管理人手動標(處理中/要申請展延/要申請例外/等複掃/'')
+            "progress_state": pstate,      # 進度對帳(等複掃→複掃三態；要申請→申請三態；否則 None)
             "raw": f.raw or {},   # 原始整列(原欄名→原值)，供「匯出此清單」帶出全部原始欄位
         }
 
@@ -397,8 +397,11 @@ def weekly_report(session: Session, department: Optional[str] = None,
 
     # 疊加欄(預計完成日/追蹤備註)對照
     from .models import Case
+    from .logic import PROGRESS_VALUES, PROGRESS_WIP, PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC, \
+        PROGRESS_RESCAN, classify_progress, FLAGGED_STATES
     ov = {c.vuln_key: c for c in session.execute(
-        select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None)))).scalars().all()}
+        select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None))
+                           | (Case.status.in_(PROGRESS_VALUES)))).scalars().all()}
 
     def _c(f):
         return ov.get("|".join(vuln_key(f)))
@@ -457,6 +460,20 @@ def weekly_report(session: Session, department: Optional[str] = None,
 
     b = latest_batch(session)
     imported = b.imported_at if b else None
+
+    # 處理進度分佈(管理人手動標的)：各類計數 + 需追查(⚠️待查/可疑)總數
+    pcount = {PROGRESS_WIP: 0, PROGRESS_APPLY_EXT: 0, PROGRESS_APPLY_EXC: 0, PROGRESS_RESCAN: 0}
+    flagged = 0
+    for f in open_:
+        c = _c(f)
+        p = c.status if (c and c.status in PROGRESS_VALUES) else ""
+        if p in pcount:
+            pcount[p] += 1
+        st = classify_progress(p, f.close_status == CLOSE_DONE, f.stage,
+                               (c.status_changed_at if c else None), imported)
+        if st in FLAGGED_STATES:
+            flagged += 1
+
     return {
         "department": department or "全部",
         "owner": owner,
@@ -475,6 +492,14 @@ def weekly_report(session: Session, department: Optional[str] = None,
         "applied_count": len(applied),            # 已申請處置中
         "apply_universe": len(universe),          # 需申請母體
         "stages": stages,                         # 處置落點：原始/首次展延/例外管理各計數與到期區間
+        # 處理進度分佈(管理人手動標)：要申請展延/例外、處理中、等複掃，及需追查(⚠️)總數
+        "progress": {
+            "wip": pcount[PROGRESS_WIP],
+            "apply_ext": pcount[PROGRESS_APPLY_EXT],
+            "apply_exc": pcount[PROGRESS_APPLY_EXC],
+            "rescan": pcount[PROGRESS_RESCAN],
+            "flagged": flagged,
+        },
         # 預計完成彙總(僅母體)
         "target": {
             "with_target": len(with_target),

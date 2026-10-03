@@ -111,17 +111,38 @@ def test_progress_and_rescan_states(session):
     cases.set_overlay(session, fid, {"progress": logic.PROGRESS_RESCAN})
     rows = query.find(session, status="未結案")
     assert rows[0]["progress"] == logic.PROGRESS_RESCAN
-    assert rows[0]["rescan_state"] == logic.RESCAN_WAITING
+    assert rows[0]["progress_state"] == logic.RESCAN_WAITING
     # 壓早標記 + 又匯入一次仍未結 → 跨過新匯入仍未結 = 可疑待查
     session.query(Case).update({Case.status_changed_at: dt.datetime(2020, 1, 1)})
     session.commit()
     _imp(session, [f(host="h1", plugin_id="p1", sheet_key="s", close_status="未結案")])
     rows = query.find(session, status="未結案")
-    assert rows[0]["rescan_state"] == logic.RESCAN_SUSPECT
+    assert rows[0]["progress_state"] == logic.RESCAN_SUSPECT
     # 來源(Excel)變已結 → 已確認結案(以 Excel 為主)
     _imp(session, [f(host="h1", plugin_id="p1", sheet_key="s", close_status="已結案")])
     rows = query.find(session, status="全部")
-    assert rows[0]["rescan_state"] == logic.RESCAN_CONFIRMED
+    assert rows[0]["progress_state"] == logic.RESCAN_CONFIRMED
+
+
+def test_apply_intent_reconcile(session):
+    f = FindingIn
+    # 原始階段(備註空)的弱點，管理人標「要申請展延」
+    _imp(session, [f(host="h2", plugin_id="p2", sheet_key="s", remediation_due="2026-04-01", close_status="未結案")])
+    fid = session.query(Finding).filter_by(host="h2").one().id
+    cases.set_overlay(session, fid, {"progress": logic.PROGRESS_APPLY_EXT})
+    rows = query.find(session, status="未結案")
+    assert rows[0]["progress_state"] == logic.APPLY_SUBMITTING   # 官方還原始、標在匯入後 → 送審中
+    # 壓早 + 重匯仍原始(備註還是空) → 跨過新匯入沒反映 = 待查
+    session.query(Case).update({Case.status_changed_at: dt.datetime(2020, 1, 1)}); session.commit()
+    _imp(session, [f(host="h2", plugin_id="p2", sheet_key="s", remediation_due="2026-04-01", close_status="未結案")])
+    rows = query.find(session, status="未結案")
+    assert rows[0]["progress_state"] == logic.APPLY_PENDING
+    # 資安 Excel 備註出現展延 → 官方階段變首次展延中 → 已反映
+    _imp(session, [f(host="h2", plugin_id="p2", sheet_key="s", remediation_due="2026-04-01",
+                     first_extension_due="2026-11-15", remark="首次展延(iForm_1)", close_status="未結案")])
+    rows = query.find(session, status="未結案")
+    assert rows[0]["stage"] == logic.STAGE_EXTENSION
+    assert rows[0]["progress_state"] == logic.APPLY_REFLECTED
 
 
 def test_purge_orphans(session):

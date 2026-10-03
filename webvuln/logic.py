@@ -25,13 +25,20 @@ SEVERITIES = ("Critical", "High", "Medium", "Low")
 # 用途：資安發新表前，承辦口頭回報進度，管理人先自己標著，知道這筆正在處理。
 PROGRESS_NONE = ""
 PROGRESS_WIP = "處理中"
+PROGRESS_APPLY_EXT = "要申請展延"  # 第一次做不完，要走展延
+PROGRESS_APPLY_EXC = "要申請例外"  # 展延後還做不完，要走例外
 PROGRESS_RESCAN = "等複掃"        # 承辦回報已做完、等資安複掃確認
-PROGRESS_VALUES = (PROGRESS_WIP, PROGRESS_RESCAN)
+PROGRESS_VALUES = (PROGRESS_WIP, PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC, PROGRESS_RESCAN)
 
 # 複掃對帳三態（結論一律以 Excel 為主；標註只是過程參考）：
 RESCAN_CONFIRMED = "已確認結案"   # 標等複掃 且 來源(Excel)已結 → 功成身退
 RESCAN_WAITING = "等複掃確認"     # 標等複掃 且 來源未結，但標記在最新匯入「之後」(資料還沒輪到，正常在途)
 RESCAN_SUSPECT = "可疑待查"       # 標等複掃 且 來源未結，且已「跨過一次新匯入」仍未結 → 可能浮報
+
+# 申請(展延/例外)對帳三態（拿資安 Excel 的官方處置階段比對）：
+APPLY_REFLECTED = "已反映"        # 官方階段已顯示申請成功(展延/例外)
+APPLY_SUBMITTING = "送審中"       # 官方還沒變，但標記在最新匯入之後(資料還沒輪到)
+APPLY_PENDING = "待查"           # 官方還沒變，且已跨過一次新匯入仍沒變 → 說要申請卻沒送/沒成
 
 
 def classify_rescan(progress, source_closed, marked_at, latest_imported_at):
@@ -43,6 +50,32 @@ def classify_rescan(progress, source_closed, marked_at, latest_imported_at):
     if latest_imported_at is None or marked_at is None:
         return RESCAN_WAITING
     return RESCAN_SUSPECT if marked_at <= latest_imported_at else RESCAN_WAITING
+
+
+def classify_apply(progress, stage, marked_at, latest_imported_at):
+    """對『要申請展延/要申請例外』做對帳；拿官方處置階段(資安 Excel)比對。回傳三態或 None。"""
+    if progress == PROGRESS_APPLY_EXT:
+        reflected = stage in (STAGE_EXTENSION, STAGE_EXCEPTION)  # 到展延或更後(例外)都算已反映
+    elif progress == PROGRESS_APPLY_EXC:
+        reflected = stage == STAGE_EXCEPTION
+    else:
+        return None
+    if reflected:
+        return APPLY_REFLECTED
+    if latest_imported_at is None or marked_at is None:
+        return APPLY_SUBMITTING
+    return APPLY_PENDING if marked_at <= latest_imported_at else APPLY_SUBMITTING
+
+
+def classify_progress(progress, source_closed, stage, marked_at, latest_imported_at):
+    """綜合：等複掃走 classify_rescan，要申請展延/例外走 classify_apply，其餘 None。"""
+    if progress == PROGRESS_RESCAN:
+        return classify_rescan(progress, source_closed, marked_at, latest_imported_at)
+    return classify_apply(progress, stage, marked_at, latest_imported_at)
+
+
+# 需人工追查的「⚠️」狀態(可疑/待查)——主管週報用來點出風險
+FLAGGED_STATES = (RESCAN_SUSPECT, APPLY_PENDING)
 
 
 def parse_iso_date(value) -> Optional[dt.date]:

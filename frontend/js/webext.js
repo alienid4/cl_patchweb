@@ -214,7 +214,7 @@
     var box = U.el('div');
     var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
       ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
-      ['stage', '處置階段'], ['progress', '處理進度'], ['rescan_state', '複掃狀態'],
+      ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
       ['department', '部門'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
     var curRows = [];   // 載入後填入,供「匯出」用(匯的是眼前這份子集)
     var footer = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' },
@@ -253,7 +253,9 @@
     var target = U.el('input', { type: 'date', value: row.target_date || '' });
     var progress = U.el('select', {}, [
       U.el('option', { value: '', text: '未標記' }),
-      U.el('option', { value: '處理中', text: '處理中' }),
+      U.el('option', { value: '處理中', text: '處理中（修補中）' }),
+      U.el('option', { value: '要申請展延', text: '要申請展延（第一次做不完）' }),
+      U.el('option', { value: '要申請例外', text: '要申請例外（展延後還做不完）' }),
       U.el('option', { value: '等複掃', text: '等複掃（承辦回報做完、等資安複掃）' }),
     ]);
     progress.value = row.progress || '';
@@ -421,7 +423,7 @@
   // 待辦清單的單一清單：搜尋 + 可改(負責人/預計完成日/備註) + 完整/簡易匯出
   var _TODO_COLS = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
     ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
-    ['stage', '處置階段'], ['progress', '處理進度'], ['rescan_state', '複掃狀態'],
+    ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
     ['department', '部門'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
   async function renderActionListInto(container, title, params) {
     container.innerHTML = '';
@@ -567,6 +569,14 @@
             { label: '未回報預計完成日（要催）', value: s.target.no_target, danger: true },
             { label: '已過預計完成日', value: s.target.target_overdue, danger: true },
             { label: '預計 30 天內完成', value: s.target.target_soon },
+          ]);
+          var pg = s.progress || {};
+          kpiTable(c, '處理進度分佈（管理人標註；結論仍以資安 Excel 為主）', [
+            { label: '要申請展延', value: pg.apply_ext || 0 },
+            { label: '要申請例外', value: pg.apply_exc || 0 },
+            { label: '處理中（修補中）', value: pg.wip || 0 },
+            { label: '等複掃（回報做完）', value: pg.rescan || 0 },
+            { label: '需追查 ⚠️（說要申請/做完卻未反映）', value: pg.flagged || 0, danger: true },
           ]);
       } },
       { label: '處置落點', render: function (c) { renderStageLanding(c, s); } },
@@ -791,9 +801,13 @@
       + '<div class="block"><b>預計完成彙總</b><br>'
       + kv('已回報預計日', s.target.with_target) + kv('未回報(要催)', s.target.no_target)
       + kv('已過預計日', s.target.target_overdue) + kv('預計30天內完成', s.target.target_soon) + '</div>'
+      + '<div class="block"><b>處理進度分佈（管理人標註）</b><br>'
+      + kv('要申請展延', (s.progress || {}).apply_ext || 0) + kv('要申請例外', (s.progress || {}).apply_exc || 0)
+      + kv('處理中', (s.progress || {}).wip || 0) + kv('等複掃', (s.progress || {}).rescan || 0)
+      + kv('需追查⚠️', (s.progress || {}).flagged || 0) + '</div>'
       + tbl('應申請未申請清單', s.need_apply_list)
       + tbl('落後清單', s.overdue_list)
-      + '<p class="muted" style="margin-top:16px">本報告彙總自系統「預計完成日／追蹤備註」與備註申請紀錄（例外管理／展延 iForm）。</p>'
+      + '<p class="muted" style="margin-top:16px">結論以資安 Excel 為主；「處理進度」為管理人追蹤標註。彙總自系統「預計完成日／追蹤備註」與備註申請紀錄（例外管理／展延 iForm）。</p>'
       + '</body></html>';
     var w = window.open('', '_blank');
     if (!w) { UI.toast('瀏覽器擋了新視窗，請允許彈出視窗後再試', 'error'); return; }
