@@ -41,7 +41,11 @@ def test_login_logout_me_flow(client, engine):
     assert client.get("/api/me").json()["authenticated"] is False
 
 
-def test_transition_requires_login_and_role(client, engine, monkeypatch):
+def _first_fid(client):
+    return client.get("/api/findings").json()[0]["id"]
+
+
+def test_write_requires_login_and_role(client, engine, monkeypatch):
     from sqlalchemy.orm import Session, sessionmaker
     from webvuln import config
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
@@ -49,33 +53,26 @@ def test_transition_requires_login_and_role(client, engine, monkeypatch):
         security.create_user(s, "staff", "pw12345", role="承辦")
         security.create_user(s, "bob", "pw12345", role="viewer")
 
-    # 建一個 case（匯入在免登入下先完成）
     client.post("/api/import", json={"findings": [
         {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}
     ]})
-    cid = client.get("/api/cases").json()[0]["id"]
+    fid = _first_fid(client)
+    body = {"set_progress": True, "progress": "處理中"}   # 寫入類：改處理進度
 
     monkeypatch.setattr(config, "NO_AUTH", False)   # 關免登入，測真正的權限閘門
-    # 未登入 → 401
-    r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
-    assert r.status_code == 401
+    assert client.post(f"/api/findings/{fid}/overlay", json=body).status_code == 401   # 未登入
 
-    # viewer 登入 → 403
     client.post("/api/login", json={"username": "bob", "password": "pw12345"})
-    r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
-    assert r.status_code == 403
+    assert client.post(f"/api/findings/{fid}/overlay", json=body).status_code == 403   # viewer 無權
     client.post("/api/logout")
 
-    # 承辦登入 → 成功 + 稽核留痕
     client.post("/api/login", json={"username": "staff", "password": "pw12345"})
-    r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
-    assert r.status_code == 200 and r.json()["status"] == "待主管"
-    # 非法轉移 → 400
-    assert client.post(f"/api/cases/{cid}/transition", json={"to": "完成"}).status_code == 400
+    r = client.post(f"/api/findings/{fid}/overlay", json=body)
+    assert r.status_code == 200 and r.json()["progress"] == "處理中"   # 承辦可寫
 
     with factory() as s:
         acts = {a.action for a in s.query(AuditLog).all()}
-    assert "login" in acts and "case_transition" in acts and "case_transition_rejected" in acts
+    assert "login" in acts and "set_overlay" in acts
 
 
 def test_no_auth_mode_allows_write(client, engine, monkeypatch):
@@ -83,15 +80,14 @@ def test_no_auth_mode_allows_write(client, engine, monkeypatch):
     client.post("/api/import", json={"findings": [
         {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}
     ]})
-    cid = client.get("/api/cases").json()[0]["id"]
-    # 關免登入 → 未登入被擋
+    fid = _first_fid(client)
+    body = {"set_progress": True, "progress": "等複掃"}
     monkeypatch.setattr(config, "NO_AUTH", False)
-    assert client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"}).status_code == 401
-    # 開免登入模式 → 未登入也能寫；/api/me 回 open_write=True
+    assert client.post(f"/api/findings/{fid}/overlay", json=body).status_code == 401
     monkeypatch.setattr(config, "NO_AUTH", True)
     assert client.get("/api/me").json()["open_write"] is True
-    r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
-    assert r.status_code == 200 and r.json()["status"] == "待主管"
+    r = client.post(f"/api/findings/{fid}/overlay", json=body)
+    assert r.status_code == 200 and r.json()["progress"] == "等複掃"
 
 
 def test_import_requires_write(client, engine, monkeypatch):
@@ -120,9 +116,9 @@ def test_disable_write_killswitch(client, engine, monkeypatch):
     client.post("/api/import", json={"findings": [
         {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}
     ]})
-    cid = client.get("/api/cases").json()[0]["id"]
+    fid = _first_fid(client)
     client.post("/api/login", json={"username": "staff", "password": "pw12345"})
 
     monkeypatch.setattr(config, "DISABLE_WRITE", True)
-    r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
+    r = client.post(f"/api/findings/{fid}/overlay", json={"set_progress": True, "progress": "處理中"})
     assert r.status_code == 503

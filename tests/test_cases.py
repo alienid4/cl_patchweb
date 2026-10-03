@@ -3,7 +3,7 @@ import datetime as dt
 import pytest
 
 from webvuln import cases, importer, logic, query
-from webvuln.models import Case, ImportBatch
+from webvuln.models import Case, Finding, ImportBatch
 from webvuln.schemas import FindingIn, ImportIn
 
 TODAY = dt.date(2026, 5, 10)
@@ -22,7 +22,7 @@ def test_reconcile_create_update_orphan(session):
     ])
     assert session.query(Case).count() == 2
     c1 = session.query(Case).filter_by(vuln_key="s|p1|h1").one()  # host 正規化(去空白小寫)
-    assert c1.status == logic.CASE_NEW and c1.is_orphan is False
+    assert c1.status == logic.PROGRESS_NONE and c1.is_orphan is False
 
     # 第二批：p1 換承辦名＋已結案；p2 消失(→orphan)；新增 p3
     _imp(session, [
@@ -45,26 +45,14 @@ def test_reconcile_idempotent(session):
     assert session.query(Case).count() == 1
 
 
-def test_transition_valid_and_invalid(session):
-    f = FindingIn
-    _imp(session, [f(host="h1", plugin_id="p1", sheet_key="s", close_status="未結案")])
-    c = session.query(Case).one()
-    c = cases.transition(session, c.id, logic.CASE_WAIT_MGR)
-    assert c.status == logic.CASE_WAIT_MGR
-    cases.transition(session, c.id, logic.CASE_WAIT_SEC)
-    with pytest.raises(ValueError):
-        cases.transition(session, c.id, logic.CASE_DONE)   # 待資安 不能直接跳完成
-
-
 def test_suspect_and_close_stats(session):
     f = FindingIn
     # 第一批未結
     _imp(session, [f(host="h1", plugin_id="p1", sheet_key="s", owner="玄慈", close_status="未結案")])
-    c = session.query(Case).one()
-    # 承辦一路推到完成
-    for to in (logic.CASE_WAIT_MGR, logic.CASE_WAIT_SEC, logic.CASE_APPROVED, logic.CASE_DONE):
-        cases.transition(session, c.id, to)
-    # 把聲稱時間壓到很早，之後再匯入一批仍未結 → 聲稱早於匯入 = 可疑
+    fid = session.query(Finding).one().id
+    # 管理人標「等複掃」(承辦聲稱做完、等資安複掃)
+    cases.set_overlay(session, fid, {"progress": logic.PROGRESS_RESCAN})
+    # 把標記時間壓到很早，之後再匯入一批仍未結 → 跨過新匯入仍未結 = 可疑
     session.query(Case).update({Case.status_changed_at: dt.datetime(2020, 1, 1)})
     session.commit()
     _imp(session, [f(host="h1", plugin_id="p1", sheet_key="s", owner="玄慈", close_status="未結案")])
@@ -84,14 +72,15 @@ def test_endpoint_read_and_write_requires_login(client, engine, monkeypatch):
     client.post("/api/import", json={"findings": [
         {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}
     ]})
-    cid = client.get("/api/cases").json()[0]["id"]   # 讀取免登入
+    fid = client.get("/api/findings").json()[0]["id"]   # 讀取免登入
 
     monkeypatch.setattr(config, "NO_AUTH", False)    # 關免登入，測權限閘門
-    # 未登入寫入 → 401；登入後 → 200；非法轉移 → 400（細節見 test_auth）
-    assert client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"}).status_code == 401
+    body = {"set_progress": True, "progress": "處理中"}
+    # 未登入寫入 → 401；登入後 → 200（細節見 test_auth）
+    assert client.post(f"/api/findings/{fid}/overlay", json=body).status_code == 401
     client.post("/api/login", json={"username": "staff", "password": "pw12345"})
-    r = client.post(f"/api/cases/{cid}/transition", json={"to": "待主管"})
-    assert r.status_code == 200 and r.json()["status"] == "待主管"
+    r = client.post(f"/api/findings/{fid}/overlay", json=body)
+    assert r.status_code == 200 and r.json()["progress"] == "處理中"
 
 
 def test_owner_override_survives_reimport(session):
@@ -112,6 +101,27 @@ def test_owner_override_survives_reimport(session):
     latest = query.latest_batch(session)
     newf = session.query(F).filter_by(batch_id=latest.id).one()
     assert newf.owner == "張三"   # 重匯後仍是改過的名字
+
+
+def test_progress_and_rescan_states(session):
+    f = FindingIn
+    _imp(session, [f(host="h1", plugin_id="p1", sheet_key="s", close_status="未結案")])
+    fid = session.query(Finding).one().id
+    # 標等複掃(現在) + 來源未結 + 標記在最新匯入之後 → 等複掃確認(正常在途)
+    cases.set_overlay(session, fid, {"progress": logic.PROGRESS_RESCAN})
+    rows = query.find(session, status="未結案")
+    assert rows[0]["progress"] == logic.PROGRESS_RESCAN
+    assert rows[0]["rescan_state"] == logic.RESCAN_WAITING
+    # 壓早標記 + 又匯入一次仍未結 → 跨過新匯入仍未結 = 可疑待查
+    session.query(Case).update({Case.status_changed_at: dt.datetime(2020, 1, 1)})
+    session.commit()
+    _imp(session, [f(host="h1", plugin_id="p1", sheet_key="s", close_status="未結案")])
+    rows = query.find(session, status="未結案")
+    assert rows[0]["rescan_state"] == logic.RESCAN_SUSPECT
+    # 來源(Excel)變已結 → 已確認結案(以 Excel 為主)
+    _imp(session, [f(host="h1", plugin_id="p1", sheet_key="s", close_status="已結案")])
+    rows = query.find(session, status="全部")
+    assert rows[0]["rescan_state"] == logic.RESCAN_CONFIRMED
 
 
 def test_purge_orphans(session):

@@ -163,13 +163,20 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             return all(t in hay for t in terms)
         fs = [f for f in fs if hit(f)]
 
-    # 系統內寫的疊加欄(追蹤備註/預計完成日)：依穩定鍵對 Case 帶進每列(非 Excel 原值)
+    # 系統內寫的疊加欄(追蹤備註/預計完成日/處理進度)：依穩定鍵對 Case 帶進每列(非 Excel 原值)
     from .models import Case
+    from .logic import PROGRESS_VALUES, classify_rescan, CLOSE_DONE
     ov = {c.vuln_key: c for c in session.execute(
-        select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None)))).scalars().all()}
+        select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None))
+                           | (Case.status.in_(PROGRESS_VALUES)))).scalars().all()}
+    _b = latest_batch(session)
+    _imp = _b.imported_at if _b else None
 
     def row(f: Finding) -> dict:
         c = ov.get("|".join(vuln_key(f)))   # Case.vuln_key 是字串(| 接)
+        progress = (c.status if (c and c.status in PROGRESS_VALUES) else "")
+        rescan = classify_rescan(progress, f.close_status == CLOSE_DONE,
+                                 (c.status_changed_at if c else None), _imp)
         return {
             "id": f.id, "sheet_key": f.sheet_key, "plugin_id": f.plugin_id, "name": f.name,
             "host": f.host, "severity": f.severity, "department": f.department, "owner": f.owner,
@@ -180,6 +187,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             "stage": f.stage, "close_status": f.close_status, "remark": f.remark,
             "track_note": c.track_note if c else None,
             "target_date": (c.target_date.isoformat() if (c and c.target_date) else None),
+            "progress": progress,          # 管理人手動標(處理中/等複掃/'')
+            "rescan_state": rescan,        # 等複掃對帳三態(已確認結案/等複掃確認/可疑待查/None)
             "raw": f.raw or {},   # 原始整列(原欄名→原值)，供「匯出此清單」帶出全部原始欄位
         }
 

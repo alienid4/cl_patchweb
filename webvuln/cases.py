@@ -42,7 +42,7 @@ def reconcile(session: Session, batch: ImportBatch) -> dict:
         if c is None:
             session.add(Case(
                 vuln_key=k, sheet_key=f.sheet_key, plugin_id=f.plugin_id, host=f.host,
-                department=f.department, owner=f.owner, status=logic.CASE_NEW,
+                department=f.department, owner=f.owner, status=logic.PROGRESS_NONE,
                 last_seen_batch_id=batch.id, is_orphan=False, source_closed=closed,
             ))
             created += 1
@@ -87,7 +87,7 @@ def _get_or_create_case(session: Session, f0: Finding) -> Case:
     c = session.execute(select(Case).where(Case.vuln_key == key_str(f0))).scalars().first()
     if c is None:
         c = Case(vuln_key=key_str(f0), sheet_key=f0.sheet_key, plugin_id=f0.plugin_id, host=f0.host,
-                 department=f0.department, owner=f0.owner, status=logic.CASE_NEW,
+                 department=f0.department, owner=f0.owner, status=logic.PROGRESS_NONE,
                  last_seen_batch_id=f0.batch_id, is_orphan=False)
         session.add(c)
     return c
@@ -122,6 +122,11 @@ def set_overlay(session: Session, finding_id: int, fields: dict) -> dict:
     if "target_date" in fields:
         c.target_date = logic.parse_iso_date(fields["target_date"])
         out["target_date"] = c.target_date.isoformat() if c.target_date else None
+    if "progress" in fields:
+        # 管理人手動處理進度(處理中/等複掃/清空)；更新標記時間供複掃三態對帳
+        c.status = (fields["progress"] or "").strip()
+        c.status_changed_at = dt.datetime.now()
+        out["progress"] = c.status
     session.commit()
     return out
 
@@ -131,32 +136,11 @@ def set_owner(session: Session, finding_id: int, owner: Optional[str]) -> dict:
     return set_overlay(session, finding_id, {"owner": owner})
 
 
-def transition(session: Session, case_id: int, to: str, note: Optional[str] = None) -> Case:
-    """推進申請管線狀態；非法轉移丟 ValueError（呼叫端轉 400）。"""
-    if to not in logic.CASE_STATUSES:
-        raise ValueError(f"未知狀態：{to}")
-    c = session.get(Case, case_id)
-    if c is None:
-        raise ValueError("案件不存在")
-    if not logic.can_transition(c.status, to):
-        raise ValueError(f"不允許的轉移：{c.status} → {to}")
-    c.status = to
-    c.status_changed_at = dt.datetime.now()
-    if note is not None:
-        c.note = note
-    session.commit()
-    session.refresh(c)
-    return c
-
-
 def _is_suspect(c: Case, latest: Optional[ImportBatch]) -> bool:
-    """承辦聲稱完成、但來源仍未結案，且『聲稱早於最新匯入』(排除資料還沒更新的寬限)。"""
-    if not (c.status == logic.CASE_DONE and not c.source_closed):
-        return False
-    if latest is None:
-        return False
-    # 承辦聲稱完成早於最新匯入 → 資料本應反映卻仍未結 → 可疑；聲稱晚於匯入＝資料還沒更新(寬限)
-    return c.status_changed_at <= latest.imported_at
+    """標『等複掃』但來源仍未結，且已跨過一次新匯入仍未結 → 可疑(見 logic.classify_rescan)。"""
+    return logic.classify_rescan(
+        c.status, c.source_closed, c.status_changed_at,
+        latest.imported_at if latest else None) == logic.RESCAN_SUSPECT
 
 
 def _row(c: Case, latest: Optional[ImportBatch]) -> dict:

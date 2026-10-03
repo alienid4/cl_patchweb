@@ -214,8 +214,8 @@
     var box = U.el('div');
     var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
       ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
-      ['stage', '處置階段'], ['department', '部門'],
-      ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
+      ['stage', '處置階段'], ['progress', '處理進度'], ['rescan_state', '複掃狀態'],
+      ['department', '部門'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
     var curRows = [];   // 載入後填入,供「匯出」用(匯的是眼前這份子集)
     var footer = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' },
       listExportButtons(function () { return curRows; }, title));   // 完整/簡易 兩顆
@@ -250,12 +250,19 @@
     var title = (row.host || '') + ' / ' + (row.name || row.plugin_id || '');
     var owner = U.el('input', { type: 'text', value: row.owner || '' });
     var target = U.el('input', { type: 'date', value: row.target_date || '' });
+    var progress = U.el('select', {}, [
+      U.el('option', { value: '', text: '未標記' }),
+      U.el('option', { value: '處理中', text: '處理中' }),
+      U.el('option', { value: '等複掃', text: '等複掃（承辦回報做完、等資安複掃）' }),
+    ]);
+    progress.value = row.progress || '';
     var note = U.el('textarea', { rows: '4' });
     note.value = row.track_note || '';
-    [owner, target, note].forEach(function (i) { i.style.cssText = 'display:block;width:100%;margin:4px 0 12px;padding:8px;border:1px solid #e3e6ea;border-radius:6px;font-size:14px;font-family:inherit'; });
+    [owner, target, progress, note].forEach(function (i) { i.style.cssText = 'display:block;width:100%;margin:4px 0 12px;padding:8px;border:1px solid #e3e6ea;border-radius:6px;font-size:14px;font-family:inherit'; });
     var body = U.el('div', {}, [
       U.el('p', { class: 'empty-hint', text: title }),
       U.el('label', { text: '負責人（留空＝取消覆蓋、回到 Excel 值）' }), owner,
+      U.el('label', { text: '處理進度（系統內自己標，不碰 Excel；結論仍以資安 Excel 為主）' }), progress,
       U.el('label', { text: '預計完成日（承辦回報預計哪天做完；留空＝清除。供主管週報彙總）' }), target,
       U.el('label', { text: '追蹤備註（承辦回報：何時做什麼動作。只存系統，不會動到 Excel 原備註）' }), note,
     ]);
@@ -263,7 +270,7 @@
     save.addEventListener('click', async function () {
       var r = await fetch('/api/findings/' + row.id + '/overlay', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ set_owner: true, owner: owner.value, set_target: true, target_date: target.value, set_note: true, note: note.value })
+        body: JSON.stringify({ set_owner: true, owner: owner.value, set_target: true, target_date: target.value, set_progress: true, progress: progress.value, set_note: true, note: note.value })
       });
       if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('存失敗：' + (e.detail || r.status), 'error'); return; }
       UI.closeModal(); UI.toast('已更新', 'success'); if (done) done();
@@ -412,7 +419,8 @@
   // 待辦清單的單一清單：搜尋 + 可改(負責人/預計完成日/備註) + 完整/簡易匯出
   var _TODO_COLS = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
     ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
-    ['stage', '處置階段'], ['department', '部門'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
+    ['stage', '處置階段'], ['progress', '處理進度'], ['rescan_state', '複掃狀態'],
+    ['department', '部門'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
   async function renderActionListInto(container, title, params) {
     container.innerHTML = '';
     var rows;

@@ -20,29 +20,29 @@ CLOSE_OTHER = "其他"
 
 SEVERITIES = ("Critical", "High", "Medium", "Low")
 
-# ── 承辦申請管線（case 疊加層）──
-CASE_NEW = "未申請"
-CASE_WAIT_MGR = "待主管"
-CASE_WAIT_SEC = "待資安"
-CASE_APPROVED = "核准"
-CASE_DONE = "完成"
-CASE_RETURNED = "退回補件"
+# ── 管理人手動「處理進度」標註（系統疊加層，不碰資安的 Excel）──
+# （舊的 6 關手動申請管線 CASE_NEW→…→完成 已於 V2.17 退場，狀態改為下列進度＋備註自動判定）
+# 用途：資安發新表前，承辦口頭回報進度，管理人先自己標著，知道這筆正在處理。
+PROGRESS_NONE = ""
+PROGRESS_WIP = "處理中"
+PROGRESS_RESCAN = "等複掃"        # 承辦回報已做完、等資安複掃確認
+PROGRESS_VALUES = (PROGRESS_WIP, PROGRESS_RESCAN)
 
-CASE_STATUSES = (CASE_NEW, CASE_WAIT_MGR, CASE_WAIT_SEC, CASE_APPROVED, CASE_DONE, CASE_RETURNED)
-
-# 允許的狀態轉移（其餘一律擋下）：走完 = 完成（終態）；任一審核可退回補件；退回後回到待主管
-CASE_TRANSITIONS = {
-    CASE_NEW: (CASE_WAIT_MGR,),
-    CASE_WAIT_MGR: (CASE_WAIT_SEC, CASE_RETURNED),
-    CASE_WAIT_SEC: (CASE_APPROVED, CASE_RETURNED),
-    CASE_APPROVED: (CASE_DONE,),
-    CASE_RETURNED: (CASE_WAIT_MGR,),
-    CASE_DONE: (),
-}
+# 複掃對帳三態（結論一律以 Excel 為主；標註只是過程參考）：
+RESCAN_CONFIRMED = "已確認結案"   # 標等複掃 且 來源(Excel)已結 → 功成身退
+RESCAN_WAITING = "等複掃確認"     # 標等複掃 且 來源未結，但標記在最新匯入「之後」(資料還沒輪到，正常在途)
+RESCAN_SUSPECT = "可疑待查"       # 標等複掃 且 來源未結，且已「跨過一次新匯入」仍未結 → 可能浮報
 
 
-def can_transition(frm: str, to: str) -> bool:
-    return to in CASE_TRANSITIONS.get(frm, ())
+def classify_rescan(progress, source_closed, marked_at, latest_imported_at):
+    """只對『等複掃』的標註做對帳；回傳三態之一或 None(未標等複掃)。以 Excel 結案與否為準。"""
+    if progress != PROGRESS_RESCAN:
+        return None
+    if source_closed:
+        return RESCAN_CONFIRMED
+    if latest_imported_at is None or marked_at is None:
+        return RESCAN_WAITING
+    return RESCAN_SUSPECT if marked_at <= latest_imported_at else RESCAN_WAITING
 
 
 def parse_iso_date(value) -> Optional[dt.date]:

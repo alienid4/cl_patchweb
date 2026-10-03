@@ -227,41 +227,21 @@ def api_purge_orphans(request: Request, db: Session = Depends(get_db),
     return {"deleted": n}
 
 
-class TransitionIn(BaseModel):
-    to: str
-    note: str | None = None
-
-
-@app.post("/api/cases/{case_id}/transition")
-def api_case_transition(case_id: int, body: TransitionIn, request: Request,
-                        db: Session = Depends(get_db),
-                        user: User = Depends(require_write_role)):
-    """推進申請管線狀態。需登入（承辦/管理員），動作留稽核。"""
-    try:
-        c = cases.transition(db, case_id, body.to, body.note)
-    except ValueError as e:
-        security.log_audit(db, username=user.username, action="case_transition_rejected",
-                           target=f"case:{case_id}", detail=f"→{body.to}: {e}",
-                           ip=_client_ip(request))
-        raise HTTPException(status_code=400, detail=str(e))
-    security.log_audit(db, username=user.username, action="case_transition",
-                       target=f"case:{c.id}", detail=f"→{c.status}", ip=_client_ip(request))
-    return {"id": c.id, "status": c.status, "note": c.note}
-
-
 class OverlayIn(BaseModel):
     owner: str | None = None   # 有給才改；空字串＝清除
     note: str | None = None    # 管理追蹤備註
     target_date: str | None = None  # 預計完成日(ISO yyyy-mm-dd)；空字串＝清除
+    progress: str | None = None  # 處理進度(處理中/等複掃)；空字串＝清除
     set_owner: bool = False     # 是否要改負責人
     set_note: bool = False      # 是否要改追蹤備註
     set_target: bool = False    # 是否要改預計完成日
+    set_progress: bool = False  # 是否要改處理進度
 
 
 @app.post("/api/findings/{finding_id}/overlay")
 def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
                     db: Session = Depends(get_db), user: User = Depends(require_write_role)):
-    """管理員在系統內改一筆弱點的可寫欄位（負責人／追蹤備註／預計完成日）：存疊加層、重匯不洗掉、不動 Excel。"""
+    """管理員在系統內改一筆弱點的可寫欄位（負責人／追蹤備註／預計完成日／處理進度）：存疊加層、重匯不洗掉、不動 Excel。"""
     fields = {}
     if body.set_owner:
         fields["owner"] = body.owner
@@ -269,6 +249,8 @@ def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
         fields["note"] = body.note
     if body.set_target:
         fields["target_date"] = body.target_date
+    if body.set_progress:
+        fields["progress"] = body.progress
     if not fields:
         raise HTTPException(status_code=400, detail="沒有要改的欄位")
     try:
