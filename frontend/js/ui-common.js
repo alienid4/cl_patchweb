@@ -241,7 +241,9 @@
     var content = buildDetailTable(records, extra);
     var footer = U.el('div', { class: 'reminder-actions' }, [
       U.el('button', { class: 'btn btn-secondary', text: '另開新分頁', onclick: function () { popOutTable(title, records, extra); } }),
-      U.el('button', { class: 'btn btn-secondary', text: '匯出此清單 (CSV)', onclick: function () { exportCSV(records, title, extra); } }),
+      // [CL_WebVuln] 兩種匯出：完整(原始全欄) / 簡易(精簡欄)
+      U.el('button', { class: 'btn btn-secondary', text: '完整匯出 (CSV)', title: '原始 Excel 全部欄位', onclick: function () { exportCSV(records, title + '_完整', extra, 'full'); } }),
+      U.el('button', { class: 'btn btn-secondary', text: '簡易匯出 (CSV)', title: '只匯常用幾欄', onclick: function () { exportCSV(records, title + '_簡易', extra, 'simple'); } }),
     ]);
     openModal(title, content, { footer: footer });
   }
@@ -330,15 +332,17 @@
   /* -------- 匯出 CSV(drill-down 清單) --------
    * extraCols: 選填，前置欄位(如「項目」「部門」)，與畫面明細一致。
    */
-  function exportCSV(records, title, extraCols) {
+  function exportCSV(records, title, extraCols, mode) {
     extraCols = extraCols || [];
     records = records || [];
-    // [CL_WebVuln] 匯出「原始整列」：帶回原始 Excel 全部欄位(原欄名、原欄序)，不幫使用者篩欄；
-    // 列仍是眼前子集。record.raw 保留匯入時的整列(見 sheets.js)。無 raw 時退回原本精簡欄位。
+    // [CL_WebVuln] mode='full' 匯出原始整列(全部原始欄位、原欄序)；'simple' 匯精簡欄位。
+    // 預設 full。無 raw 時 full 自動退回精簡欄位。
     var rawCols = [], seen = {};
-    records.forEach(function (r) {
-      if (r && r.raw) Object.keys(r.raw).forEach(function (k) { if (!seen[k]) { seen[k] = 1; rawCols.push(k); } });
-    });
+    if (mode !== 'simple') {
+      records.forEach(function (r) {
+        if (r && r.raw) Object.keys(r.raw).forEach(function (k) { if (!seen[k]) { seen[k] = 1; rawCols.push(k); } });
+      });
+    }
     var headers, rows;
     if (rawCols.length) {
       headers = extraCols.map(function (c) { return c.h; }).concat(rawCols);

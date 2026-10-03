@@ -188,6 +188,18 @@ def list_cases(session: Session, status: Optional[str] = None, department: Optio
     return rows
 
 
+def purge_orphans(session: Session) -> int:
+    """刪除所有『已消失』(is_orphan) 案件：來源快照已無此弱點的舊案件紀錄。
+    回傳刪除筆數。不影響現有弱點(finding)與仍在來源的案件。"""
+    orphans = session.execute(select(Case).where(Case.is_orphan.is_(True))).scalars().all()
+    n = len(orphans)
+    for c in orphans:
+        session.delete(c)
+    if n:
+        session.commit()
+    return n
+
+
 def suspect_count(session: Session) -> int:
     latest = query.latest_batch(session)
     return sum(1 for c in session.execute(select(Case)).scalars().all()

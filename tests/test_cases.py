@@ -114,6 +114,22 @@ def test_owner_override_survives_reimport(session):
     assert newf.owner == "張三"   # 重匯後仍是改過的名字
 
 
+def test_purge_orphans(session):
+    f = FindingIn
+    # 第一批：p1、p2 → 兩案
+    _imp(session, [
+        f(host="h1", plugin_id="p1", sheet_key="s", close_status="未結案"),
+        f(host="h2", plugin_id="p2", sheet_key="s", close_status="未結案"),
+    ])
+    # 第二批：只剩 p1 → p2 變 orphan(已消失)
+    _imp(session, [f(host="h1", plugin_id="p1", sheet_key="s", close_status="未結案")])
+    assert session.query(Case).count() == 2
+    n = cases.purge_orphans(session)
+    assert n == 1                                   # 清掉 p2
+    assert session.query(Case).count() == 1
+    assert session.query(Case).filter_by(vuln_key="s|p1|h1").one().is_orphan is False  # 仍在的不動
+
+
 def test_track_note_overlay(session):
     from webvuln.models import Finding as F
     f = FindingIn

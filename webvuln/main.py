@@ -215,6 +215,16 @@ def api_cases(status: str | None = None, department: str | None = None,
                             orphan=orphan, suspect=suspect)
 
 
+@app.post("/api/cases/purge-orphans")
+def api_purge_orphans(request: Request, db: Session = Depends(get_db),
+                      user: User = Depends(require_write_role)):
+    """清除『已消失』(orphan) 案件：來源已無此弱點的舊案件紀錄。需寫入權限，留稽核。"""
+    n = cases.purge_orphans(db)
+    security.log_audit(db, username=user.username, action="purge_orphans",
+                       target="case", detail=f"deleted={n}", ip=_client_ip(request))
+    return {"deleted": n}
+
+
 class TransitionIn(BaseModel):
     to: str
     note: str | None = None
