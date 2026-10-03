@@ -1375,6 +1375,10 @@
     { key: 'duesoon', label: 'B. 到期倒數', render: renderDueSoonInto },  // 做：依距到期天數看 14/30/60/90
     { key: 'report', label: 'C. 主管週報', render: renderReportInto },    // 報：給主管的固定報告(含一鍵發送鈕)
     { key: 'audit', label: 'D. 查核', render: renderAuditInto },          // 查：結案稽核＋對帳健檢＋資料缺口
+    // 一鍵發送＝動作(非角度，故不佔 A~D 字母)；放回左側好找，沿用原 Email 設定流程。C 主管週報內也有同鈕。
+    { key: 'email', label: '📧 一鍵發送', action: function () {
+        var b = document.getElementById('email-settings-btn'); if (b) b.click(); else UI.toast('找不到 Email 設定', 'error');
+      } },
   ];
 
   // 全站匯出統一成「原封 Excel」：攔截所有匯出鈕(原本各表的匯出CSV等)→改下載原封 xlsx。
