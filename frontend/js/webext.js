@@ -362,16 +362,25 @@
     top.sort(function (a, b) { return (b.overdue_days == null ? -1e9 : b.overdue_days) - (a.overdue_days == null ? -1e9 : a.overdue_days); });
     if (top.length) {
       host.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '最急（應提申請未提，前 10）' })]));
+      var w = canWrite();
+      var heads = ['負責人', '弱點', '嚴重度', '主機', '逾期天數', '部門'];
+      if (w) heads.push('操作');
       var table = U.el('table', { class: 'tracking-table' });
-      table.appendChild(U.el('thead', {}, [U.el('tr', {}, ['負責人', '弱點', '嚴重度', '主機', '逾期天數', '部門'].map(function (h) { return U.el('th', { text: h }); }))]));
+      table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
       top.slice(0, 10).forEach(function (r) {
-        tb.appendChild(U.el('tr', {}, [
+        var tds = [
           U.el('td', { text: r.owner || '未指派' }), U.el('td', { text: r.name || r.plugin_id || '' }),
           U.el('td', { text: r.severity || '' }), U.el('td', { text: r.host || '' }),
           U.el('td', { text: (r.overdue_days != null && r.overdue_days > 0) ? String(r.overdue_days) : '—' }),
           U.el('td', { text: r.department || '' }),
-        ]));
+        ];
+        if (w) {
+          var b = U.el('button', { class: 'btn btn-sm', text: '改' });
+          b.addEventListener('click', function () { editOwner(r, function () { renderGapsInto(host); }); });
+          tds.push(U.el('td', {}, [b]));
+        }
+        tb.appendChild(U.el('tr', {}, tds));
       });
       table.appendChild(tb); host.appendChild(table); makeSortable(table);
     } else {
