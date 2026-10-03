@@ -145,14 +145,14 @@ def api_owners(db: Session = Depends(get_db)):
 
 @app.get("/api/owner-summary")
 def api_owner_summary(department: str | None = None, due_max: int | None = None,
-                      db: Session = Depends(get_db)):
-    """負責人角度：誰還有幾隻＋狀態分佈(原始/展延/例外/等複掃/逾期)。due_max=只算距到期≤N天。"""
-    return query.owner_summary(db, department=department, due_max=due_max)
+                      lead: int = 0, db: Session = Depends(get_db)):
+    """負責人角度：誰還有幾隻＋狀態分佈。due_max=只算距到期≤N天；lead=申請提前量(行動期限=到期−lead)。"""
+    return query.owner_summary(db, department=department, due_max=due_max, lead=lead)
 
 
 @app.get("/api/summary")
-def api_summary(department: str | None = None, db: Session = Depends(get_db)):
-    return query.summary(db, department=department)
+def api_summary(department: str | None = None, lead: int = 0, db: Session = Depends(get_db)):
+    return query.summary(db, department=department, lead=lead)
 
 
 @app.get("/api/findings")
@@ -172,13 +172,14 @@ def api_findings(
     no_due: bool = False,
     due_min: int | None = None,
     due_max: int | None = None,
+    lead: int = 0,
     db: Session = Depends(get_db),
 ):
     return query.find(db, department=department, status=status, owner=owner,
                       severity=severity, band=band, keyword=keyword, sheet_key=sheet_key,
                       stage=stage, only_should_apply=should_apply, applied=applied,
                       apply_intent=apply_intent, no_owner=no_owner, no_due=no_due,
-                      due_min=due_min, due_max=due_max)
+                      due_min=due_min, due_max=due_max, lead=lead)
 
 
 @app.get("/api/ranking")

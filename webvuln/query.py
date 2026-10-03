@@ -91,7 +91,7 @@ def owners(session: Session) -> list[str]:
 
 
 def summary(session: Session, department: Optional[str] = None,
-            today: Optional[dt.date] = None) -> dict:
+            lead: int = 0, today: Optional[dt.date] = None) -> dict:
     today = today or dt.date.today()
     fs = _latest_findings(session, department)
     open_ = [f for f in fs if f.close_status == CLOSE_OPEN]
@@ -102,11 +102,12 @@ def summary(session: Session, department: Optional[str] = None,
         bands[_band(f, today)] += 1
 
     # 到期倒數桶(互斥，依距到期天數)：已逾期/30天內/31–60/61–90/90天以上/無到期日
+    # lead＝申請提前量；給值時用「行動期限＝到期−lead」倒數(該動手倒數)
     due = {"overdue": 0, "d30": 0, "d31_60": 0, "d61_90": 0, "d90plus": 0, "no_due": 0}
     for f in open_:
         if not f.effective_due:
             due["no_due"] += 1; continue
-        d = (f.effective_due - today).days
+        d = (f.effective_due - today).days - lead
         if d < 0: due["overdue"] += 1
         elif d <= 30: due["d30"] += 1
         elif d <= 60: due["d31_60"] += 1
@@ -154,7 +155,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
          sheet_key: Optional[str] = None, stage: Optional[str] = None,
          only_should_apply: bool = False, applied: bool = False, apply_intent: bool = False,
          no_owner: bool = False, no_due: bool = False,
-         due_min: Optional[int] = None, due_max: Optional[int] = None,
+         due_min: Optional[int] = None, due_max: Optional[int] = None, lead: int = 0,
          today: Optional[dt.date] = None) -> list[dict]:
     """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
     only_should_apply/no_owner/no_due 為缺口/行動線清單；applied=已申請處置中(例外/展延，官方)；
@@ -188,9 +189,9 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if not (f.owner or "").strip()]
     if no_due:
         fs = [f for f in fs if not f.effective_due]
-    if due_min is not None or due_max is not None:  # 距到期天數範圍(到期倒數)；無到期日排除
+    if due_min is not None or due_max is not None:  # 距到期天數範圍(到期倒數)；lead=申請提前量(行動期限=到期−lead)
         def _dd(f):
-            return (f.effective_due - today).days if f.effective_due else None
+            return (f.effective_due - today).days - lead if f.effective_due else None
         fs = [f for f in fs if _dd(f) is not None
               and (due_min is None or _dd(f) >= due_min)
               and (due_max is None or _dd(f) <= due_max)]
@@ -320,7 +321,7 @@ def _is_overdue(f: Finding, today: dt.date) -> bool:
 
 
 def owner_summary(session: Session, department: Optional[str] = None,
-                  due_max: Optional[int] = None,
+                  due_max: Optional[int] = None, lead: int = 0,
                   today: Optional[dt.date] = None) -> list[dict]:
     """負責人角度（主管要的『誰還有幾隻、各自什麼狀態』）：
     每位負責人未結案 總數 ＋ 處置階段分佈(原始/首次展延/例外管理) ＋ 等複掃(自行結案請複審) ＋ 逾期。
@@ -332,7 +333,7 @@ def owner_summary(session: Session, department: Optional[str] = None,
     today = today or dt.date.today()
     fs = [f for f in _latest_findings(session, department) if f.close_status == CLOSE_OPEN]
     if due_max is not None:
-        fs = [f for f in fs if f.effective_due and (f.effective_due - today).days <= due_max]
+        fs = [f for f in fs if f.effective_due and (f.effective_due - today).days - lead <= due_max]
     prog = {c.vuln_key: c.status for c in session.execute(
         select(Case).where(Case.status.in_(PROGRESS_VALUES))).scalars().all()}
 

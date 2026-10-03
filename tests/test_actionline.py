@@ -67,6 +67,14 @@ def test_due_buckets_and_range(session):
     # 90 天以上只回 d120
     rows2 = query.find(session, due_min=91, today=base)
     assert {r["host"] for r in rows2} == {"d120"}
+    # 含申請提前量 lead=14：行動期限＝到期−14。d20(到期20天)→行動剩6天(仍30天內)；
+    #   但「已過行動期限」(due_max=-1,lead=14)應抓到「到期在14天內」的→這裡 od(逾期)仍算
+    sl = query.summary(session, lead=14, today=base)["due_buckets"]
+    # d20 行動剩6 → d30；d45→31；d75→61；d120→d90plus；od 行動更負→overdue
+    assert sl["overdue"] == 1 and sl["d30"] == 1
+    # 行動期限已過(含提前量)：due_max=-1 lead=14 → 到期<14天 或已逾期
+    od_rows = query.find(session, due_max=-1, lead=14, today=base)
+    assert "od" in {r["host"] for r in od_rows}
 
 
 def test_freshness(session):

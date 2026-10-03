@@ -477,21 +477,36 @@
     ], 'todo');
   }
 
-  // ---- 到期倒數（依距到期天數分桶：已逾期／30天內／31–60／61–90／90天以上）----
+  // ---- 到期倒數（依倒數天數分桶：已逾期／30天內／31–60／61–90／90天以上）----
+  // 可切「含申請提前量」：行動期限＝到期日 − 提前量(14天)，因為申請本身要時間，到期才動就來不及。
+  var DUE_LEAD_DAYS = 14;
+  var _dueLeadOn = true;   // 預設含提前量(主管要的追查角度)
+  function leadToggle(onChange) {
+    var wrap = U.el('label', { style: 'display:inline-flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;margin:0 0 8px' });
+    var chk = U.el('input', { type: 'checkbox' }); chk.checked = _dueLeadOn;
+    chk.addEventListener('change', function () { _dueLeadOn = chk.checked; onChange(); });
+    wrap.appendChild(chk);
+    wrap.appendChild(U.el('span', { text: '含申請提前量（' + DUE_LEAD_DAYS + ' 天緩衝）——用「行動期限＝到期−' + DUE_LEAD_DAYS + '天」倒數' }));
+    return wrap;
+  }
   async function renderDueSoonInto(host) {
     if (!host) return;
     host.innerHTML = ''; host.classList.remove('webext-rpt');
+    var lead = _dueLeadOn ? DUE_LEAD_DAYS : 0;
     var s;
-    try { s = await jget('/api/summary?' + qd()); }
+    try { s = await jget('/api/summary?' + qd(lead ? { lead: lead } : {})); }
     catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
     var d = s.due_buckets || {};
-    host.appendChild(U.el('p', { class: 'empty-hint', text: '依「距真正到期日」分桶（未結案）；例外/展延已核准的會落在它延後後的到期日。無到期日的不在此（見待辦清單）。' }));
+    var basis = _dueLeadOn ? '行動期限（到期日 − ' + DUE_LEAD_DAYS + ' 天申請緩衝）' : '實際到期日';
+    host.appendChild(U.el('p', { class: 'empty-hint', text: '依「' + basis + '」倒數分桶（未結案）。「已逾期」在含提前量時＝已過行動期限（再不動手，申請跑完就來不及）。無到期日的不在此（見待辦清單）。' }));
+    host.appendChild(leadToggle(function () { renderDueSoonInto(host); }));
+    var pm = function (extra) { var p = Object.assign({}, extra); if (lead) p.lead = lead; return p; };
     renderTabs(host, [
-      { label: '已逾期（' + (d.overdue || 0) + '）', render: function (c) { renderActionListInto(c, '已逾期', { band: '已逾期' }); } },
-      { label: '30天內（' + (d.d30 || 0) + '）', render: function (c) { renderActionListInto(c, '30 天內到期', { due_min: '0', due_max: '30' }); } },
-      { label: '31–60天（' + (d.d31_60 || 0) + '）', render: function (c) { renderActionListInto(c, '31–60 天到期', { due_min: '31', due_max: '60' }); } },
-      { label: '61–90天（' + (d.d61_90 || 0) + '）', render: function (c) { renderActionListInto(c, '61–90 天到期', { due_min: '61', due_max: '90' }); } },
-      { label: '90天以上（' + (d.d90plus || 0) + '）', render: function (c) { renderActionListInto(c, '90 天以上到期（較安全）', { due_min: '91' }); } },
+      { label: '已逾期（' + (d.overdue || 0) + '）', render: function (c) { renderActionListInto(c, _dueLeadOn ? '已過行動期限' : '已逾期', pm({ due_max: '-1' })); } },
+      { label: '30天內（' + (d.d30 || 0) + '）', render: function (c) { renderActionListInto(c, '30 天內' + (_dueLeadOn ? '要動手' : '到期'), pm({ due_min: '0', due_max: '30' })); } },
+      { label: '31–60天（' + (d.d31_60 || 0) + '）', render: function (c) { renderActionListInto(c, '31–60 天', pm({ due_min: '31', due_max: '60' })); } },
+      { label: '61–90天（' + (d.d61_90 || 0) + '）', render: function (c) { renderActionListInto(c, '61–90 天', pm({ due_min: '61', due_max: '90' })); } },
+      { label: '90天以上（' + (d.d90plus || 0) + '）', render: function (c) { renderActionListInto(c, '90 天以上（較安全）', pm({ due_min: '91' })); } },
     ], 'duesoon');
   }
 
@@ -509,12 +524,14 @@
       U.el('option', { value: '90', text: '90 天內到期（含逾期）' }),
     ]);
     host.appendChild(U.el('div', {}, [U.el('label', { text: '到期範圍　', style: 'font-size:14px' }), sel]));
+    host.appendChild(leadToggle(function () { draw(); }));   // 含申請提前量開關(與到期倒數共用狀態)
     var box = U.el('div'); host.appendChild(box);
     var cols = [['owner', '負責人'], ['department', '部門'], ['total', '未結'], ['original', '原始'],
       ['extension', '首次展延'], ['exception', '例外管理'], ['rescan', '等複掃'], ['overdue', '逾期']];
     async function draw() {
       box.innerHTML = '';
-      var p = {}; if (sel.value) p.due_max = sel.value;
+      var lead = _dueLeadOn ? DUE_LEAD_DAYS : 0;
+      var p = {}; if (sel.value) p.due_max = sel.value; if (lead) p.lead = lead;
       var rows;
       try { rows = await jget('/api/owner-summary?' + qd(p)); }
       catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
@@ -529,7 +546,7 @@
           var td = U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
           if (c[0] === 'owner' && r.owner && r.owner !== '— 未指派') {
             td.style.cssText = 'color:#1a7f4b;cursor:pointer;font-weight:600'; td.title = '看這位負責人的全部未結';
-            var drill = sel.value ? { owner: r.owner, due_max: sel.value } : { owner: r.owner };
+            var drill = { owner: r.owner }; if (sel.value) drill.due_max = sel.value; if (lead) drill.lead = lead;
             td.addEventListener('click', function () { openFindings(r.owner + ' 的未結弱點', drill); });
           }
           if (c[0] === 'overdue' && r.overdue) td.style.color = '#c0392b';
