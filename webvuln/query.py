@@ -320,15 +320,19 @@ def _is_overdue(f: Finding, today: dt.date) -> bool:
 
 
 def owner_summary(session: Session, department: Optional[str] = None,
+                  due_max: Optional[int] = None,
                   today: Optional[dt.date] = None) -> list[dict]:
     """負責人角度（主管要的『誰還有幾隻、各自什麼狀態』）：
     每位負責人未結案 總數 ＋ 處置階段分佈(原始/首次展延/例外管理) ＋ 等複掃(自行結案請複審) ＋ 逾期。
-    stage 合計＝total；rescan/overdue 為疊加標記(子集)。依逾期、總數排序。"""
+    stage 合計＝total；rescan/overdue 為疊加標記(子集)。依逾期、總數排序。
+    due_max 給值時只算『距到期 ≤ due_max 天』(含已逾期；無到期日排除)，供近期到期彙總。"""
     from collections import defaultdict
     from .models import Case
     from .logic import PROGRESS_RESCAN, PROGRESS_VALUES
     today = today or dt.date.today()
     fs = [f for f in _latest_findings(session, department) if f.close_status == CLOSE_OPEN]
+    if due_max is not None:
+        fs = [f for f in fs if f.effective_due and (f.effective_due - today).days <= due_max]
     prog = {c.vuln_key: c.status for c in session.execute(
         select(Case).where(Case.status.in_(PROGRESS_VALUES))).scalars().all()}
 

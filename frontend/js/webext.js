@@ -495,37 +495,52 @@
     ], 'duesoon');
   }
 
-  // ---- 負責人追蹤（主管角度：誰還有幾隻＋狀態分佈）----
+  // ---- 負責人追蹤（主管角度：誰還有幾隻＋狀態分佈；可選到期範圍）----
   async function renderOwnerInto(host) {
     if (!host) return;
     host.innerHTML = ''; host.classList.remove('webext-rpt');
-    var rows;
-    try { rows = await jget('/api/owner-summary?' + qd()); }
-    catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
     host.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人未結案「幾隻＋狀態」。處置階段(原始／首次展延／例外管理)相加＝未結；等複掃＝自行回報做完·等資安複審(疊加)；逾期(疊加)。點負責人看他的全部。' }));
-    host.appendChild(headWithExport('負責人追蹤（' + rows.length + ' 人）',
-      [['owner', '負責人'], ['department', '部門'], ['total', '未結'], ['original', '原始'],
-       ['extension', '首次展延'], ['exception', '例外管理'], ['rescan', '等複掃'], ['overdue', '逾期']],
-      function () { return rows; }));
-    if (!rows.length) { host.appendChild(U.el('p', { class: 'empty-hint', text: '無未結案。' })); return; }
+    // 到期範圍選擇：只看近期到期的
+    var sel = U.el('select', { style: 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:8px;font-size:14px;margin:0 0 10px' }, [
+      U.el('option', { value: '', text: '到期範圍：全部' }),
+      U.el('option', { value: '15', text: '15 天內到期（含逾期）' }),
+      U.el('option', { value: '30', text: '30 天內到期（含逾期）' }),
+      U.el('option', { value: '60', text: '60 天內到期（含逾期）' }),
+      U.el('option', { value: '90', text: '90 天內到期（含逾期）' }),
+    ]);
+    host.appendChild(U.el('div', {}, [U.el('label', { text: '到期範圍　', style: 'font-size:14px' }), sel]));
+    var box = U.el('div'); host.appendChild(box);
     var cols = [['owner', '負責人'], ['department', '部門'], ['total', '未結'], ['original', '原始'],
       ['extension', '首次展延'], ['exception', '例外管理'], ['rescan', '等複掃'], ['overdue', '逾期']];
-    var table = U.el('table', { class: 'tracking-table' });
-    table.appendChild(U.el('thead', {}, [U.el('tr', {}, cols.map(function (c) { return U.el('th', { text: c[1] }); }))]));
-    var tb = U.el('tbody');
-    rows.forEach(function (r) {
-      var tds = cols.map(function (c) {
-        var td = U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
-        if (c[0] === 'owner' && r.owner && r.owner !== '— 未指派') {
-          td.style.cssText = 'color:#1a7f4b;cursor:pointer;font-weight:600'; td.title = '看這位負責人的全部未結';
-          td.addEventListener('click', function () { openFindings(r.owner + ' 的未結弱點', { owner: r.owner }); });
-        }
-        if (c[0] === 'overdue' && r.overdue) td.style.color = '#c0392b';
-        return td;
+    async function draw() {
+      box.innerHTML = '';
+      var p = {}; if (sel.value) p.due_max = sel.value;
+      var rows;
+      try { rows = await jget('/api/owner-summary?' + qd(p)); }
+      catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
+      var label = sel.value ? ('（' + sel.value + ' 天內到期，' + rows.length + ' 人）') : ('（' + rows.length + ' 人）');
+      box.appendChild(headWithExport('負責人追蹤' + label, cols, function () { return rows; }));
+      if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: sel.value ? '此範圍內無未結案。' : '無未結案。' })); return; }
+      var table = U.el('table', { class: 'tracking-table' });
+      table.appendChild(U.el('thead', {}, [U.el('tr', {}, cols.map(function (c) { return U.el('th', { text: c[1] }); }))]));
+      var tb = U.el('tbody');
+      rows.forEach(function (r) {
+        var tds = cols.map(function (c) {
+          var td = U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
+          if (c[0] === 'owner' && r.owner && r.owner !== '— 未指派') {
+            td.style.cssText = 'color:#1a7f4b;cursor:pointer;font-weight:600'; td.title = '看這位負責人的全部未結';
+            var drill = sel.value ? { owner: r.owner, due_max: sel.value } : { owner: r.owner };
+            td.addEventListener('click', function () { openFindings(r.owner + ' 的未結弱點', drill); });
+          }
+          if (c[0] === 'overdue' && r.overdue) td.style.color = '#c0392b';
+          return td;
+        });
+        tb.appendChild(U.el('tr', {}, tds));
       });
-      tb.appendChild(U.el('tr', {}, tds));
-    });
-    table.appendChild(tb); host.appendChild(table); makeSortable(table);
+      table.appendChild(tb); box.appendChild(table); makeSortable(table);
+    }
+    sel.addEventListener('change', draw);
+    draw();
   }
 
   // 待辦清單的單一清單：搜尋 + 可改(負責人/預計完成日/備註) + 完整/簡易匯出
@@ -1062,17 +1077,14 @@
   function start() {
     wirePersist();
     wireNewFeatures();
-    // 防「上傳畫面一閃」：開場先同步藏上傳區＋顯示載入中，待快照載入後決定
+    // 防「上傳畫面一閃」：靜態遮罩(index.html 第一幀就蓋)在載完伺服器快照後才移除
     var up = document.getElementById('upload-section');
-    if (up) up.classList.add('hidden');
-    var loading = U.el('div', { id: 'webext-boot',
-      style: 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:18px;color:#1a7f4b;background:#fff;z-index:60' },
-      [U.el('span', { text: '載入中…' })]);
-    document.body.appendChild(loading);
+    if (up) up.classList.add('hidden');   // 先藏上傳區(有資料時不會閃出來)
+    function dropBoot() { var b = document.getElementById('webext-boot'); if (b && b.parentNode) b.parentNode.removeChild(b); }
     loadFromServer().then(function (ok) {   // 有伺服器資料就自動載入
-      if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
       if (!ok && up) up.classList.remove('hidden');   // 沒資料→回到上傳畫面
-    });
+      dropBoot();
+    }).catch(function () { if (up) up.classList.remove('hidden'); dropBoot(); });
   }
 
   if (document.readyState === 'loading') {

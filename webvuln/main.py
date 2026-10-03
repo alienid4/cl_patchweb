@@ -144,9 +144,10 @@ def api_owners(db: Session = Depends(get_db)):
 
 
 @app.get("/api/owner-summary")
-def api_owner_summary(department: str | None = None, db: Session = Depends(get_db)):
-    """負責人角度：誰還有幾隻＋狀態分佈(原始/展延/例外/等複掃/逾期)。"""
-    return query.owner_summary(db, department=department)
+def api_owner_summary(department: str | None = None, due_max: int | None = None,
+                      db: Session = Depends(get_db)):
+    """負責人角度：誰還有幾隻＋狀態分佈(原始/展延/例外/等複掃/逾期)。due_max=只算距到期≤N天。"""
+    return query.owner_summary(db, department=department, due_max=due_max)
 
 
 @app.get("/api/summary")
