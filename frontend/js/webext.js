@@ -247,7 +247,7 @@
       rows.forEach(function (r) {
         var tds = cols.map(function (c) {
           var td = U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
-          if (c[0] === 'name') td.style.whiteSpace = 'normal';
+          if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; }
           return td;
         });
         tds.push(opsCell(r, self));
@@ -301,7 +301,7 @@
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
       aggs.forEach(function (a) {
         var grp = a.grp, r0 = a.r0;
-        var nameTd = U.el('td', { text: '▸ ' + a.name, style: 'white-space:normal;font-weight:600;color:#1a7f4b;cursor:pointer;min-width:240px' });
+        var nameTd = U.el('td', { text: '▸ ' + a.name, style: 'white-space:normal;font-weight:600;color:#1a7f4b;cursor:pointer;min-width:240px;text-align:left' });
         var head = U.el('tr', { style: 'cursor:pointer' }, [nameTd,
           U.el('td', { text: a.plugin }), U.el('td', { text: r0.severity || '' }),
           U.el('td', { text: String(a.count), style: 'font-weight:700' }),
@@ -609,16 +609,28 @@
       + '.wx-leg.clk{cursor:pointer}.wx-leg.clk:hover{text-decoration:underline}'
       + '.wx-sw{width:14px;height:14px;border-radius:3px;flex:0 0 auto;display:inline-block}'
       + '.wx-leg .n{color:#777;margin-left:2px}'
-      // 緊湊 KPI 卡片格（取代一疊 2 欄表，省約 4/5 空間）
+      // 緊湊 KPI 卡片格（用格線：各組同寬、欄位對齊）
       + '.wx-kpi-grp{margin:12px 0 5px;font-size:13px;font-weight:700;color:#555;border-left:3px solid #1a7f4b;padding-left:7px}'
-      + '.wx-kpi-row{display:flex;flex-wrap:wrap;gap:8px}'
-      + '.wx-kpi{flex:1 1 92px;min-width:86px;background:#f6f8f7;border:1px solid #e3e6ea;border-radius:8px;padding:7px 8px;text-align:center}'
+      + '.wx-kpi-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}'
+      + '.wx-kpi{background:#f6f8f7;border:1px solid #e3e6ea;border-radius:8px;padding:7px 8px;text-align:center}'
       + '.wx-kpi .v{font-size:21px;font-weight:700;line-height:1.1;color:#1a1a1a}'
       + '.wx-kpi .v.danger{color:#c0392b}'
       + '.wx-kpi .l{font-size:11px;color:#667;margin-top:3px;line-height:1.25}'
       + '.wx-kpi.clk{cursor:pointer}.wx-kpi.clk .v{color:#1a7f4b}.wx-kpi.clk:hover{border-color:#1a7f4b;background:#eef5f1}'
       + '.wx-kpi.clk.danger .v{color:#c0392b}'
-      + '@media print{.wx-donut{-webkit-print-color-adjust:exact;print-color-adjust:exact}}';
+      // 白話總結句
+      + '.wx-summary{background:#f0f6f3;border:1px solid #cfe3d8;border-radius:10px;padding:12px 16px;font-size:16px;line-height:1.9;margin:4px 0 12px}'
+      + '.wx-summary .wx-hot{font-size:1.2em;color:#1a7f4b;padding:0 1px}'
+      + '.wx-summary .wx-hot.danger{color:#c0392b}'
+      + '.wx-summary .wx-hot.clk{cursor:pointer;text-decoration:underline dotted}'
+      // 堆疊比例條（把母體關係用看的講清楚）
+      + '.wx-sbar-wrap{margin:8px 0 14px}'
+      + '.wx-sbar-head{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;color:#555;font-weight:700;margin-bottom:4px}'
+      + '.wx-sbar{display:flex;height:30px;border-radius:6px;overflow:hidden;background:#eef3f0}'
+      + '.wx-sseg{display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:700;white-space:nowrap;min-width:2px;overflow:hidden}'
+      + '.wx-sseg.clk{cursor:pointer}.wx-sseg.clk:hover{filter:brightness(1.08)}'
+      + '.wx-sbar-legend{display:flex;gap:16px;margin-top:5px;font-size:13px;flex-wrap:wrap;color:#444}'
+      + '@media print{.wx-donut,.wx-sseg{-webkit-print-color-adjust:exact;print-color-adjust:exact}}';
     document.head.appendChild(st);
   }
   // 甜甜圈：items=[{label,value,color,onClick?}]；中心顯示總數。總數 0 時顯示灰圈。
@@ -714,6 +726,36 @@
     var lg = U.el('div', { class: 'wx-legend', style: 'flex-direction:row;gap:16px;margin-bottom:12px' });
     lines.forEach(function (ln) { lg.appendChild(U.el('div', { class: 'wx-leg' }, [U.el('span', { class: 'wx-sw', style: 'background:' + ln.color }), U.el('span', { text: ln.name })])); });
     host.appendChild(lg);
+  }
+
+  // 堆疊比例條：把「母體＝子項相加」用一條 bar 的分段畫出來，避免被誤加到別的母體。
+  // segments=[{label,value,color,onClick?}]；寬度∝value；段夠寬就寫「標籤 值」，窄就只寫值。
+  function stackedBar(host, title, total, segments) {
+    ensureChartStyle();
+    var wrap = U.el('div', { class: 'wx-sbar-wrap' });
+    wrap.appendChild(U.el('div', { class: 'wx-sbar-head' }, [
+      U.el('span', { text: title }), U.el('b', { text: String(total) }),
+    ]));
+    var sum = segments.reduce(function (s, x) { return s + (x.value || 0); }, 0) || 1;
+    var bar = U.el('div', { class: 'wx-sbar' });
+    segments.forEach(function (sg) {
+      var w = (sg.value || 0) / sum * 100;
+      var seg = U.el('div', { class: 'wx-sseg' + (sg.onClick && sg.value ? ' clk' : ''),
+        style: 'width:' + w + '%;background:' + sg.color, title: sg.label + '：' + (sg.value || 0) });
+      if (sg.value) seg.appendChild(U.el('span', { text: w >= 14 ? (sg.label.split('（')[0] + ' ' + sg.value) : String(sg.value) }));
+      if (sg.onClick && sg.value) seg.addEventListener('click', sg.onClick);
+      bar.appendChild(seg);
+    });
+    wrap.appendChild(bar);
+    var lg = U.el('div', { class: 'wx-sbar-legend' });
+    segments.forEach(function (sg) {
+      lg.appendChild(U.el('span', { class: 'wx-leg' + (sg.onClick && sg.value ? ' clk' : '') }, [
+        U.el('span', { class: 'wx-sw', style: 'background:' + sg.color }),
+        U.el('span', { text: sg.label + ' ' + (sg.value || 0) }),
+      ]));
+    });
+    wrap.appendChild(lg);
+    host.appendChild(wrap);
   }
 
   // 由 severity 物件組出嚴重度圓餅 items（含下鑽）
@@ -1035,13 +1077,50 @@
     // Excel 式頁籤：總覽(KPI 三表) / 處置落點 / 應申請未申請 / 落後，一次一張、不用長捲
     renderTabs(host, [
       { label: '總覽', render: function (c) {
-          // 視覺摘要：嚴重度圓餅(風險結構) + 到期倒數長條(近期壓力)，皆可點下鑽。
-          var vis = U.el('div', { style: 'display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;margin:4px 0 10px' });
+          var notApply = Math.max(s.unresolved - s.apply_universe, 0);   // 還不急：未結但還沒到該申請的時機
+          var pg = s.progress || {};
+          // ① 一句白話總結（粗體數字，重點可點下鑽）
+          function hot(v, danger, drill) {
+            var e = U.el('b', { class: 'wx-hot' + (danger ? ' danger' : '') + (drill ? ' clk' : ''), text: String(v) });
+            if (drill) { e.title = '點看明細'; e.addEventListener('click', drill); }
+            return e;
+          }
+          var sp = U.el('div', { class: 'wx-summary' });
+          [U.el('span', { text: scope + '還有 ' }), hot(s.unresolved),
+           U.el('span', { text: ' 支未結：' }), hot(s.overdue, true, function () { openFindings('已逾期', { band: '已逾期' }); }),
+           U.el('span', { text: ' 已逾期、' }), hot(s.high_risk, true),
+           U.el('span', { text: ' 高風險（其中 ' }), hot(s.high_risk_overdue, true),
+           U.el('span', { text: ' 又逾期，最急）。需要申請展延／例外的 ' }), hot(s.apply_universe),
+           U.el('span', { text: ' 支，其中 ' }), hot(s.need_apply_count, true, function () { openFindings('應申請未申請', { should_apply: 'true' }); }),
+           U.el('span', { text: ' 支還沒去申請（要催）、' }), hot(s.target.no_target, true),
+           U.el('span', { text: ' 支還沒回報預計完成日。' })].forEach(function (n) { sp.appendChild(n); });
+          c.appendChild(sp);
+
+          // ② 分解條：把母體關係用「看」的講清楚（避免被誤加）
+          stackedBar(c, '未結 ' + s.unresolved + '　＝　要申請 ＋ 還不急', s.unresolved, [
+            { label: '要申請', value: s.apply_universe, color: '#1a7f4b' },
+            { label: '還不急（到期還遠，直接修即可）', value: notApply, color: '#b0bec5' },
+          ]);
+          stackedBar(c, '其中「要申請」' + s.apply_universe + '　＝　未申請 ＋ 已申請', s.apply_universe, [
+            { label: '應申請未申請（要催）', value: s.need_apply_count, color: '#c0392b', onClick: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
+            { label: '已申請處置中', value: s.applied_count, color: '#1a7f4b', onClick: function () { openFindings('已申請處置中', { applied: 'true' }); } },
+          ]);
+
+          // ③ 只留「要催的」關鍵數字（紅），一排對齊
+          kpiCards(c, '要催的（最該盯）', [
+            { label: '已逾期', value: s.overdue, danger: true, drill: function () { openFindings('落後（已逾期）', { band: '已逾期' }); } },
+            { label: '高風險且逾期', value: s.high_risk_overdue, danger: true },
+            { label: '應申請未申請', value: s.need_apply_count, danger: true, drill: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
+            { label: '未報預計完成日', value: s.target.no_target, danger: true },
+            { label: '需追查 ⚠️', value: pg.flagged || 0, danger: true },
+          ]);
+
+          // ④ 視覺：嚴重度圓餅 + 到期倒數長條（皆可點下鑽）
+          var vis = U.el('div', { style: 'display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;margin:10px 0' });
           var pie = U.el('div', { style: 'flex:1 1 300px;min-width:280px' });
           pie.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '嚴重度分佈（未結案）' })]));
           var sevItems = severityItems(s.severity, function (k) { openFindings(k + '（嚴重度）', { severity: k }); });
-          if (sevItems.length) donutChart(pie, sevItems, '未結');
-          else pie.appendChild(U.el('p', { class: 'empty-hint', text: '無未結案。' }));
+          if (sevItems.length) donutChart(pie, sevItems, '未結'); else pie.appendChild(U.el('p', { class: 'empty-hint', text: '無未結案。' }));
           var bar = U.el('div', { style: 'flex:1 1 300px;min-width:280px' });
           bar.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '到期倒數（未結案·真正到期日）' })]));
           var bp = { overdue: { band: '已逾期' }, d30: { due_min: '0', due_max: '30' },
@@ -1050,51 +1129,28 @@
           hbarChart(bar, dueBucketItems(s.due_buckets, function (key) { openFindings(bl[key] + '（到期倒數）', bp[key]); }));
           vis.appendChild(pie); vis.appendChild(bar);
           c.appendChild(vis);
-          // 未結趨勢折線（主管愛看走勢）：≥2 批才畫（資料越多越有用）
+
+          // ⑤ 未結趨勢折線 + 本週變化一句話
           var trendBox = U.el('div'); c.appendChild(trendBox);
           var tp = {}; if (s.department && s.department !== '全部') tp.department = s.department;
           jget('/api/trend?' + qd(tp)).then(function (tr) {
             if (!tr || tr.length < 2) return;
-            var labels = tr.map(function (x) { return (x.date || '').slice(5); });   // MM-DD
+            var labels = tr.map(function (x) { return (x.date || '').slice(5); });
             svgLineChart(trendBox, labels, [
               { name: '未結', color: '#1a7f4b', values: tr.map(function (x) { return x.open; }) },
               { name: '其中逾期', color: '#c0392b', values: tr.map(function (x) { return x.overdue; }) },
             ], '未結趨勢（每次匯入）');
           }).catch(function () { });
           if (s.change && s.change.has_prev) {
-            kpiCards(c, '本週變化（本批 vs 上批）', [
-              { label: '上批未結', value: s.change.prev },
-              { label: '本批未結', value: s.change.now },
-              { label: '淨變化', value: (s.change.delta > 0 ? '+' : '') + s.change.delta, danger: s.change.delta > 0 },
-              { label: '本週新增', value: s.change.new, danger: s.change.new > 0 },
-              { label: '本週解決', value: s.change.resolved },
-            ]);
+            c.appendChild(U.el('p', { class: 'empty-hint', text: '本週（本批 vs 上批）：新增 ' + s.change.new + '、解決 ' + s.change.resolved + '，淨變化 ' + (s.change.delta > 0 ? '+' : '') + s.change.delta + '。' }));
           }
-          kpiCards(c, '本期概況（未結案）', [
-            { label: '未結案', value: s.unresolved },
-            { label: '落後·逾期', value: s.overdue, danger: true, drill: function () { openFindings('落後（已逾期）', { band: '已逾期' }); } },
-            { label: '如期', value: s.on_track },
-            { label: '高風險', value: s.high_risk, danger: true },
-            { label: '高風險且逾期', value: s.high_risk_overdue, danger: true },
-          ]);
-          kpiCards(c, '申請進度', [
-            { label: '需申請母體', value: s.apply_universe },
-            { label: '應申請未申請', value: s.need_apply_count, danger: true, drill: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
-            { label: '已申請處置中', value: s.applied_count },
-          ]);
-          kpiCards(c, '預計完成彙總（需申請母體）', [
-            { label: '已報預計日', value: s.target.with_target },
-            { label: '未報·要催', value: s.target.no_target, danger: true },
-            { label: '已過預計日', value: s.target.target_overdue, danger: true },
-            { label: '30天內完成', value: s.target.target_soon },
-          ]);
-          var pg = s.progress || {};
-          kpiCards(c, '處理進度分佈（管理人標註；結論仍以資安 Excel 為主）', [
+
+          // ⑥ 處理進度（管理人標註，次要資訊）
+          kpiCards(c, '處理進度（管理人標註；結論仍以資安 Excel 為主）', [
             { label: '要申請展延', value: pg.apply_ext || 0 },
             { label: '要申請例外', value: pg.apply_exc || 0 },
             { label: '處理中', value: pg.wip || 0 },
             { label: '等複掃', value: pg.rescan || 0 },
-            { label: '需追查 ⚠️', value: pg.flagged || 0, danger: true },
           ]);
       } },
       { label: '處置落點', render: function (c) { renderStageLanding(c, s); } },
