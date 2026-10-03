@@ -229,17 +229,13 @@
     if (canWrite()) hint += '；點 ✏️ 可編輯負責人／進度／預計完成日／備註（存系統、重匯不會被蓋掉）';
     box.appendChild(U.el('p', { class: 'empty-hint', text: hint }));
     var heads = cols.map(function (c) { return c[1]; });
-    if (canWrite()) heads.push('操作');
+    heads.push('操作');   // 固定有(🔍看原始；可寫入再加 ✏️)
     var table = U.el('table', { class: 'tracking-table' });
     table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
     var tb = U.el('tbody');
     rows.forEach(function (r) {
       var tds = cols.map(function (c) { return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); });
-      if (canWrite()) {
-        var btn = U.el('button', { class: 'btn btn-sm', text: '✏️', title: '編輯' });
-        btn.addEventListener('click', function () { editOwner(r, function () { openFindings(title, params); }); });
-        tds.push(U.el('td', {}, [btn]));
-      }
+      tds.push(opsCell(r, function () { openFindings(title, params); }));
       tb.appendChild(U.el('tr', {}, tds));
     });
     table.appendChild(tb); box.appendChild(table); makeSortable(table);
@@ -305,6 +301,42 @@
     setTimeout(function () { owner.focus(); }, 0);
   }
   var editOwner = editOverlay;  // 相容舊呼叫名
+
+  // 看這一筆的「原始資料」(原始 Excel 整列，26~28 欄；資安維護，唯讀)
+  function showRawModal(row) {
+    var raw = (row && row.raw) ? row.raw : {};
+    var keys = Object.keys(raw);
+    var box = U.el('div');
+    if (!keys.length) {
+      box.appendChild(U.el('p', { class: 'empty-hint', text: '這筆沒有原始資料（可能是舊批次匯入前的資料）。' }));
+    } else {
+      box.appendChild(U.el('p', { class: 'empty-hint', text: '原始 Excel 整列，共 ' + keys.length + ' 欄（資安維護，唯讀）。' }));
+      var table = U.el('table', { class: 'tracking-table' });
+      table.appendChild(U.el('thead', {}, [U.el('tr', {}, [U.el('th', { text: '欄位' }), U.el('th', { text: '值' })])]));
+      var tb = U.el('tbody');
+      keys.forEach(function (k) {
+        tb.appendChild(U.el('tr', {}, [
+          U.el('td', { text: k, style: 'white-space:nowrap;font-weight:600;color:#355' }),
+          U.el('td', { text: raw[k] == null ? '' : String(raw[k]) }),
+        ]));
+      });
+      table.appendChild(tb); box.appendChild(table);
+    }
+    UI.openModal('原始資料 — ' + (row.host || '') + ' / ' + (row.name || row.plugin_id || ''), box);
+  }
+  // 一列「操作」欄：固定有 🔍(看原始)，可寫入時再加 ✏️(編輯)
+  function opsCell(row, onEditDone) {
+    var ops = U.el('td');
+    var rawBtn = U.el('button', { class: 'btn btn-sm', text: '🔍', title: '看原始資料', style: 'margin-right:4px' });
+    rawBtn.addEventListener('click', function () { showRawModal(row); });
+    ops.appendChild(rawBtn);
+    if (canWrite()) {
+      var eb = U.el('button', { class: 'btn btn-sm', text: '✏️', title: '編輯' });
+      eb.addEventListener('click', function () { editOverlay(row, onEditDone); });
+      ops.appendChild(eb);
+    }
+    return ops;
+  }
 
   // ---- 登入 ----
   async function refreshMe() {
@@ -474,19 +506,14 @@
         box.appendChild(U.el('p', { class: 'empty-hint', text: terms.length ? '找不到符合「' + search.value.trim() + '」的項目。' : '目前無項目 👍' }));
         return;
       }
-      var w = canWrite();
       var heads = _TODO_COLS.map(function (c) { return c[1]; });
-      if (w) heads.push('操作');
+      heads.push('操作');   // 固定有(🔍看原始；可寫入再加 ✏️)
       var table = U.el('table', { class: 'tracking-table' });
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
       shown.forEach(function (r) {
         var tds = _TODO_COLS.map(function (c) { return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); });
-        if (w) {
-          var b = U.el('button', { class: 'btn btn-sm', text: '✏️', title: '編輯' });
-          b.addEventListener('click', function () { editOverlay(r, function () { renderActionListInto(container, title, params); }); });
-          tds.push(U.el('td', {}, [b]));
-        }
+        tds.push(opsCell(r, function () { renderActionListInto(container, title, params); }));
         tb.appendChild(U.el('tr', {}, tds));
       });
       table.appendChild(tb); box.appendChild(table); makeSortable(table);
@@ -762,10 +789,9 @@
   function reportTable(host, title, rows, refresh, showDept) {
     if (!rows || !rows.length) return false;
     host.appendChild(headWithListExport(title + '（' + rows.length + '）', function () { return rows; }));
-    var w = canWrite();
     var heads = ['負責人', '弱點', '嚴重度', '主機', '到期日', '逾期天數', '處理進度', '對帳狀態', '預計完成日', '追蹤備註'];
     if (showDept) heads.push('部門');
-    if (w) heads.push('操作');
+    heads.push('操作');   // 固定有(🔍看原始；可寫入再加 ✏️)
     var table = U.el('table', { class: 'tracking-table' });
     table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
     var tb = U.el('tbody');
@@ -781,11 +807,7 @@
         U.el('td', { text: td }), U.el('td', { text: r.track_note || '' }),
       ];
       if (showDept) tds.push(U.el('td', { text: r.department || '' }));
-      if (w) {
-        var b = U.el('button', { class: 'btn btn-sm', text: '✏️', title: '編輯' });
-        b.addEventListener('click', function () { editOverlay(r, function () { if (refresh) refresh(document.getElementById('webext-view-body')); }); });
-        tds.push(U.el('td', {}, [b]));
-      }
+      tds.push(opsCell(r, function () { if (refresh) refresh(document.getElementById('webext-view-body')); }));
       tb.appendChild(U.el('tr', {}, tds));
     });
     table.appendChild(tb); host.appendChild(table); makeSortable(table);
