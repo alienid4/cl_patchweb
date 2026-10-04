@@ -1448,6 +1448,7 @@
       var pw = U.el('input', { type: 'text', placeholder: '密碼（至少 4 碼）' }); pw.style.cssText = FS;
       var dn = U.el('input', { placeholder: '顯示名（一般使用者要對應某負責人就填那個人名，如 王小明）' }); dn.style.cssText = FS;
       var dp = U.el('input', { placeholder: '部門（部門窗口要管的部門，需同 Excel 短名）' }); dp.style.cssText = FS;
+      var nt = U.el('input', { placeholder: '註解（員編_姓名_部門_用途，例 01000000_某某_某部_patchweb）' }); nt.style.cssText = FS;
       var rl = U.el('select'); rl.style.cssText = FS;
       [['user', '一般'], ['dept_admin', '部門窗口'], ['super_admin', 'Super Admin']].forEach(function (o) { rl.appendChild(U.el('option', { value: o[0], text: o[1] })); });
       fb.appendChild(U.el('label', { text: '帳號', style: 'font-weight:600' })); fb.appendChild(un);
@@ -1455,11 +1456,12 @@
       fb.appendChild(U.el('label', { text: '角色', style: 'font-weight:600' })); fb.appendChild(rl);
       fb.appendChild(U.el('label', { text: '顯示名', style: 'font-weight:600' })); fb.appendChild(dn);
       fb.appendChild(U.el('label', { text: '部門', style: 'font-weight:600' })); fb.appendChild(dp);
+      fb.appendChild(U.el('label', { text: '註解', style: 'font-weight:600' })); fb.appendChild(nt);
       var go = U.el('button', { class: 'btn btn-primary', text: '建立／重設' });
       go.addEventListener('click', async function () {
         if (!un.value.trim() || pw.value.length < 4) { UI.toast('帳號必填、密碼至少 4 碼', 'error'); return; }
         try {
-          var r = await fetch('/api/users/local', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: un.value.trim(), password: pw.value, role: rl.value, display_name: dn.value, department: dp.value }) });
+          var r = await fetch('/api/users/local', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: un.value.trim(), password: pw.value, role: rl.value, display_name: dn.value, department: dp.value, note: nt.value }) });
           var j = await r.json();
           if (!r.ok) { UI.toast(j.detail || '失敗', 'error'); return; }
           UI.toast((j.created ? '已建立 ' : '已更新 ') + j.username + '（' + rl.value + '）', 'success');
@@ -1473,39 +1475,40 @@
     localBtn.addEventListener('click', openLocalUserForm);
     var seedBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '一鍵建三個測試帳號' });
     seedBtn.addEventListener('click', async function () {
-      var pwd = window.prompt('設定這三個測試帳號（superadmin / admin / user）的共同密碼：', 'test-1234');
+      var pwd = window.prompt('設定測試帳號（superadmin / admin / user）的共同密碼。\n※已存在的帳號會「略過、不覆蓋」，只建缺的。', 'test-1234');
       if (!pwd) return;
       if (pwd.length < 4) { UI.toast('密碼至少 4 碼', 'error'); return; }
-      var defs = [['superadmin', 'super_admin', '本地最高管理員'], ['admin', 'dept_admin', '本地部門窗口'], ['user', 'user', '本地一般使用者']];
-      var ok = 0;
-      for (var i = 0; i < defs.length; i++) {
-        try {
-          var r = await fetch('/api/users/local', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: defs[i][0], password: pwd, role: defs[i][1], display_name: defs[i][2] }) });
-          if (r.ok) ok++;
-        } catch (e) {}
-      }
-      UI.toast('已建立／重設 ' + ok + '/3 個測試帳號，密碼：' + pwd, ok === 3 ? 'success' : 'error');
-      openUserAdmin();
+      try {
+        var r = await fetch('/api/users/seed-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pwd }) });
+        var j = await r.json();
+        if (!r.ok) { UI.toast(j.detail || '失敗', 'error'); return; }
+        var exists = (j.accounts || []).filter(function (a) { return a.status === 'exists'; }).map(function (a) { return a.username; });
+        var msg = '新建 ' + j.created + ' 個' + (exists.length ? ('；已建立（略過）：' + exists.join('、')) : '');
+        if (j.created) msg += '，密碼：' + pwd;
+        UI.toast(msg, 'success');
+        openUserAdmin();
+      } catch (e) { UI.toast('失敗', 'error'); }
     });
     box.appendChild(U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 10px' }, [fetchBtn, localBtn, seedBtn, fetchOut]));
 
     if (!users.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '尚無帳號（AD 登入後會自動建立）。' })); UI.openModal('帳號與權限（Super Admin）', box, { sticky: true, wide: true }); return; }
     var table = U.el('table', { class: 'tracking-table' });
-    table.appendChild(U.el('thead', {}, [U.el('tr', {}, ['員編', '顯示名', '角色', '部門', '信箱', '啟用', '操作'].map(function (h) { return U.el('th', { text: h }); }))]));
+    table.appendChild(U.el('thead', {}, [U.el('tr', {}, ['員編', '顯示名', '角色', '部門', '信箱', '註解', '啟用', '操作'].map(function (h) { return U.el('th', { text: h }); }))]));
     var tb = U.el('tbody');
     users.forEach(function (u) {
       var roleSel = U.el('select', {}, [['super_admin', 'Super Admin'], ['dept_admin', '部門窗口'], ['user', '一般']].map(function (o) { return U.el('option', { value: o[0], text: o[1] }); }));
       roleSel.value = u.role;
-      var deptInp = U.el('input', { type: 'text', value: u.department || '', style: 'padding:5px;border:1px solid #cdd5dd;border-radius:5px;width:120px' });
-      var mailInp = U.el('input', { type: 'text', value: u.email || '', placeholder: '（無）', style: 'padding:5px;border:1px solid #cdd5dd;border-radius:5px;width:180px' });
+      var deptInp = U.el('input', { type: 'text', value: u.department || '', style: 'padding:5px;border:1px solid #cdd5dd;border-radius:5px;width:110px' });
+      var mailInp = U.el('input', { type: 'text', value: u.email || '', placeholder: '（無）', style: 'padding:5px;border:1px solid #cdd5dd;border-radius:5px;width:160px' });
+      var noteInp = U.el('input', { type: 'text', value: u.note || '', placeholder: '員編_姓名_部門_用途', style: 'padding:5px;border:1px solid #cdd5dd;border-radius:5px;width:200px' });
       var act = U.el('input', { type: 'checkbox' }); act.checked = u.is_active;
       var sv = U.el('button', { class: 'btn btn-sm btn-primary', text: '儲存' });
       sv.addEventListener('click', async function () {
-        var r = await fetch('/api/users/' + u.id + '/role', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: roleSel.value, department: deptInp.value, email: mailInp.value, is_active: act.checked }) });
+        var r = await fetch('/api/users/' + u.id + '/role', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: roleSel.value, department: deptInp.value, email: mailInp.value, note: noteInp.value, is_active: act.checked }) });
         UI.toast(r.ok ? '已更新 ' + u.username : '更新失敗', r.ok ? 'success' : 'error');
       });
       tb.appendChild(U.el('tr', {}, [U.el('td', { text: u.username }), U.el('td', { text: u.display_name || '' }),
-        U.el('td', {}, [roleSel]), U.el('td', {}, [deptInp]), U.el('td', {}, [mailInp]), U.el('td', {}, [act]), U.el('td', {}, [sv])]));
+        U.el('td', {}, [roleSel]), U.el('td', {}, [deptInp]), U.el('td', {}, [mailInp]), U.el('td', {}, [noteInp]), U.el('td', {}, [act]), U.el('td', {}, [sv])]));
     });
     table.appendChild(tb); box.appendChild(U.el('div', { class: 'table-scroll' }, [table]));
     UI.openModal('帳號與權限（Super Admin）', box, { sticky: true, wide: true });

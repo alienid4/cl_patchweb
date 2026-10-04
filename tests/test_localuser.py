@@ -36,3 +36,12 @@ def test_create_local_user_endpoint(client):
 
 def test_create_local_user_rejects_short_password(client):
     assert client.post("/api/users/local", json={"username": "x", "password": "12"}).status_code == 400
+
+
+def test_seed_test_skips_existing(client):
+    r1 = client.post("/api/users/seed-test", json={"password": "test-1234"}).json()
+    assert r1["created"] == 3
+    # 再按一次：全部已存在 → 不再建立
+    r2 = client.post("/api/users/seed-test", json={"password": "other-9999"}).json()
+    assert r2["created"] == 0
+    assert all(a["status"] == "exists" for a in r2["accounts"])

@@ -570,7 +570,7 @@ def api_list_users(db: Session = Depends(get_db), user: User = Depends(require_s
     return [{"id": u.id, "username": u.username, "display_name": u.display_name,
              "email": u.email, "department": u.department,
              "role": config.canon_role(u.role), "is_active": u.is_active,
-             "weekly_report": bool(u.weekly_report)}
+             "weekly_report": bool(u.weekly_report), "note": u.note}
             for u in rows]
 
 
@@ -580,6 +580,7 @@ class UserRoleIn(BaseModel):
     email: str | None = None         # 收件人涵蓋率：Super Admin 可手補負責人信箱
     is_active: bool | None = None
     weekly_report: bool | None = None  # 每週部門週報開關（通常本人自管，super 也可代設）
+    note: str | None = None          # 帳號註解（員編_姓名_部門_用途）
 
 
 @app.post("/api/users/{user_id}/role")
@@ -600,6 +601,8 @@ def api_set_user_role(user_id: int, body: UserRoleIn, request: Request,
         u.is_active = body.is_active
     if body.weekly_report is not None:
         u.weekly_report = body.weekly_report
+    if body.note is not None:
+        u.note = body.note.strip() or None
     db.commit()
     security.log_audit(db, username=getattr(user, "username", None), action="set_user_role",
                        target=f"user:{u.username}", detail=f"role={u.role} dept={u.department} email={'Y' if u.email else 'N'}",
@@ -856,6 +859,7 @@ class LocalUserIn(BaseModel):
     role: str = config.ROLE_USER
     display_name: str | None = None
     department: str | None = None
+    note: str | None = None
 
 
 @app.post("/api/users/local")
@@ -883,12 +887,44 @@ def api_create_local_user(body: LocalUserIn, request: Request, db: Session = Dep
         u.display_name = uname
     if body.department is not None:
         u.department = body.department.strip() or None
+    if body.note is not None:
+        u.note = body.note.strip() or None
     db.commit()
     security.log_audit(db, username=getattr(user, "username", None), action="local_user",
                        target=f"user:{uname}", detail=f"{'create' if created else 'update'} role={role}",
                        ip=_client_ip(request))
     return {"id": u.id, "username": u.username, "role": config.canon_role(u.role),
             "display_name": u.display_name, "department": u.department, "created": created}
+
+
+class SeedTestIn(BaseModel):
+    password: str
+
+
+@app.post("/api/users/seed-test")
+def api_seed_test_users(body: SeedTestIn, request: Request, db: Session = Depends(get_db),
+                        user: User = Depends(require_super)):
+    """一鍵建三個測試帳號：已存在就『略過、不覆蓋』，只建缺的。回每個帳號狀態。"""
+    if not body.password or len(body.password) < 4:
+        raise HTTPException(status_code=400, detail="密碼至少 4 碼")
+    defs = [("superadmin", config.ROLE_SUPER, "本地最高管理員"),
+            ("admin", config.ROLE_DEPT_ADMIN, "本地部門窗口"),
+            ("user", config.ROLE_USER, "本地一般使用者")]
+    out, created = [], 0
+    for uname, role, disp in defs:
+        u = db.execute(select(User).where(User.username == uname)).scalars().first()
+        if u is not None:
+            out.append({"username": uname, "status": "exists"})
+            continue
+        db.add(User(username=uname, display_name=disp, role=role, is_active=True,
+                    password_hash=security.hash_password(body.password)))
+        created += 1
+        out.append({"username": uname, "status": "created"})
+    if created:
+        db.commit()
+        security.log_audit(db, username=getattr(user, "username", None), action="seed_test_users",
+                           detail="created=%d" % created, ip=_client_ip(request))
+    return {"created": created, "accounts": out}
 
 
 @app.get("/api/export")

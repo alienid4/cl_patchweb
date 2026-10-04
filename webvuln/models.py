@@ -61,6 +61,8 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # #8 每週一自動寄部門週報：由本人(dept_admin)決定開/關，預設關(不煩少用的人)
     weekly_report: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 帳號註解（管理用，自由填）；建議格式：員編_姓名_部門_用途，例 01000000_某某_某部_patchweb
+    note: Mapped[str | None] = mapped_column(String(300))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now)
 
 
