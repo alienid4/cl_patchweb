@@ -13,7 +13,6 @@
 set -uo pipefail
 umask 022
 
-SVC="${SVC:-webvuln}"
 PW="${1:-${WEBVULN_TEST_PASSWORD:-test-1234}}"
 die() { echo; echo "!! $*"; exit 1; }
 
@@ -29,11 +28,26 @@ done
 [ -n "$ROOT" ] || die "找不到 .venv（請先完成安裝 setup.sh）"
 PY="$ROOT/.venv/bin/python"
 
+# 自動偵測服務名：不寫死 webvuln（221 服務叫 patchweb）。
+# 先用 SVC 環境變數；否則找「ExecStart 跑 webvuln.main:app」的那個 unit。
+SVC="${SVC:-}"
+if [ -z "$SVC" ]; then
+  for u in /etc/systemd/system/*.service; do
+    [ -f "$u" ] || continue
+    if grep -qE 'webvuln\.main:app' "$u" 2>/dev/null; then
+      SVC="$(basename "$u" .service)"; break
+    fi
+  done
+fi
+[ -n "$SVC" ] && echo "  偵測到服務： $SVC" || echo "  （找不到對應服務，將用預設 DB 路徑）"
+
 # 連到正式服務用的那顆 DB（從 unit 讀），沒有就用預設
-DB_URL="$(systemctl show "$SVC" -p Environment --value 2>/dev/null | tr ' ' '\n' | grep -E '^WEBVULN_DB_URL=' | head -1 | cut -d= -f2-)"
+DB_URL=""
+[ -n "$SVC" ] && DB_URL="$(systemctl show "$SVC" -p Environment --value 2>/dev/null | tr ' ' '\n' | grep -E '^WEBVULN_DB_URL=' | head -1 | cut -d= -f2-)"
 [ -n "$DB_URL" ] || DB_URL="sqlite:///$ROOT/data/vuln.db"
 # 用服務帳號寫入（DB 檔多半屬該帳號）；取不到就用 root
-RUN_AS="$(systemctl show "$SVC" -p User --value 2>/dev/null)"
+RUN_AS=""
+[ -n "$SVC" ] && RUN_AS="$(systemctl show "$SVC" -p User --value 2>/dev/null)"
 [ -n "$RUN_AS" ] || RUN_AS="root"
 
 echo "════════════════════════════════════════════════"

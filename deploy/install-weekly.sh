@@ -11,10 +11,7 @@
 set -uo pipefail
 umask 022
 
-SVC="${SVC:-webvuln}"
-RUN_AS="${RUN_AS:-webvuln}"
 ONCAL="${ONCAL:-Mon *-*-* 08:00:00}"
-WSVC="${SVC}-weekly"
 die() { echo; echo "!! $*"; exit 1; }
 
 [ "$(id -u)" = "0" ] || die "請用 root 執行： sudo bash $0"
@@ -29,9 +26,22 @@ done
 [ -n "$ROOT" ] || die "找不到 .venv（請先完成安裝）"
 PY="$ROOT/.venv/bin/python"
 
-# 從主服務的 unit 讀 WEBVULN_DB_URL（週報排程要連同一顆 DB）
+# 自動偵測主服務名（不寫死 webvuln；221 服務叫 patchweb）
+SVC="${SVC:-}"
+if [ -z "$SVC" ]; then
+  for u in /etc/systemd/system/*.service; do
+    [ -f "$u" ] || continue
+    if grep -qE 'webvuln\.main:app' "$u" 2>/dev/null; then SVC="$(basename "$u" .service)"; break; fi
+  done
+fi
+[ -n "$SVC" ] || die "找不到弱點彙總的主服務（跑 webvuln.main:app 的 unit）；請先 install-service.sh，或用 SVC=名稱 指定"
+WSVC="${SVC}-weekly"
+
+# 從主服務 unit 讀 DB 與執行帳號（週報排程要連同一顆 DB、同一個帳號）
 DB_URL="$(systemctl show "$SVC" -p Environment --value 2>/dev/null | tr ' ' '\n' | grep -E '^WEBVULN_DB_URL=' | head -1 | cut -d= -f2-)"
 [ -n "$DB_URL" ] || DB_URL="sqlite:///$ROOT/data/vuln.db"
+RUN_AS="${RUN_AS:-$(systemctl show "$SVC" -p User --value 2>/dev/null)}"
+[ -n "$RUN_AS" ] || RUN_AS="webvuln"
 id "$RUN_AS" >/dev/null 2>&1 || die "執行帳號 $RUN_AS 不存在（請先跑 install-service.sh）"
 
 echo "════════════════════════════════════════════════"
