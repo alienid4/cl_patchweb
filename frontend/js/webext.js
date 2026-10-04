@@ -236,7 +236,7 @@
     var curRows = [];   // 載入後填入,供「匯出」用(匯的是眼前這份子集)
     var footer = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' },
       listExportButtons(function () { return curRows; }, title));   // 完整/簡易 兩顆
-    UI.openModal(title, box, { footer: footer, wide: true });   // 寬版(近滿版)：欄多，免左右拉
+    UI.openModal(title, box, { footer: footer, wide: true, noBackdropClose: true });   // 寬版＋點外面不關(只 ✕／Esc)
     var rows;
     try { rows = await jget('/api/findings?' + qd(Object.assign({ status: '未結案' }, params || {}))); }
     catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
@@ -298,20 +298,70 @@
     }
 
     function drawHost() {
-      var heads = cols.map(function (c) { return c[1]; }); heads.push('操作');
+      var writable = canWrite();
+      var selected = {};   // id -> true
+      // 批次工具列（可寫才顯示）：勾選下方 → 指定新負責人 → 一次套用
+      var cntEl, ownerInp, applyBtn;
+      if (writable) {
+        ensureLists();
+        var cbAll = U.el('input', { type: 'checkbox', title: '全選／全不選' });
+        cntEl = U.el('span', { text: '已選 0 筆', style: 'font-weight:600;min-width:72px' });
+        ownerInp = U.el('input', { type: 'text', list: 'webext-owners', autocomplete: 'off', placeholder: '改負責人為…（可打新名字）', style: 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px;min-width:200px' });
+        applyBtn = U.el('button', { class: 'btn btn-primary btn-sm', text: '套用到已選' });
+        var bar = U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px;padding:8px 12px;background:#f0f6f3;border:1px solid #cfe3d8;border-radius:8px' }, [
+          U.el('label', { style: 'display:inline-flex;align-items:center;gap:6px;cursor:pointer' }, [cbAll, U.el('span', { text: '全選' })]),
+          cntEl, ownerInp, applyBtn,
+          _datalist('webext-owners', _ownerList),
+        ]);
+        listBox.appendChild(bar);
+        cbAll.addEventListener('change', function () {
+          listBox.querySelectorAll('input.wx-rowcb').forEach(function (cb) { cb.checked = cbAll.checked; cb.dispatchEvent(new Event('change')); });
+        });
+        applyBtn.addEventListener('click', async function () {
+          var ids = Object.keys(selected).filter(function (k) { return selected[k]; });
+          if (!ids.length) { UI.toast('請先勾選要改的項目', 'error'); return; }
+          var nv = (ownerInp.value || '').trim();
+          if (!nv) { UI.toast('請輸入新的負責人', 'error'); ownerInp.focus(); return; }
+          if (!window.confirm('把已勾選的 ' + ids.length + ' 筆的負責人改成「' + nv + '」？')) return;
+          applyBtn.disabled = true; applyBtn.textContent = '套用中…';
+          var ok = 0;
+          for (var i = 0; i < ids.length; i++) {
+            try {
+              var r = await fetch('/api/findings/' + ids[i] + '/overlay', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ set_owner: true, owner: nv }),
+              });
+              if (r.ok) ok++;
+            } catch (e) { }
+          }
+          UI.toast('已改 ' + ok + '/' + ids.length + ' 筆負責人為「' + nv + '」', ok === ids.length ? 'success' : 'error');
+          self();   // 重載下鑽（反映新負責人）
+        });
+      }
+      var heads = (writable ? ['選'] : []).concat(cols.map(function (c) { return c[1]; })); heads.push('操作');
       var table = U.el('table', { class: 'tracking-table' });
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
       rows.forEach(function (r) {
-        var tds = cols.map(function (c) {
+        var tds = [];
+        if (writable) {
+          var cb = U.el('input', { type: 'checkbox', class: 'wx-rowcb' });
+          cb.addEventListener('change', function () {
+            selected[r.id] = cb.checked;
+            var n = Object.keys(selected).filter(function (k) { return selected[k]; }).length;
+            cntEl.textContent = '已選 ' + n + ' 筆';
+          });
+          tds.push(U.el('td', {}, [cb]));
+        }
+        cols.forEach(function (c) {
           var td = U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
           if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; }
-          return td;
+          tds.push(td);
         });
         tds.push(opsCell(r, self));
         tb.appendChild(U.el('tr', {}, tds));
       });
-      table.appendChild(tb); listBox.appendChild(table); makeSortable(table);
+      table.appendChild(tb); listBox.appendChild(table);
     }
     // 依弱點彙總的排序狀態（點表頭切換；預設台數多→少）
     var SEV_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };

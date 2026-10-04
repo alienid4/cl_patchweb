@@ -27,6 +27,7 @@
    * (Email 設定、催辦內容)。唯讀的明細 modal 不要設，那些好關比較方便。 */
   var modalStack = [];
   var stickyNow = false;
+  var noBackdropNow = false;   // 只擋「點外面空白處」關閉；Esc 與 ✕ 仍可關(避免誤觸把下鑽關掉)
 
   function openModal(title, contentNode, opts) {
     opts = opts || {};
@@ -42,10 +43,11 @@
       var savedFoot = document.createDocumentFragment();
       while (footEl.firstChild) savedFoot.appendChild(footEl.firstChild);
       // 連同上一層的 sticky 一起存，收掉這層時要還原回去
-      modalStack.push({ title: titleEl.textContent, body: savedBody, foot: savedFoot, sticky: stickyNow });
+      modalStack.push({ title: titleEl.textContent, body: savedBody, foot: savedFoot, sticky: stickyNow, noBackdrop: noBackdropNow });
     }
 
     stickyNow = !!opts.sticky;
+    noBackdropNow = !!opts.noBackdropClose;
 
     // 寬版(近滿版)：下鑽等寬表格用，免得一直左右拉。opts.wide=true 時加 .modal-wide。
     var modalEl = overlay.querySelector('.modal');
@@ -74,22 +76,27 @@
       bodyEl.innerHTML = ''; bodyEl.appendChild(prev.body);
       footEl.innerHTML = ''; footEl.appendChild(prev.foot);
       stickyNow = prev.sticky;      // 回到上一層，sticky 也跟著還原
+      noBackdropNow = prev.noBackdrop;
       return;
     }
     overlay.classList.remove('show');
     document.body.classList.remove('modal-open');
     stickyNow = false;
+    noBackdropNow = false;
   }
 
   /* 完全關閉(清空堆疊)：需要一次收掉整組 modal 時用 */
   function closeAllModals() {
     modalStack.length = 0;
     stickyNow = false;
+    noBackdropNow = false;
     closeModal();
   }
 
   /* 目前這層是否禁止誤觸關閉（給 main.js 的 overlay 點擊與 Esc 判斷用） */
   function isModalSticky() { return stickyNow; }
+  /* 目前這層是否只擋「點外面」關閉（Esc／✕ 仍可關） */
+  function isModalNoBackdrop() { return noBackdropNow; }
 
   /* -------- 明細表欄位定義(供 drill-down / 搜尋 / 新分頁共用) --------
    * disp: 顯示字串；sortVal: 排序鍵(數字/時間戳/字串，null 一律排最後)
@@ -410,6 +417,7 @@
     closeModal: closeModal,
     closeAllModals: closeAllModals,
     isModalSticky: isModalSticky,
+    isModalNoBackdrop: isModalNoBackdrop,
     buildDetailTable: buildDetailTable,
     openDetail: openDetail,
     popOutTable: popOutTable,

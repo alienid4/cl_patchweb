@@ -68,7 +68,7 @@
     // sticky 的 modal（Email 設定、催辦內容等有輸入的流程）不吃這兩種關法，
     // 否則填到一半誤點畫面空白處就整組消失、得從頭來過。只能按右上 ✕。
     $('modal-overlay').addEventListener('click', function (e) {
-      if (e.target === this && !UI.isModalSticky()) UI.closeModal();
+      if (e.target === this && !UI.isModalSticky() && !(UI.isModalNoBackdrop && UI.isModalNoBackdrop())) UI.closeModal();
     });
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && !UI.isModalSticky()) UI.closeModal();
