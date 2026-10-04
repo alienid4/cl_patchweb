@@ -71,12 +71,28 @@
     setTimeout(function () { suppressPersist = false; }, 0);
   }
 
+  // 目前載入的資料檔名(版本)：顯示在右上角(原「其他功能」位置)，一眼知道是哪一版，不用點進去看
+  var _dataFile = '';
+  function showDataFile(name) {
+    if (name) _dataFile = name;
+    var ha = document.querySelector('.header-actions'); if (!ha) return;
+    var slot = document.getElementById('webext-datafile');
+    if (!slot) {
+      slot = U.el('span', { id: 'webext-datafile', title: '目前載入的資料檔（版本）' });
+      slot.style.cssText = 'font-weight:700;color:#fff;background:rgba(255,255,255,.18);padding:6px 12px;border-radius:8px;font-size:14px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;align-self:center';
+      ha.appendChild(slot);
+    }
+    slot.textContent = _dataFile ? ('📄 ' + _dataFile) : '';
+    slot.title = _dataFile ? ('目前資料檔：' + _dataFile) : '';
+  }
+
   async function loadFromServer() {
     try {
       var r = await fetch('/api/snapshot');
       if (!r.ok) return false;
       var snap = await r.json();
       if (!snap || !snap.sheets || !snap.sheets.length) return false;
+      showDataFile(snap.source_file);
       feedToApp(snapshotToFile(snap), true);
       return true;
     } catch (e) { return false; }
@@ -101,6 +117,7 @@
       });
       if (rp.ok && global.UI && global.UI.toast) {
         var b = await rp.json();
+        showDataFile(file.name);   // 上傳新檔→右上角版本即時更新
         global.UI.toast('已存到伺服器（' + b.row_count + ' 筆）', 'success');
       } else if ((rp.status === 401 || rp.status === 403) && global.UI && global.UI.toast) {
         // 關掉免登入後，要先登入(承辦/管理員)才能把資料存進伺服器
@@ -1131,6 +1148,26 @@
     ], 'audit');
   }
 
+  // ---- 其他功能（原右上角「其他功能」選單，移到左側成一項）：資料管理＋系統設定 ----
+  function renderMoreInto(host) {
+    if (!host) return;
+    host.innerHTML = ''; host.classList.remove('webext-rpt');
+    host.appendChild(U.el('p', { class: 'empty-hint', text: '其他功能：資料管理與系統設定。' }));
+    var ft = document.getElementById('file-name-tag');
+    var fn = _dataFile || (ft && ft.textContent.trim()) || '（未知）';
+    host.appendChild(U.el('div', { class: 'scope-info', style: 'margin:0 0 12px' }, [U.el('span', { text: '目前資料檔：' + fn })]));
+    // 觸發原本隱藏的功能按鈕(沿用既有流程，不重寫)。Email 設定＝左側「一鍵發送」，這裡不列。
+    var items = [['reload-btn', '重新選擇檔案（上傳新的弱點彙總 Excel）'], ['autoimport-btn', '自動匯入設定'],
+      ['features-btn', '功能開關'], ['help-btn', '使用說明'], ['security-btn', '資安說明'], ['clear-btn', '清除暫存資料']];
+    var box = U.el('div', { style: 'display:flex;flex-direction:column;gap:8px;max-width:480px' });
+    items.forEach(function (it) {
+      var b = U.el('button', { class: 'btn btn-secondary', text: it[1], style: 'text-align:left' });
+      b.addEventListener('click', function () { var el = document.getElementById(it[0]); if (el) el.click(); else UI.toast('找不到此功能', 'error'); });
+      box.appendChild(b);
+    });
+    host.appendChild(box);
+  }
+
   // ---- 主管週報（應申請未申請／已申請／預計完成彙總／落後；可列印存 PDF） ----
   var _lastReport = null;
   async function renderReportInto(host) {
@@ -1545,10 +1582,12 @@
     // 開發期暫加 A/B 代號方便對話指稱；開發完畢再拿掉(搜 'DEV-LETTER' 一次清)
     { key: 'report', label: 'A. 主管週報', render: renderReportInto },    // 看＋報：總覽/負責人/到期倒數/處置落點/各清單(含一鍵發送鈕)
     { key: 'audit', label: 'B. 查核', render: renderAuditInto },          // 查：結案稽核＋對帳健檢＋資料缺口(查帳,非報告)
-    // 一鍵發送＝動作；放左側好找，沿用原 Email 設定流程。主管週報內也有同鈕。
-    { key: 'email', label: '📧 一鍵發送', action: function () {
+    // 一鍵發送＝動作；沿用原 Email 設定流程。主管週報內也有同鈕。
+    { key: 'email', label: 'C. 一鍵發送', action: function () {
         var b = document.getElementById('email-settings-btn'); if (b) b.click(); else UI.toast('找不到 Email 設定', 'error');
       } },
+    // 其他功能：原右上角選單移來這(資料管理/系統設定)；右上角改顯示資料版本
+    { key: 'more', label: '其他功能', render: renderMoreInto },
   ];
 
   // 全站匯出統一成「原封 Excel」：攔截所有匯出鈕(原本各表的匯出CSV等)→改下載原封 xlsx。
@@ -1657,8 +1696,11 @@
   function wireNewFeatures() {
     var lb = document.getElementById('webext-login-btn');
     if (lb) lb.addEventListener('click', function () { me.authenticated ? doLogout() : openLogin(); });
-    // 「Email 設定」移到承辦管線→「一鍵發送」，從「其他功能」選單隱藏(功能仍靠此按鈕觸發)
+    // 「Email 設定」移到左側「一鍵發送」，從「其他功能」選單隱藏(功能仍靠此按鈕觸發)
     var eb = document.getElementById('email-settings-btn'); if (eb) eb.style.display = 'none';
+    // 「其他功能」整個移到左側(成為一個項目)；右上角原位置改顯示資料版本(showDataFile)
+    var mb = document.getElementById('more-btn'); if (mb) mb.style.display = 'none';
+    showDataFile('');   // 先建右上角版本槽(hide more-btn 後補位)；檔名於載入/上傳時填
     wireUnifiedExport();
     injectNavGroup();
     // main.js 會在載入資料/切部門時重建 #sheet-nav → 用 observer 重新注入我的大項
