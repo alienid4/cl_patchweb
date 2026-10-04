@@ -135,19 +135,19 @@ def authenticate_ad(session: Session, cfg: dict, login: str, password: str) -> O
 
     u = session.execute(select(User).where(User.username == login)).scalars().first()
     if u is None:
+        # 首次登入：帶入 AD 名字／部門當初始值（部門之後由 Super Admin 於「帳號與權限」校正成 Excel 短名）
         u = User(username=login, password_hash=None, display_name=owner_name,
                  department=department, role=(config.ROLE_SUPER if is_super else config.ROLE_USER),
                  is_active=True)
         session.add(u)
     else:
-        # 每次登入同步 AD 來的名字／部門；角色若該升為 super 則升，不自動降（降權由管理介面做）
-        u.display_name = owner_name
-        if department:
-            u.department = department
-        if is_super and u.role != config.ROLE_SUPER:
-            u.role = config.ROLE_SUPER
         if not u.is_active:
             return None
+        # 同步 AD 顯示名；但「部門」不覆蓋——因 AD 部門是長名、與 Excel 短名不同，
+        # 由 Super Admin 在「帳號與權限」設定後即固定，不被每次登入洗掉。
+        u.display_name = owner_name
+        if is_super and config.canon_role(u.role) != config.ROLE_SUPER:
+            u.role = config.ROLE_SUPER
     session.commit()
     session.refresh(u)
     return u

@@ -4,5 +4,5 @@
  * 規則：功能新增/修改 → 小版 +0.01（V1.0 → V1.01）；重大里程碑 → 大版 +1。
  * 注意：bump 時同步更新 index.html 各 script/link 的 ?v=xxx（快取破壞）。
  * ============================================================ */
-window.APP_VERSION = 'V2.52';             // AD登入(ldap3,員編UPN,讀displayName/部門)+三級權限(super/dept_admin/user,範圍檢查)+可編輯AD設定畫面(含測試連線)+帳號權限管理;離線輪子含ldap3
+window.APP_VERSION = 'V2.53';             // AD登入後不覆蓋已設定的部門(AD部門長名≠Excel短名,由Super Admin校正後固定)
 window.APP_VERSION_DATE = '2026-10-04';   // 對應日期（人工維護）
