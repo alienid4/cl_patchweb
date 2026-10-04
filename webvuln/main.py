@@ -66,7 +66,10 @@ class _AnonUser:
 
 def _open_mode(db: Session) -> bool:
     """是否『免登入』：env NO_AUTH 開、且『未啟用 AD 登入』。
-    啟用 AD 登入(設定畫面) → 一律需登入（DB 開關為主，覆蓋 env 的過渡設定）。"""
+    啟用 AD 登入(設定畫面) → 一律需登入（DB 開關為主，覆蓋 env 的過渡設定）。
+    WEBVULN_FORCE_OPEN=1 為緊急救援，強制免登入、覆蓋一切(含 AD)。"""
+    if config.FORCE_OPEN:
+        return True
     if not config.NO_AUTH:
         return False
     try:

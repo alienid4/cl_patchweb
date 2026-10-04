@@ -70,7 +70,12 @@ DISABLE_WRITE: bool = _truthy(os.environ.get("WEBVULN_DISABLE_WRITE", ""))
 
 # 暫時取消密碼：免登入即可寫入（承辦推進等）。內部工具過渡期用；設 0/移除即恢復需登入。
 # 仍會留 audit（記為『(未登入)』）。DISABLE_WRITE 優先：若維護停用，仍擋下。
+# 注意：啟用 AD 登入(DB 設定)會覆蓋 NO_AUTH → 仍需登入（見 main._open_mode）。
 NO_AUTH: bool = _truthy(os.environ.get("WEBVULN_NO_AUTH", ""))
+
+# 緊急救援：強制免登入(＝Super Admin)，覆蓋一切(含已啟用的 AD)。只在被鎖在外面時用：
+#   sudo systemctl stop webvuln; WEBVULN_FORCE_OPEN=1 ...run... 進設定改好再關掉。
+FORCE_OPEN: bool = _truthy(os.environ.get("WEBVULN_FORCE_OPEN", ""))
 
 # 驗證後端：local=本地帳號(pbkdf2)。日後 ad=AD/LDAP(架構已留 seam，見 security.authenticate)。
 AUTH_BACKEND: str = os.environ.get("WEBVULN_AUTH_BACKEND", "local").strip().lower()
