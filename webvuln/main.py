@@ -12,9 +12,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from . import attachments, cases, config, export, importer, query, security
+from . import ad, appsettings, attachments, cases, config, export, importer, query, security
 from .db import SessionLocal, init_db
-from .models import User
+from .models import Finding, User
 from .schemas import ImportIn, ImportResult
 
 _FRONTEND = Path(__file__).resolve().parents[1] / "frontend"
@@ -70,15 +70,45 @@ def require_view(user: User | None = Depends(current_user)) -> User:
 
 
 def require_write_role(user: User | None = Depends(current_user)) -> User:
+    """可寫入端點：需登入(任何角色)或免登入模式。實際能改哪些由各端點的「範圍檢查」決定
+    (super_admin 全部；dept_admin 限自己部門；user 限自己的 owner)。"""
     if config.DISABLE_WRITE:
         raise HTTPException(status_code=503, detail="寫入維護中（暫停）")
     if config.NO_AUTH:
-        return user or _AnonUser()   # 暫時取消密碼：免登入即可寫入（仍留 audit）
+        return user or _AnonUser()   # 免登入＝super_admin（過渡期）
     if user is None:
         raise HTTPException(status_code=401, detail="請先登入")
-    if user.role not in (config.ROLE_ADMIN, config.ROLE_STAFF):
-        raise HTTPException(status_code=403, detail="權限不足（需承辦或管理員）")
     return user
+
+
+def require_super(user: User | None = Depends(current_user)) -> User:
+    """系統級動作(匯入、清除、AD 設定)：僅 Super Admin（免登入過渡期比照）。"""
+    if config.DISABLE_WRITE:
+        raise HTTPException(status_code=503, detail="寫入維護中（暫停）")
+    if config.NO_AUTH:
+        return user or _AnonUser()
+    if user is None:
+        raise HTTPException(status_code=401, detail="請先登入")
+    if config.canon_role(user.role) != config.ROLE_SUPER:
+        raise HTTPException(status_code=403, detail="需最高權限（Super Admin）")
+    return user
+
+
+def _scope_ok(user, finding) -> bool:
+    """此使用者可否改這筆弱點：super 全部；dept_admin 限同部門；user 限自己(owner＝display_name)。"""
+    if config.NO_AUTH:
+        return True
+    role = config.canon_role(getattr(user, "role", ""))
+    if role == config.ROLE_SUPER:
+        return True
+    if role == config.ROLE_DEPT_ADMIN:
+        return bool(getattr(user, "department", None)) and finding.department == user.department
+    return bool(getattr(user, "display_name", None)) and (finding.owner or "") == user.display_name
+
+
+def _require_scope(user, finding):
+    if not _scope_ok(user, finding):
+        raise HTTPException(status_code=403, detail="權限不足：只能處理你負責（或你部門）的弱點")
 
 
 @app.get("/api/health")
@@ -123,15 +153,17 @@ def api_logout(request: Request, response: Response, db: Session = Depends(get_d
 def api_me(user: User | None = Depends(current_user)):
     # open_write：伺服器目前是否免登入即可寫入（WEBVULN_NO_AUTH）→ 前端據此顯示操作鈕
     if user is None:
-        return {"authenticated": False, "open_write": config.NO_AUTH}
+        return {"authenticated": False, "open_write": config.NO_AUTH, "is_super": config.NO_AUTH}
+    role = config.canon_role(user.role)
     return {"authenticated": True, "username": user.username,
-            "display_name": user.display_name, "role": user.role,
-            "department": user.department, "open_write": config.NO_AUTH}
+            "display_name": user.display_name, "role": role,
+            "department": user.department, "open_write": config.NO_AUTH,
+            "is_super": config.NO_AUTH or role == config.ROLE_SUPER}
 
 
 @app.post("/api/import", response_model=ImportResult)
 def import_data(payload: ImportIn, request: Request, db: Session = Depends(get_db),
-                user: User = Depends(require_write_role)):
+                user: User = Depends(require_super)):
     """收前端解析好的一批 finding → 存成新快照，舊快照退位。
     匯入＝覆蓋最新快照，屬寫入：需登入（承辦/管理員），免登入模式才放行；動作留稽核。"""
     batch = importer.create_batch(db, payload)
@@ -267,7 +299,7 @@ def api_cases(status: str | None = None, department: str | None = None,
 
 @app.post("/api/cases/purge-orphans")
 def api_purge_orphans(request: Request, db: Session = Depends(get_db),
-                      user: User = Depends(require_write_role)):
+                      user: User = Depends(require_super)):
     """清除『已消失』(orphan) 案件：來源已無此弱點的舊案件紀錄。需寫入權限，留稽核。"""
     n = cases.purge_orphans(db)
     security.log_audit(db, username=user.username, action="purge_orphans",
@@ -292,6 +324,10 @@ class OverlayIn(BaseModel):
 def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
                     db: Session = Depends(get_db), user: User = Depends(require_write_role)):
     """管理員在系統內改一筆弱點的可寫欄位（負責人／追蹤備註／預計完成日／處理進度）：存疊加層、重匯不洗掉、不動 Excel。"""
+    _f = db.get(Finding, finding_id)
+    if _f is None:
+        raise HTTPException(status_code=404, detail="弱點不存在")
+    _require_scope(user, _f)   # super 全部／dept_admin 限自己部門／user 限自己的
     fields = {}
     if body.set_owner:
         fields["owner"] = body.owner
@@ -330,6 +366,10 @@ async def api_upload_attachment(finding_id: int, request: Request, name: str = "
                                 kind: str = "其他", db: Session = Depends(get_db),
                                 user: User = Depends(require_write_role)):
     """上傳一個附件：raw body＝檔案位元組，檔名/類型走 query（避免相依 python-multipart）。"""
+    _f = db.get(Finding, finding_id)
+    if _f is None:
+        raise HTTPException(status_code=404, detail="弱點不存在")
+    _require_scope(user, _f)
     clen = request.headers.get("content-length")
     if clen and clen.isdigit() and int(clen) > config.UPLOAD_MAX_BYTES:
         raise HTTPException(status_code=413, detail="檔案過大（上限 %d MB）" % (config.UPLOAD_MAX_BYTES // (1024 * 1024)))
@@ -363,6 +403,77 @@ def api_delete_attachment(att_id: int, request: Request, db: Session = Depends(g
     security.log_audit(db, username=getattr(user, "username", None), action="attach_del",
                        target=f"attachment:{att_id}", ip=_client_ip(request))
     return {"deleted": True}
+
+
+# ── AD／權限設定（Super Admin 專用；存 DB，畫面可編輯、免重部署）──
+@app.get("/api/ad-settings")
+def api_get_ad_settings(db: Session = Depends(get_db), user: User = Depends(require_super)):
+    cfg = appsettings.get_ad_config(db)
+    cfg["presets"] = appsettings.LDAP_SERVER_PRESETS   # 內建敦南/內湖/板橋，供畫面「選的」
+    return cfg
+
+
+@app.post("/api/ad-settings")
+def api_set_ad_settings(body: dict, request: Request, db: Session = Depends(get_db),
+                        user: User = Depends(require_super)):
+    cfg = appsettings.set_ad_config(db, body or {})
+    security.log_audit(db, username=getattr(user, "username", None), action="ad_settings",
+                       detail="enabled=%s servers=%s" % (cfg.get("enabled"), cfg.get("servers")),
+                       ip=_client_ip(request))
+    return cfg
+
+
+class AdTestIn(BaseModel):
+    login: str
+    password: str
+    config: dict | None = None   # 可帶「尚未儲存」的設定來試
+
+
+@app.post("/api/ad-test")
+def api_ad_test(body: AdTestIn, db: Session = Depends(get_db), user: User = Depends(require_super)):
+    """測試連線：用給的帳密對 AD 試綁定，回成功/失敗＋讀到的 displayName/部門。"""
+    cfg = appsettings.get_ad_config(db)
+    if body.config:
+        for k, v in body.config.items():
+            if k in appsettings.AD_DEFAULTS:
+                cfg[k] = v
+    return ad.test_connection(cfg, body.login, body.password)
+
+
+@app.get("/api/users")
+def api_list_users(db: Session = Depends(get_db), user: User = Depends(require_super)):
+    from sqlalchemy import select as _sel
+    rows = db.execute(_sel(User).order_by(User.role, User.username)).scalars().all()
+    return [{"id": u.id, "username": u.username, "display_name": u.display_name,
+             "department": u.department, "role": config.canon_role(u.role), "is_active": u.is_active}
+            for u in rows]
+
+
+class UserRoleIn(BaseModel):
+    role: str | None = None          # super_admin/dept_admin/user
+    department: str | None = None    # 設定窗口負責的部門
+    is_active: bool | None = None
+
+
+@app.post("/api/users/{user_id}/role")
+def api_set_user_role(user_id: int, body: UserRoleIn, request: Request,
+                      db: Session = Depends(get_db), user: User = Depends(require_super)):
+    u = db.get(User, user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="帳號不存在")
+    if body.role is not None:
+        if body.role not in (config.ROLE_SUPER, config.ROLE_DEPT_ADMIN, config.ROLE_USER):
+            raise HTTPException(status_code=400, detail="未知角色")
+        u.role = body.role
+    if body.department is not None:
+        u.department = body.department or None
+    if body.is_active is not None:
+        u.is_active = body.is_active
+    db.commit()
+    security.log_audit(db, username=getattr(user, "username", None), action="set_user_role",
+                       target=f"user:{u.username}", detail=f"role={u.role} dept={u.department}",
+                       ip=_client_ip(request))
+    return {"id": u.id, "username": u.username, "role": config.canon_role(u.role), "department": u.department}
 
 
 @app.get("/api/export")

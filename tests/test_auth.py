@@ -46,29 +46,43 @@ def _first_fid(client):
 
 
 def test_write_requires_login_and_role(client, engine, monkeypatch):
+    """三級權限範圍：super 全部；dept_admin 限自己部門；user 限自己的 owner。"""
     from sqlalchemy.orm import Session, sessionmaker
     from webvuln import config
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
     with factory() as s:
-        security.create_user(s, "staff", "pw12345", role="承辦")
-        security.create_user(s, "bob", "pw12345", role="viewer")
+        security.create_user(s, "super", "pw12345", role=config.ROLE_SUPER)
+        security.create_user(s, "deptA", "pw12345", role=config.ROLE_DEPT_ADMIN, department="資訊架構部")
+        security.create_user(s, "wang", "pw12345", role=config.ROLE_USER, display_name="王五")
+        security.create_user(s, "other", "pw12345", role=config.ROLE_USER, display_name="他人")
 
+    # 一筆：部門=資訊架構部、負責人=王五
     client.post("/api/import", json={"findings": [
-        {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}
+        {"host": "h1", "plugin_id": "p1", "sheet_key": "s",
+         "department": "資訊架構部", "owner": "王五", "close_status": "未結案"}
     ]})
     fid = _first_fid(client)
-    body = {"set_progress": True, "progress": "處理中"}   # 寫入類：改處理進度
+    body = {"set_progress": True, "progress": "處理中"}
 
-    monkeypatch.setattr(config, "NO_AUTH", False)   # 關免登入，測真正的權限閘門
+    monkeypatch.setattr(config, "NO_AUTH", False)
     assert client.post(f"/api/findings/{fid}/overlay", json=body).status_code == 401   # 未登入
 
-    client.post("/api/login", json={"username": "bob", "password": "pw12345"})
-    assert client.post(f"/api/findings/{fid}/overlay", json=body).status_code == 403   # viewer 無權
+    # user 他人：owner 不是他 → 403
+    client.post("/api/login", json={"username": "other", "password": "pw12345"})
+    assert client.post(f"/api/findings/{fid}/overlay", json=body).status_code == 403
     client.post("/api/logout")
-
-    client.post("/api/login", json={"username": "staff", "password": "pw12345"})
+    # user 王五：owner＝王五 → 200
+    client.post("/api/login", json={"username": "wang", "password": "pw12345"})
+    assert client.post(f"/api/findings/{fid}/overlay", json=body).status_code == 200
+    client.post("/api/logout")
+    # dept_admin 同部門 → 200
+    client.post("/api/login", json={"username": "deptA", "password": "pw12345"})
+    assert client.post(f"/api/findings/{fid}/overlay", json=body).status_code == 200
+    client.post("/api/logout")
+    # super → 200
+    client.post("/api/login", json={"username": "super", "password": "pw12345"})
     r = client.post(f"/api/findings/{fid}/overlay", json=body)
-    assert r.status_code == 200 and r.json()["progress"] == "處理中"   # 承辦可寫
+    assert r.status_code == 200 and r.json()["progress"] == "處理中"
 
     with factory() as s:
         acts = {a.action for a in s.query(AuditLog).all()}
@@ -91,18 +105,22 @@ def test_no_auth_mode_allows_write(client, engine, monkeypatch):
 
 
 def test_import_requires_write(client, engine, monkeypatch):
-    """P5：匯入屬寫入。關免登入後未登入不能匯入(擋 401)；登入承辦可匯入且留稽核。"""
+    """匯入屬系統級動作：未登入擋 401；非 Super Admin 擋 403；Super Admin 可匯入且留稽核。"""
     from sqlalchemy.orm import Session, sessionmaker
     from webvuln import config
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
     with factory() as s:
-        security.create_user(s, "staff", "pw12345", role="承辦")
+        security.create_user(s, "super", "pw12345", role=config.ROLE_SUPER)
+        security.create_user(s, "deptA", "pw12345", role=config.ROLE_DEPT_ADMIN, department="X")
     body = {"findings": [{"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}]}
 
     monkeypatch.setattr(config, "NO_AUTH", False)
     assert client.post("/api/import", json=body).status_code == 401      # 未登入擋
-    client.post("/api/login", json={"username": "staff", "password": "pw12345"})
-    assert client.post("/api/import", json=body).status_code == 200      # 登入可匯入
+    client.post("/api/login", json={"username": "deptA", "password": "pw12345"})
+    assert client.post("/api/import", json=body).status_code == 403      # 非 super 擋
+    client.post("/api/logout")
+    client.post("/api/login", json={"username": "super", "password": "pw12345"})
+    assert client.post("/api/import", json=body).status_code == 200      # super 可匯入
     with factory() as s:
         assert "import" in {a.action for a in s.query(AuditLog).all()}   # 留稽核
 

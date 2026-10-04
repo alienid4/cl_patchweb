@@ -82,8 +82,22 @@ SESSION_COOKIE: str = os.environ.get("WEBVULN_SESSION_COOKIE", "webvuln_session"
 # cookie 是否標 Secure（正式機上 TLS 後設 1）
 COOKIE_SECURE: bool = _truthy(os.environ.get("WEBVULN_COOKIE_SECURE", ""))
 
-# 角色
+# 角色（三級，2026-10-04 定）：
+#   super_admin 全系統最高權限（目前免登入 NO_AUTH 即視為此）
+#   dept_admin  部門窗口：可在「自己部門」內調配負責人
+#   user        一般：只能管自己的（owner＝自己）
+ROLE_SUPER = "super_admin"
+ROLE_DEPT_ADMIN = "dept_admin"
+ROLE_USER = "user"
+# 舊角色（相容保留）：admin≈super_admin、承辦≈dept_admin、viewer≈user
 ROLE_ADMIN = "admin"
 ROLE_STAFF = "承辦"
 ROLE_VIEWER = "viewer"
-ROLES = (ROLE_ADMIN, ROLE_STAFF, ROLE_VIEWER)
+ROLES = (ROLE_SUPER, ROLE_DEPT_ADMIN, ROLE_USER, ROLE_ADMIN, ROLE_STAFF, ROLE_VIEWER)
+
+# 角色正規化：舊→新，判斷權限時統一比對
+_ROLE_CANON = {ROLE_ADMIN: ROLE_SUPER, ROLE_STAFF: ROLE_DEPT_ADMIN, ROLE_VIEWER: ROLE_USER}
+
+
+def canon_role(role: str) -> str:
+    return _ROLE_CANON.get(role, role)

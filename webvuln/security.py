@@ -59,14 +59,20 @@ def create_user(session: Session, username: str, password: Optional[str], role: 
 
 
 def authenticate(session: Session, username: str, password: str) -> Optional[User]:
-    """回傳驗證通過的 User，否則 None。AD seam：AUTH_BACKEND!='local' 時改走 AD（尚未實作）。"""
+    """回傳驗證通過的 User，否則 None。
+
+    AD 優先：DB 設定 ad.enabled=True（或 env AUTH_BACKEND=ad）時走 AD 綁定（員編），
+    成功則 get-or-create 本地 User。否則走本地帳號密碼(pbkdf2)。
+    """
+    from . import appsettings, ad
+    ad_cfg = appsettings.get_ad_config(session)
+    if ad_cfg.get("enabled") or config.AUTH_BACKEND == "ad":
+        return ad.authenticate_ad(session, ad_cfg, username, password)
+    # 本地帳號
     u = session.execute(select(User).where(User.username == username)).scalars().first()
     if not u or not u.is_active:
         return None
-    if config.AUTH_BACKEND == "local":
-        return u if verify_password(password, u.password_hash) else None
-    # TODO(W4-B): AD/LDAP bind 驗證；成功則 get-or-create 本地 User（password_hash 留空）
-    raise NotImplementedError(f"AUTH_BACKEND={config.AUTH_BACKEND} 尚未實作")
+    return u if verify_password(password, u.password_hash) else None
 
 
 # ── session ──

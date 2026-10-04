@@ -67,7 +67,7 @@ def test_endpoint_read_and_write_requires_login(client, engine, monkeypatch):
     from webvuln import security, config
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
     with factory() as s:
-        security.create_user(s, "staff", "pw12345", role="承辦")
+        security.create_user(s, "super", "pw12345", role=config.ROLE_SUPER)
 
     client.post("/api/import", json={"findings": [
         {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "close_status": "未結案"}
@@ -76,9 +76,9 @@ def test_endpoint_read_and_write_requires_login(client, engine, monkeypatch):
 
     monkeypatch.setattr(config, "NO_AUTH", False)    # 關免登入，測權限閘門
     body = {"set_progress": True, "progress": "處理中"}
-    # 未登入寫入 → 401；登入後 → 200（細節見 test_auth）
+    # 未登入寫入 → 401；Super Admin 登入後 → 200（角色範圍見 test_auth）
     assert client.post(f"/api/findings/{fid}/overlay", json=body).status_code == 401
-    client.post("/api/login", json={"username": "staff", "password": "pw12345"})
+    client.post("/api/login", json={"username": "super", "password": "pw12345"})
     r = client.post(f"/api/findings/{fid}/overlay", json=body)
     assert r.status_code == 200 and r.json()["progress"] == "處理中"
 
