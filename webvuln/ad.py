@@ -84,10 +84,11 @@ def _lookup_attrs(cfg: dict, conn, login: str) -> dict:
         return {}
     name_attr = cfg.get("name_attr") or "displayName"
     dept_attr = cfg.get("dept_attr") or "department"
+    mail_attr = cfg.get("mail_attr") or "mail"
     login_attr = cfg.get("login_attr") or "sAMAccountName"
     try:
         flt = f"({login_attr}={login})"
-        conn.search(base, flt, attributes=[name_attr, dept_attr])
+        conn.search(base, flt, attributes=[name_attr, dept_attr, mail_attr])
         if conn.entries:
             e = conn.entries[0]
             out = {}
@@ -95,6 +96,8 @@ def _lookup_attrs(cfg: dict, conn, login: str) -> dict:
                 out["name"] = str(e[name_attr].value)
             if dept_attr in e and e[dept_attr].value:
                 out["department"] = str(e[dept_attr].value)
+            if mail_attr in e and e[mail_attr].value:
+                out["email"] = str(e[mail_attr].value)
             return out
     except Exception:  # noqa: BLE001
         pass
@@ -131,21 +134,26 @@ def authenticate_ad(session: Session, cfg: dict, login: str, password: str) -> O
     # 負責人名：emp_to_owner 覆寫優先，否則用 AD displayName，再退回員編
     owner_name = (cfg.get("emp_to_owner") or {}).get(login) or attrs.get("name") or login
     department = attrs.get("department")
+    email = (attrs.get("email") or "").strip() or None
     is_super = login in (cfg.get("super_admins") or [])
 
     u = session.execute(select(User).where(User.username == login)).scalars().first()
     if u is None:
-        # 首次登入：帶入 AD 名字／部門當初始值（部門之後由 Super Admin 於「帳號與權限」校正成 Excel 短名）
+        # 首次登入：帶入 AD 名字／部門／信箱當初始值（部門之後由 Super Admin 於「帳號與權限」校正成 Excel 短名）
         u = User(username=login, password_hash=None, display_name=owner_name,
+                 email=email,
                  department=department, role=(config.ROLE_SUPER if is_super else config.ROLE_USER),
                  is_active=True)
         session.add(u)
     else:
         if not u.is_active:
             return None
-        # 同步 AD 顯示名；但「部門」不覆蓋——因 AD 部門是長名、與 Excel 短名不同，
+        # 同步 AD 顯示名與信箱（信箱以 AD 為權威、不像部門會與 Excel 短名衝突）；
+        # 但「部門」不覆蓋——因 AD 部門是長名、與 Excel 短名不同，
         # 由 Super Admin 在「帳號與權限」設定後即固定，不被每次登入洗掉。
         u.display_name = owner_name
+        if email:
+            u.email = email
         if is_super and config.canon_role(u.role) != config.ROLE_SUPER:
             u.role = config.ROLE_SUPER
     session.commit()

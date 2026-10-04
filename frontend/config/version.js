@@ -4,5 +4,5 @@
  * 規則：功能新增/修改 → 小版 +0.01（V1.0 → V1.01）；重大里程碑 → 大版 +1。
  * 注意：bump 時同步更新 index.html 各 script/link 的 ?v=xxx（快取破壞）。
  * ============================================================ */
-window.APP_VERSION = 'V2.56';             // 載入遮罩改品牌spinner(logo+轉圈+載入資料中),不再像卡頓
+window.APP_VERSION = 'V2.57';             // 伺服器端一鍵發送(直連公司relay)＋AD登入存email；移除單機小幫手
 window.APP_VERSION_DATE = '2026-10-04';   // 對應日期（人工維護）

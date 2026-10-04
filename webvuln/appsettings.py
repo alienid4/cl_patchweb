@@ -12,9 +12,12 @@ AD 設定（key='ad'）欄位：
   base_dn        搜尋基準 DN，例 DC=corp,DC=example,DC=com（讀 displayName/部門用）
   name_attr      顯示名屬性（預設 displayName）→ 對 Excel 負責人名
   dept_attr      部門屬性（預設 department）
+  mail_attr      信箱屬性（預設 mail）→ 登入時存 User.email，供一鍵發送
   login_attr     以員編搜尋時比對的屬性（預設 sAMAccountName）
   super_admins   Super Admin 的員編清單
   emp_to_owner   {員編: 負責人名} 覆寫對照（displayName 對不上時補）
+
+Email／SMTP 設定（key='email'，Super Admin 於畫面編輯）：見 EMAIL_DEFAULTS。
 """
 from __future__ import annotations
 
@@ -46,9 +49,36 @@ AD_DEFAULTS: dict[str, Any] = {
     "base_dn": "",
     "name_attr": "displayName",
     "dept_attr": "department",
+    "mail_attr": "mail",
     "login_attr": "sAMAccountName",
     "super_admins": [],
     "emp_to_owner": {},
+}
+
+# Email／SMTP 設定（一鍵發送催辦）。公司為免認證內部 relay，故不收密碼。
+#   enabled        是否啟用一鍵發送（false＝發送鈕擋下）
+#   smtp_host      relay 主機（例 mailrelay.corp）
+#   smtp_port      預設 25
+#   use_tls        是否 STARTTLS（內部 relay 多為 false）
+#   from_default   寄件者本人無信箱時的系統預設寄件人（也作信封寄件人）
+#   subject_prefix 主旨前綴
+#   cc_self        每封副本給操作者本人
+#   include_overdue 納入逾期未結
+#   include_soon   納入近期到期
+#   soon_days      近期到期天數門檻
+#   global_fallback 查無負責人與部門窗口信箱時，統一轉寄給（選填）
+EMAIL_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "smtp_host": "",
+    "smtp_port": 25,
+    "use_tls": False,
+    "from_default": "",
+    "subject_prefix": "【弱點修補提醒】",
+    "cc_self": True,
+    "include_overdue": True,
+    "include_soon": False,
+    "soon_days": 30,
+    "global_fallback": "",
 }
 
 
@@ -110,4 +140,34 @@ def set_ad_config(session: Session, patch: dict) -> dict:
     # 只存與預設不同的鍵？為簡單起見存完整一份（不含未知鍵）
     clean = {k: cfg[k] for k in AD_DEFAULTS}
     set_json(session, "ad", clean)
+    return clean
+
+
+def get_email_config(session: Session) -> dict:
+    """Email／SMTP 設定（預設值 + DB 覆寫）。不含密碼（relay 免認證）。"""
+    cfg = dict(EMAIL_DEFAULTS)
+    saved = get_json(session, "email", {}) or {}
+    if isinstance(saved, dict):
+        cfg.update({k: saved[k] for k in saved if k in EMAIL_DEFAULTS})
+    return cfg
+
+
+def set_email_config(session: Session, patch: dict) -> dict:
+    """部分更新 Email 設定；回傳更新後的完整設定。"""
+    cfg = get_email_config(session)
+    for k, v in (patch or {}).items():
+        if k in EMAIL_DEFAULTS:
+            cfg[k] = v
+    clean = {k: cfg[k] for k in EMAIL_DEFAULTS}
+    # 型別收斂：埠與天數轉 int、布林收斂
+    for intk in ("smtp_port", "soon_days"):
+        try:
+            clean[intk] = int(clean[intk])
+        except (TypeError, ValueError):
+            clean[intk] = EMAIL_DEFAULTS[intk]
+    for bk in ("enabled", "use_tls", "cc_self", "include_overdue", "include_soon"):
+        clean[bk] = bool(clean[bk])
+    for sk in ("smtp_host", "from_default", "subject_prefix", "global_fallback"):
+        clean[sk] = str(clean[sk] or "").strip()
+    set_json(session, "email", clean)
     return clean

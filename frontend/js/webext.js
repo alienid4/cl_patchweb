@@ -1339,6 +1339,171 @@
     UI.openModal('帳號與權限（Super Admin）', box, { sticky: true });
   }
 
+  // ---- Email／SMTP 設定（Super Admin）：伺服器端寄信設定，存 DB、免重部署 ----
+  async function openEmailSettings() {
+    var cfg;
+    try { cfg = await jget('/api/email-settings'); }
+    catch (e) { UI.toast('讀取失敗（需最高權限）', 'error'); return; }
+    var box = U.el('div');
+    var FS = 'display:block;width:100%;margin:0;padding:7px 8px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px;font-family:inherit';
+    function section(title, hint) {
+      box.appendChild(U.el('div', { style: 'margin:16px 0 6px;font-weight:700;font-size:15px;color:#1a7f4b;border-left:3px solid #1a7f4b;padding-left:8px' }, [U.el('span', { text: title })]));
+      if (hint) box.appendChild(U.el('p', { class: 'empty-hint', style: 'margin:0 0 6px', text: hint }));
+      var g = U.el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:10px 16px' });
+      box.appendChild(g); return g;
+    }
+    function fld(g, labelText, el, full) {
+      var cell = U.el('div', full ? { style: 'grid-column:1 / -1' } : {});
+      cell.appendChild(U.el('label', { text: labelText, style: 'display:block;margin:0 0 2px;font-weight:600;font-size:13px;color:#445' }));
+      el.style.cssText = FS; cell.appendChild(el); g.appendChild(cell); return el;
+    }
+    function chk(labelText, on) {
+      var c = U.el('input', { type: 'checkbox' }); c.checked = !!on;
+      box.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;margin:4px 0;font-weight:600' }, [c, U.el('span', { text: labelText })]));
+      return c;
+    }
+
+    var enabled = chk('啟用一鍵發送（關閉＝發送鈕擋下）', cfg.enabled);
+
+    var sg = section('SMTP relay（公司內部免認證主機；不需帳密）');
+    var host = fld(sg, 'SMTP 主機', U.el('input', { value: cfg.smtp_host || '', placeholder: '例 mailrelay.公司內網' }), true);
+    var port = fld(sg, '埠', U.el('input', { type: 'number', value: String(cfg.smtp_port || 25) }));
+    var tls = U.el('input', { type: 'checkbox' }); tls.checked = !!cfg.use_tls;
+    var tlsCell = U.el('div'); tlsCell.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;margin-top:22px;font-weight:600' }, [tls, U.el('span', { text: 'STARTTLS 加密（內部 relay 多免）' })])); sg.appendChild(tlsCell);
+
+    var fg = section('寄件與內容');
+    var fromDef = fld(fg, '系統預設寄件人（操作者本人無信箱時用）', U.el('input', { value: cfg.from_default || '', placeholder: 'noreply@公司' }), true);
+    var subj = fld(fg, '主旨前綴', U.el('input', { value: cfg.subject_prefix || '' }), true);
+    var ccSelf = U.el('input', { type: 'checkbox' }); ccSelf.checked = !!cfg.cc_self;
+    var ccCell = U.el('div', { style: 'grid-column:1 / -1' }); ccCell.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:600' }, [ccSelf, U.el('span', { text: '每封副本給操作者本人' })])); fg.appendChild(ccCell);
+
+    var rg = section('納入範圍');
+    var incOver = U.el('input', { type: 'checkbox' }); incOver.checked = cfg.include_overdue !== false;
+    var incSoon = U.el('input', { type: 'checkbox' }); incSoon.checked = !!cfg.include_soon;
+    var oCell = U.el('div'); oCell.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:600' }, [incOver, U.el('span', { text: '逾期未結' })])); rg.appendChild(oCell);
+    var sCell = U.el('div'); sCell.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:600' }, [incSoon, U.el('span', { text: '近期到期' })])); rg.appendChild(sCell);
+    var soon = fld(rg, '近期到期天數門檻', U.el('input', { type: 'number', value: String(cfg.soon_days || 30) }));
+    var gfb = fld(rg, '查無負責人與窗口信箱時，統一轉寄給（選填）', U.el('input', { value: cfg.global_fallback || '', placeholder: '選填' }), true);
+
+    function collect() {
+      return { enabled: enabled.checked, smtp_host: host.value.trim(), smtp_port: parseInt(port.value, 10) || 25,
+        use_tls: tls.checked, from_default: fromDef.value.trim(), subject_prefix: subj.value,
+        cc_self: ccSelf.checked, include_overdue: incOver.checked, include_soon: incSoon.checked,
+        soon_days: parseInt(soon.value, 10) || 30, global_fallback: gfb.value.trim() };
+    }
+
+    var tg = section('測試寄信（確認伺服器連得上 relay；預設寄給自己）');
+    var tTo = fld(tg, '收件人（留空＝寄給自己）', U.el('input', { placeholder: '可留空' }), true);
+    var tBtn = U.el('button', { class: 'btn btn-secondary', text: '寄測試信' });
+    var tOut = U.el('span', { style: 'margin-left:10px;font-size:13px' });
+    tBtn.addEventListener('click', async function () {
+      tOut.textContent = '儲存設定並寄送中…'; tOut.style.color = '#666';
+      try {
+        await fetch('/api/email-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collect()) });
+        var r = await (await fetch('/api/email-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: tTo.value.trim() || null }) })).json();
+        tOut.textContent = (r.ok ? '✅ ' : '⚠️ ') + (r.message || ''); tOut.style.color = r.ok ? '#1a7f4b' : '#c0392b';
+      } catch (e) { tOut.textContent = '測試失敗'; tOut.style.color = '#c0392b'; }
+    });
+    box.appendChild(U.el('div', { style: 'display:flex;align-items:center;margin:8px 0' }, [tBtn, tOut]));
+
+    var save = U.el('button', { class: 'btn btn-primary', text: '儲存設定' });
+    save.addEventListener('click', async function () {
+      var r = await fetch('/api/email-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collect()) });
+      if (r.ok) { UI.toast('已儲存 Email 設定', 'success'); UI.closeModal(); } else { UI.toast('儲存失敗', 'error'); }
+    });
+    UI.openModal('Email／SMTP 設定（Super Admin）', box, { footer: save, sticky: true, wide: true });
+  }
+
+  // ---- 一鍵發送（Super Admin／部門窗口）：伺服器端寄催辦信。先預覽計畫，確認才寄 ----
+  async function openSendReminders() {
+    var data;
+    try { data = await jget('/api/send-reminders/preview?' + qd()); }
+    catch (e) {
+      var st = (e && e.message || '').indexOf(' 403') >= 0;
+      UI.toast(st ? '需最高權限或部門窗口才能發送' : '讀取失敗', 'error'); return;
+    }
+    var box = U.el('div');
+    var plan = data.plan || [];
+    var sendable = plan.filter(function (p) { return p.mode !== 'skip'; });
+    var nFall = plan.filter(function (p) { return p.mode === 'fallback'; }).length;
+    var nSkip = plan.filter(function (p) { return p.mode === 'skip'; }).length;
+
+    // 狀態提示：未設定／未啟用時說清楚，並擋住送出
+    var blocked = !data.configured || !data.enabled;
+    if (!data.configured) {
+      box.appendChild(U.el('div', { class: 'scope-info', style: 'color:#c0392b' }, [U.el('span', { text: '尚未設定寄信主機。請最高管理員到「其他功能 → Email／SMTP 設定」填寫並啟用。以下僅為預覽。' })]));
+    } else if (!data.enabled) {
+      box.appendChild(U.el('div', { class: 'scope-info', style: 'color:#c0392b' }, [U.el('span', { text: '一鍵發送尚未啟用。請最高管理員到「Email／SMTP 設定」開啟。以下僅為預覽。' })]));
+    }
+    box.appendChild(U.el('p', { class: 'empty-hint', text:
+      '範圍：' + (data.scope || '全部') + '　·　寄件者：' + (data['from'] || '（未設定）') +
+      (data.cc_self ? '（副本給自己）' : '') }));
+
+    if (!plan.length) {
+      box.appendChild(U.el('p', { class: 'empty-hint', text: '目前無逾期／近期到期的待催辦項目。' }));
+      UI.openModal('一鍵發送', box, { sticky: true, wide: true }); return;
+    }
+
+    var checks = {};
+    var tools = U.el('div', { class: 'batch-tools', style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' }, [
+      U.el('span', { class: 'batch-tools-label', text: '勾選要寄的負責人（可寄 ' + sendable.length + '　轉窗口 ' + nFall + '　查無信箱 ' + nSkip + '）' }),
+      U.el('button', { class: 'btn btn-secondary btn-sm', text: '全選', onclick: function () { Object.keys(checks).forEach(function (k) { checks[k].checked = true; }); } }),
+      U.el('button', { class: 'btn btn-secondary btn-sm', text: '全不選', onclick: function () { Object.keys(checks).forEach(function (k) { checks[k].checked = false; }); } }),
+    ]);
+    box.appendChild(tools);
+
+    var list = U.el('div', { style: 'max-height:46vh;overflow:auto;margin-top:8px' });
+    plan.forEach(function (p) {
+      var row = U.el('div', { style: 'display:flex;gap:10px;align-items:center;padding:5px 2px;border-bottom:1px solid #eef2f5' });
+      var label;
+      if (p.mode === 'send') label = '→ ' + p.to;
+      else if (p.mode === 'fallback') label = '→ 轉窗口 ' + p.to + '（查無本人信箱）';
+      else label = '查無信箱，略過';
+      if (p.mode !== 'skip') {
+        var cb = U.el('input', { type: 'checkbox' }); cb.checked = true; checks[p.owner] = cb;
+        row.appendChild(cb);
+      } else {
+        row.appendChild(U.el('span', { style: 'width:13px' }));
+      }
+      row.appendChild(U.el('span', { style: 'font-weight:600;min-width:7em', text: p.owner }));
+      row.appendChild(U.el('span', { class: 'empty-hint', style: 'margin:0;min-width:4em', text: p.count + ' 筆' }));
+      row.appendChild(U.el('span', { class: 'empty-hint', style: 'margin:0;color:' + (p.mode === 'skip' ? '#c0392b' : '#445'), text: label }));
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+    var result = U.el('div', { style: 'margin-top:10px' });
+    box.appendChild(result);
+
+    var sending = false;
+    var sendBtn = U.el('button', { class: 'btn btn-primary', text: '確認寄出' });
+    if (blocked) { sendBtn.disabled = true; sendBtn.title = '需先設定並啟用寄信'; }
+    sendBtn.addEventListener('click', async function () {
+      if (sending || blocked) return;
+      var owners = Object.keys(checks).filter(function (k) { return checks[k].checked; });
+      if (!owners.length) { UI.toast('請至少勾選一位', 'error'); return; }
+      if (!confirm('確認寄出催辦信給 ' + owners.length + ' 位負責人？')) return;
+      sending = true; sendBtn.disabled = true; sendBtn.textContent = '寄送中…';
+      try {
+        var r = await fetch('/api/send-reminders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owners: owners }) });
+        var j = await r.json();
+        if (!r.ok) { UI.toast(j.detail || '寄送失敗', 'error'); return; }
+        result.innerHTML = '';
+        result.appendChild(U.el('div', { class: 'scope-info' + (j.failed > 0 ? '' : ''), style: 'font-weight:600' }, [U.el('span', { text:
+          '完成：寄出 ' + j.sent + '　轉窗口 ' + j.fallback + '　略過 ' + j.skipped + '　失敗 ' + j.failed })]));
+        (j.details || []).forEach(function (d) {
+          var txt = d.mode === 'skip' ? (d.owner + '：略過（' + (d.error || '查無信箱') + '）')
+                  : d.error ? (d.owner + '：失敗 ' + d.error)
+                  : (d.owner + ' → ' + d.to + (d.mode === 'fallback' ? '（轉窗口）' : ''));
+          result.appendChild(U.el('div', { class: 'empty-hint', style: 'margin:2px 0;color:' + (d.error ? '#c0392b' : '#445'), text: txt }));
+        });
+        UI.toast(j.failed > 0 ? ('有 ' + j.failed + ' 封失敗') : ('已寄出 ' + j.sent + ' 封'), j.failed > 0 ? 'error' : 'success');
+        sendBtn.textContent = '已寄出';
+      } catch (e) { UI.toast('寄送時發生錯誤', 'error'); sendBtn.disabled = false; sendBtn.textContent = '確認寄出'; }
+      finally { sending = false; }
+    });
+    UI.openModal('一鍵發送（催辦信）', box, { footer: sendBtn, sticky: true, wide: true });
+  }
+
   // ---- 其他功能（原右上角「其他功能」選單，移到左側成一項）：資料管理＋系統設定 ----
   function renderMoreInto(host) {
     if (!host) return;
@@ -1362,10 +1527,9 @@
       host.appendChild(U.el('div', { class: 'panel-head', style: 'margin-top:18px' }, [U.el('h3', { text: '系統管理（Super Admin）' })]));
       var sbox = U.el('div', { style: 'display:flex;flex-direction:column;gap:8px;max-width:480px' });
       btnRow(sbox, '上傳新的彙總表（重新選擇檔案）', trigger('reload-btn'));
-      btnRow(sbox, '自動匯入設定', trigger('autoimport-btn'));
       btnRow(sbox, '功能開關', trigger('features-btn'));
       btnRow(sbox, '清除暫存資料', trigger('clear-btn'));
-      btnRow(sbox, 'Email／SMTP 設定', trigger('email-settings-btn'));
+      btnRow(sbox, 'Email／SMTP 設定', openEmailSettings);
       btnRow(sbox, 'AD 登入設定（LDAP／員編／測試連線）', openAdSettings);
       btnRow(sbox, '帳號與權限（指定部門窗口）', openUserAdmin);
       host.appendChild(sbox);
@@ -1394,7 +1558,7 @@
     // 一鍵發送：Super Admin 或 部門窗口(dept_admin) 可發；SMTP 設定本身仍只給 super
     if (isAdminRole()) {
       var sendBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '一鍵發送' });
-      sendBtn.addEventListener('click', function () { var b = document.getElementById('email-settings-btn'); if (b) b.click(); else UI.toast('找不到 Email 設定', 'error'); });
+      sendBtn.addEventListener('click', openSendReminders);
       btnWrap.appendChild(sendBtn);
     }
     headRow.appendChild(btnWrap);
@@ -1788,9 +1952,9 @@
     // 開發期暫加 A/B 代號方便對話指稱；開發完畢再拿掉(搜 'DEV-LETTER' 一次清)
     { key: 'report', label: 'A. 主管週報', render: renderReportInto },    // 看＋報：總覽/負責人/到期倒數/處置落點/各清單(含一鍵發送鈕)
     { key: 'audit', label: 'B. 查核', render: renderAuditInto },          // 查：結案稽核＋對帳健檢＋資料缺口(查帳,非報告)
-    // 一鍵發送＝動作；super 或 部門窗口可用；沿用原 Email 設定流程。
+    // 一鍵發送＝動作；super 或 部門窗口可用；伺服器端寄催辦信（預覽→確認→寄）。
     { key: 'email', label: 'C. 一鍵發送', adminOnly: true, action: function () {
-        var b = document.getElementById('email-settings-btn'); if (b) b.click(); else UI.toast('找不到 Email 設定', 'error');
+        openSendReminders();
       } },
     // 其他功能：原右上角選單移來這(資料管理/系統設定)；右上角改顯示資料版本
     { key: 'more', label: 'D. 其他功能', render: renderMoreInto },
@@ -1904,8 +2068,6 @@
   function wireNewFeatures() {
     var lb = document.getElementById('webext-login-btn');
     if (lb) lb.addEventListener('click', function () { me.authenticated ? doLogout() : openLogin(); });
-    // 「Email 設定」移到左側「一鍵發送」，從「其他功能」選單隱藏(功能仍靠此按鈕觸發)
-    var eb = document.getElementById('email-settings-btn'); if (eb) eb.style.display = 'none';
     // 「其他功能」整個移到左側(成為一個項目)；右上角原位置改顯示資料版本(showDataFile)
     var mb = document.getElementById('more-btn'); if (mb) mb.style.display = 'none';
     showDataFile('');   // 先建右上角版本槽(hide more-btn 後補位)；檔名於載入/上傳時填

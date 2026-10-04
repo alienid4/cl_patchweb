@@ -138,18 +138,8 @@
     });
     if ($('global-search-clear')) $('global-search-clear').addEventListener('click', function () { global.Search.clear(); });
 
-    // 自動匯入設定（其他功能 → 自動匯入設定）
-    if ($('autoimport-btn')) $('autoimport-btn').addEventListener('click', function () {
-      closeMore();
-      if (global.AutoImport) global.AutoImport.openSettings();
-    });
-
     // 還原上次匯入(若有)
     tryRestore();
-
-    // 自動匯入：若已設定來源資料夾且小幫手在跑，開啟時抓最新（抓到新檔才覆蓋，同檔跳過）。
-    // 放在還原之後：沒設定就完全不動作，行為與今天相同。
-    if (global.AutoImport) global.AutoImport.run();
   }
 
   function todayStr() {

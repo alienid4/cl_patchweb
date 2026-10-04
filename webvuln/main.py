@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import ad, appsettings, attachments, cases, config, export, importer, query, security
+from . import ad, appsettings, attachments, cases, config, export, importer, mailer, query, security
 from .db import SessionLocal, init_db
 from .models import Finding, User, UserSession
 from .schemas import ImportIn, ImportResult
@@ -62,6 +62,7 @@ class _AnonUser:
     role = config.ROLE_SUPER
     display_name = "(未登入)"
     department = None
+    email = None
 
 
 def _open_mode(db: Session) -> bool:
@@ -504,6 +505,90 @@ def api_set_user_role(user_id: int, body: UserRoleIn, request: Request,
                        target=f"user:{u.username}", detail=f"role={u.role} dept={u.department}",
                        ip=_client_ip(request))
     return {"id": u.id, "username": u.username, "role": config.canon_role(u.role), "department": u.department}
+
+
+# ── Email／SMTP 設定（Super Admin 專用；存 DB，畫面可編輯、免重部署）──
+@app.get("/api/email-settings")
+def api_get_email_settings(db: Session = Depends(get_db), user: User = Depends(require_super)):
+    return appsettings.get_email_config(db)
+
+
+@app.post("/api/email-settings")
+def api_set_email_settings(body: dict, request: Request, db: Session = Depends(get_db),
+                           user: User = Depends(require_super)):
+    cfg = appsettings.set_email_config(db, body or {})
+    security.log_audit(db, username=getattr(user, "username", None), action="email_settings",
+                       detail="enabled=%s host=%s" % (cfg.get("enabled"), cfg.get("smtp_host")),
+                       ip=_client_ip(request))
+    return cfg
+
+
+class EmailTestIn(BaseModel):
+    to: str | None = None   # 預設寄給自己
+
+
+@app.post("/api/email-test")
+def api_email_test(body: EmailTestIn, db: Session = Depends(get_db),
+                   user: User = Depends(require_super)):
+    """寄一封測試信（確認伺服器連得上 relay）。"""
+    cfg = appsettings.get_email_config(db)
+    return mailer.send_test(cfg, user, body.to)
+
+
+def _require_send_role(user, db) -> str | None:
+    """一鍵發送：限 Super Admin 或部門窗口(dept_admin)。回傳發送範圍部門（窗口＝自己部門；super＝None）。"""
+    if _open_mode(db):
+        return None
+    role = config.canon_role(getattr(user, "role", ""))
+    if role == config.ROLE_SUPER:
+        return None
+    if role == config.ROLE_DEPT_ADMIN:
+        return getattr(user, "department", None)
+    raise HTTPException(status_code=403, detail="需最高權限或部門窗口才能發送")
+
+
+@app.get("/api/send-reminders/preview")
+def api_send_reminders_preview(department: str | None = None, db: Session = Depends(get_db),
+                               user: User = Depends(require_write_role)):
+    """一鍵發送預覽：依負責人分組、解析收件人（本人／轉窗口／跳過），不寄信。
+    部門窗口只看自己部門；super 可帶 department 篩選、否則全部。"""
+    scope = _require_send_role(user, db)
+    dept = scope if scope is not None else department
+    cfg = appsettings.get_email_config(db)
+    plan = mailer.build_plan(db, cfg, department=dept)
+    from_addr = mailer.sender_from(cfg, user)
+    return {
+        "enabled": bool(cfg.get("enabled")),
+        "configured": bool((cfg.get("smtp_host") or "").strip()),
+        "from": from_addr,
+        "cc_self": bool(cfg.get("cc_self")),
+        "scope": dept or "全部",
+        "plan": plan,
+    }
+
+
+class SendRemindersIn(BaseModel):
+    owners: list[str] | None = None   # 只寄這些負責人；None＝全部（非 skip）
+    department: str | None = None     # super 可指定；窗口一律自己部門
+
+
+@app.post("/api/send-reminders")
+def api_send_reminders(body: SendRemindersIn, request: Request, db: Session = Depends(get_db),
+                       user: User = Depends(require_write_role)):
+    """一鍵發送：伺服器直連公司 relay 寄出催辦信。回寄送摘要。"""
+    scope = _require_send_role(user, db)
+    dept = scope if scope is not None else body.department
+    cfg = appsettings.get_email_config(db)
+    try:
+        summary = mailer.send_plan(db, cfg, user, selected_owners=body.owners, department=dept)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    security.log_audit(db, username=getattr(user, "username", None), action="send_reminders",
+                       detail="sent=%d fallback=%d skipped=%d failed=%d dept=%s" % (
+                           summary["sent"], summary["fallback"], summary["skipped"],
+                           summary["failed"], dept or "全部"),
+                       ip=_client_ip(request))
+    return summary
 
 
 @app.get("/api/export")

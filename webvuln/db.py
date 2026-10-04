@@ -41,6 +41,8 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 _ENSURE_COLUMNS = {
     "case_overlay": [("owner_override", "VARCHAR(100)"), ("track_note", "TEXT"),
                      ("target_date", "DATE"), ("department_override", "VARCHAR(200)")],
+    # email 後加（AD 登入時由 mail 屬性寫入，供伺服器端一鍵發送）：舊 DB 缺欄時補上
+    "app_user": [("email", "VARCHAR(200)")],
 }
 
 
