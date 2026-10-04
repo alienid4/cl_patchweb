@@ -4,5 +4,5 @@
  * 規則：功能新增/修改 → 小版 +0.01（V1.0 → V1.01）；重大里程碑 → 大版 +1。
  * 注意：bump 時同步更新 index.html 各 script/link 的 ?v=xxx（快取破壞）。
  * ============================================================ */
-window.APP_VERSION = 'V2.49';             // 其他功能改D;install.sh支援離線輪子(offline_wheels/→不連網裝);公司機離線部署
+window.APP_VERSION = 'V2.50';             // 測試用小 patch:驗證公司機 patch.sh 套用流程(純版號)
 window.APP_VERSION_DATE = '2026-10-04';   // 對應日期（人工維護）
