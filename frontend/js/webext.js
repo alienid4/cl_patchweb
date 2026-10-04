@@ -1639,8 +1639,8 @@
       if (!b._webextHooked) { b._webextHooked = true; b.addEventListener('click', hideWebextView); }
     });
     // 大項標頭（綠色，比照 nav-summary 風格）；點標頭＝收合/展開底下小項
-    var head = U.el('button', { class: 'sheet-item nav-summary webext-navgroup', title: '承辦管線（點我收合／展開）' },
-      [U.el('span', { class: 'sheet-name', text: '承辦管線' }), U.el('span', { class: 'webext-chev' })]);
+    var head = U.el('button', { class: 'sheet-item nav-summary webext-navgroup', title: '承辦作業（點我收合／展開）' },
+      [U.el('span', { class: 'sheet-name', text: '承辦作業' }), U.el('span', { class: 'webext-chev' })]);
     nav.appendChild(head);
     // 小項
     GOV_ITEMS.forEach(function (item) {
