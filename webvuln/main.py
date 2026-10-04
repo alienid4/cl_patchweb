@@ -142,11 +142,11 @@ class LoginIn(BaseModel):
 
 @app.post("/api/login")
 def api_login(body: LoginIn, request: Request, response: Response, db: Session = Depends(get_db)):
-    user = security.authenticate(db, body.username, body.password)
+    user, reason = security.authenticate_detail(db, body.username, body.password)
     if user is None:
         security.log_audit(db, username=body.username, action="login_failed",
-                           ip=_client_ip(request))
-        raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+                           detail=reason, ip=_client_ip(request))
+        raise HTTPException(status_code=401, detail=reason or "帳號或密碼錯誤")
     token = security.create_session(db, user)
     response.set_cookie(
         config.SESSION_COOKIE, token, httponly=True, samesite="lax",
@@ -925,6 +925,30 @@ def api_seed_test_users(body: SeedTestIn, request: Request, db: Session = Depend
         security.log_audit(db, username=getattr(user, "username", None), action="seed_test_users",
                            detail="created=%d" % created, ip=_client_ip(request))
     return {"created": created, "accounts": out}
+
+
+@app.delete("/api/users/{user_id}")
+def api_delete_user(user_id: int, request: Request, db: Session = Depends(get_db),
+                    user: User = Depends(require_super)):
+    """刪除帳號（Super Admin）。防呆：不能刪自己、不能刪最後一個啟用中的 Super Admin。
+    AD 帳號刪掉後，該員下次登入會重新自動建立（回到預設一般角色）。"""
+    u = db.get(User, user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="帳號不存在")
+    if getattr(user, "id", None) == u.id:
+        raise HTTPException(status_code=400, detail="不能刪除你自己正在使用的帳號")
+    if config.canon_role(u.role) == config.ROLE_SUPER:
+        others = db.execute(select(func.count(User.id)).where(
+            User.role.in_((config.ROLE_SUPER, "admin")), User.is_active.is_(True),
+            User.id != u.id)).scalar() or 0
+        if others == 0:
+            raise HTTPException(status_code=400, detail="這是最後一個 Super Admin，不能刪除（否則沒人能管理）")
+    uname = u.username
+    db.delete(u)   # UserSession 以 FK ondelete=CASCADE 連帶清除
+    db.commit()
+    security.log_audit(db, username=getattr(user, "username", None), action="delete_user",
+                       target=f"user:{uname}", ip=_client_ip(request))
+    return {"deleted": True, "username": uname}
 
 
 @app.get("/api/export")

@@ -45,3 +45,34 @@ def test_seed_test_skips_existing(client):
     r2 = client.post("/api/users/seed-test", json={"password": "other-9999"}).json()
     assert r2["created"] == 0
     assert all(a["status"] == "exists" for a in r2["accounts"])
+
+
+def test_delete_user_guards(client, engine):
+    from sqlalchemy.orm import Session, sessionmaker
+    fac = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    # 建兩個 super + 一個 user
+    client.post("/api/users/local", json={"username": "s1", "password": "test-1234", "role": "super_admin"})
+    client.post("/api/users/local", json={"username": "s2", "password": "test-1234", "role": "super_admin"})
+    client.post("/api/users/local", json={"username": "u1", "password": "test-1234", "role": "user"})
+    with fac() as s:
+        from webvuln.models import User
+        ids = {u.username: u.id for u in s.query(User).all()}
+    # 刪 user 可以
+    assert client.delete("/api/users/%d" % ids["u1"]).status_code == 200
+    # 刪一個 super（還有另一個）可以
+    assert client.delete("/api/users/%d" % ids["s1"]).status_code == 200
+    # 剩最後一個 super → 擋下
+    r = client.delete("/api/users/%d" % ids["s2"])
+    assert r.status_code == 400 and "最後一個" in r.json()["detail"]
+
+
+def test_login_error_messages(client, engine, monkeypatch):
+    from webvuln import config
+    client.post("/api/users/local", json={"username": "u", "password": "test-1234", "role": "user"})
+    monkeypatch.setattr(config, "NO_AUTH", False)
+    # 密碼錯
+    r = client.post("/api/login", json={"username": "u", "password": "nope"})
+    assert r.status_code == 401 and r.json()["detail"] == "密碼錯誤"
+    # 查無此帳號（本地模式、無 AD）
+    r2 = client.post("/api/login", json={"username": "ghost", "password": "x"})
+    assert r2.status_code == 401 and "查無" in r2.json()["detail"]

@@ -1414,7 +1414,7 @@
     try { users = await jget('/api/users'); }
     catch (e) { UI.toast('讀取失敗（需最高權限）', 'error'); return; }
     var box = U.el('div');
-    box.appendChild(U.el('p', { class: 'empty-hint', text: '指定部門窗口(dept_admin)與其負責部門；一般(user)只能管自己的。信箱供一鍵發送用，可手補。改完按該列「儲存」。' }));
+    box.appendChild(U.el('p', { class: 'empty-hint', text: '新增：下方「新增／重設本地帳號」；修改：改該列欄位後按「儲存」；刪除：該列「刪除」。AD 員工登入一次會自動建立，可再在此調整角色/部門。信箱供一鍵發送用，可手補。' }));
 
     // 收件人涵蓋率：從 AD 一次撈齊所有負責人信箱（很多負責人從沒登入、沒信箱）
     var fetchOut = U.el('span', { style: 'margin-left:10px;font-size:13px' });
@@ -1507,8 +1507,16 @@
         var r = await fetch('/api/users/' + u.id + '/role', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: roleSel.value, department: deptInp.value, email: mailInp.value, note: noteInp.value, is_active: act.checked }) });
         UI.toast(r.ok ? '已更新 ' + u.username : '更新失敗', r.ok ? 'success' : 'error');
       });
+      var del = U.el('button', { class: 'btn btn-sm', text: '刪除', style: 'margin-left:6px;background:#fff;border:1px solid #d9534f;color:#c0392b' });
+      del.addEventListener('click', async function () {
+        if (!window.confirm('確定刪除帳號「' + u.username + (u.display_name ? '（' + u.display_name + '）' : '') + '」？\nAD 帳號刪掉後下次登入會自動重建（回預設一般角色）。')) return;
+        var r = await fetch('/api/users/' + u.id, { method: 'DELETE' });
+        var j = await r.json().catch(function () { return {}; });
+        if (!r.ok) { UI.toast(j.detail || '刪除失敗', 'error'); return; }
+        UI.toast('已刪除 ' + u.username, 'success'); openUserAdmin();
+      });
       tb.appendChild(U.el('tr', {}, [U.el('td', { text: u.username }), U.el('td', { text: u.display_name || '' }),
-        U.el('td', {}, [roleSel]), U.el('td', {}, [deptInp]), U.el('td', {}, [mailInp]), U.el('td', {}, [noteInp]), U.el('td', {}, [act]), U.el('td', {}, [sv])]));
+        U.el('td', {}, [roleSel]), U.el('td', {}, [deptInp]), U.el('td', {}, [mailInp]), U.el('td', {}, [noteInp]), U.el('td', {}, [act]), U.el('td', {}, [sv, del])]));
     });
     table.appendChild(tb); box.appendChild(U.el('div', { class: 'table-scroll' }, [table]));
     UI.openModal('帳號與權限（Super Admin）', box, { sticky: true, wide: true });

@@ -162,10 +162,16 @@ def fetch_mails_by_names(cfg: dict, login: str, password: str, names: list) -> d
 
 
 def authenticate_ad(session: Session, cfg: dict, login: str, password: str) -> Optional[User]:
-    """AD 綁定成功 → get-or-create 本地 User（username＝員編）。角色：員編在 super_admins 清單→super_admin，否則 user。"""
-    ok, conn, _err = _bind(cfg, login, password)
+    """AD 綁定成功 → get-or-create 本地 User。相容舊呼叫，只回 User|None（原因見 _ex 版）。"""
+    return authenticate_ad_ex(session, cfg, login, password)[0]
+
+
+def authenticate_ad_ex(session: Session, cfg: dict, login: str, password: str):
+    """回 (User|None, 原因字串)。綁定成功 → get-or-create 本地 User；失敗帶明確原因。
+    角色：員編在 super_admins 清單→super_admin，否則 user。"""
+    ok, conn, err = _bind(cfg, login, password)
     if not ok:
-        return None
+        return None, (err or "AD 綁定失敗（帳號／密碼或伺服器設定）")
     attrs = _lookup_attrs(cfg, conn, login)
     try: conn.unbind()
     except Exception: pass

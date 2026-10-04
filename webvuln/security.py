@@ -65,16 +65,29 @@ def authenticate(session: Session, username: str, password: str) -> Optional[Use
     這讓「AD 已啟用」時仍能用本地帳號登入；也避免本地帳號打錯密碼時誤去 bind AD（拖慢甚至鎖 AD 帳號）。
     沒有本地密碼的帳號（AD 帳號 password_hash 為空）→ 若啟用 AD 則走 AD 綁定（員編），成功 get-or-create。
     """
+    return authenticate_detail(session, username, password)[0]
+
+
+def authenticate_detail(session: Session, username: str, password: str):
+    """同 authenticate，但回 (User|None, 原因字串)。原因供登入失敗明確回報（密碼錯／查無／停用／AD…）。"""
     from . import appsettings, ad
+    if not username or not password:
+        return None, "請輸入帳號與密碼"
     u = session.execute(select(User).where(User.username == username)).scalars().first()
     if u and u.password_hash:   # 本地帳號：只認本地，不往下走 AD
-        if u.is_active and verify_password(password, u.password_hash):
-            return u
-        return None
+        if not u.is_active:
+            return None, "此帳號已停用，請聯絡管理員"
+        if verify_password(password, u.password_hash):
+            return u, "ok"
+        return None, "密碼錯誤"
     ad_cfg = appsettings.get_ad_config(session)
     if ad_cfg.get("enabled") or config.AUTH_BACKEND == "ad":
-        return ad.authenticate_ad(session, ad_cfg, username, password)
-    return None
+        user, reason = ad.authenticate_ad_ex(session, ad_cfg, username, password)
+        return user, ("ok" if user else reason)
+    # 本地模式、此帳號無本地密碼
+    if u and not u.password_hash:
+        return None, "此帳號是 AD 帳號，但目前未啟用 AD 登入；請用本地帳號或請管理員啟用 AD"
+    return None, "查無此帳號"
 
 
 # ── session ──
