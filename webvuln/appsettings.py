@@ -72,6 +72,26 @@ def set_json(session: Session, key: str, value: Any) -> None:
     session.commit()
 
 
+def get_ldap_presets(session: Session) -> list[dict]:
+    """站點→IP 預設（存 DB，可編輯；公開 repo 不放內網 IP）。沒存過就回站名、IP 空。"""
+    saved = get_json(session, "ldap_presets", None)
+    if isinstance(saved, list) and saved:
+        return saved
+    return [dict(p) for p in LDAP_SERVER_PRESETS]
+
+
+def set_ldap_presets(session: Session, presets: list) -> list:
+    clean = []
+    for p in (presets or []):
+        if isinstance(p, dict) and p.get("site"):
+            ips = p.get("ips") or []
+            if isinstance(ips, str):
+                ips = [x.strip() for x in ips.replace(",", " ").split() if x.strip()]
+            clean.append({"site": str(p["site"]), "ips": [str(x).strip() for x in ips if str(x).strip()]})
+    set_json(session, "ldap_presets", clean)
+    return clean
+
+
 def get_ad_config(session: Session) -> dict:
     """AD 設定（預設值 + DB 覆寫）。敏感欄位不含密碼（AD 登入靠使用者自己的帳密，系統不存）。"""
     cfg = dict(AD_DEFAULTS)

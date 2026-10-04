@@ -409,13 +409,15 @@ def api_delete_attachment(att_id: int, request: Request, db: Session = Depends(g
 @app.get("/api/ad-settings")
 def api_get_ad_settings(db: Session = Depends(get_db), user: User = Depends(require_super)):
     cfg = appsettings.get_ad_config(db)
-    cfg["presets"] = appsettings.LDAP_SERVER_PRESETS   # 內建敦南/內湖/板橋，供畫面「選的」
+    cfg["presets"] = appsettings.get_ldap_presets(db)   # 站點→IP（存 DB，可編輯；公開碼不放內網 IP）
     return cfg
 
 
 @app.post("/api/ad-settings")
 def api_set_ad_settings(body: dict, request: Request, db: Session = Depends(get_db),
                         user: User = Depends(require_super)):
+    if isinstance(body, dict) and "presets" in body:
+        appsettings.set_ldap_presets(db, body.get("presets") or [])   # 站點 IP 存 DB
     cfg = appsettings.set_ad_config(db, body or {})
     security.log_audit(db, username=getattr(user, "username", None), action="ad_settings",
                        detail="enabled=%s servers=%s" % (cfg.get("enabled"), cfg.get("servers")),

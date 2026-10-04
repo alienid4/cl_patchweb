@@ -4,5 +4,5 @@
  * 規則：功能新增/修改 → 小版 +0.01（V1.0 → V1.01）；重大里程碑 → 大版 +1。
  * 注意：bump 時同步更新 index.html 各 script/link 的 ?v=xxx（快取破壞）。
  * ============================================================ */
-window.APP_VERSION = 'V2.53';             // AD登入後不覆蓋已設定的部門(AD部門長名≠Excel短名,由Super Admin校正後固定)
+window.APP_VERSION = 'V2.54';             // 系統管理類(上傳/自動匯入/功能開關/清除/Email設定)限Super Admin;一鍵發送放寬super+部門窗口;AD設定畫面整理(分區2欄)+站點IP存DB可選
 window.APP_VERSION_DATE = '2026-10-04';   // 對應日期（人工維護）

@@ -146,7 +146,8 @@
     '核准': ['完成'], '退回補件': ['待主管'], '完成': [] };
   // 任何登入者都可寫(範圍由後端把關：super 全部／dept_admin 限部門／user 限自己)；免登入＝可寫
   function canWrite() { return !!(me.open_write || me.authenticated); }
-  function isSuper() { return !!me.is_super; }   // AD/權限設定、帳號管理只給 Super Admin
+  function isSuper() { return !!me.is_super; }   // AD/權限設定、SMTP、資料管理只給 Super Admin
+  function isAdminRole() { return !!(me.is_super || me.role === 'dept_admin'); }   // super 或 部門窗口(可發送報告)
   async function jget(u) { var r = await fetch(u); if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); }
   // 讀「左側目前選的部門」（沿用原本 #my-dept-select），承辦管線各面板都要吃它
   function curDept() { var s = document.getElementById('my-dept-select'); var v = s && s.value; return (v && v !== '__all__') ? v : null; }
@@ -1205,43 +1206,78 @@
     try { cfg = await jget('/api/ad-settings'); }
     catch (e) { UI.toast('讀取失敗（需最高權限）', 'error'); return; }
     var box = U.el('div');
-    var S = 'display:block;width:100%;max-width:560px;margin:2px 0 4px;padding:8px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px;font-family:inherit';
-    function lab(t) { box.appendChild(U.el('label', { text: t, style: 'display:block;margin:10px 0 2px;font-weight:600;font-size:14px' })); }
+    var FS = 'display:block;width:100%;margin:0;padding:7px 8px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px;font-family:inherit';
+    // 區塊標題 + 回傳一個兩欄網格容器
+    function section(title, hint) {
+      box.appendChild(U.el('div', { style: 'margin:16px 0 6px;font-weight:700;font-size:15px;color:#1a7f4b;border-left:3px solid #1a7f4b;padding-left:8px' }, [U.el('span', { text: title })]));
+      if (hint) box.appendChild(U.el('p', { class: 'empty-hint', style: 'margin:0 0 6px' , text: hint }));
+      var g = U.el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:10px 16px' });
+      box.appendChild(g); return g;
+    }
+    function fld(g, labelText, el, full) {
+      var cell = U.el('div', full ? { style: 'grid-column:1 / -1' } : {});
+      cell.appendChild(U.el('label', { text: labelText, style: 'display:block;margin:0 0 2px;font-weight:600;font-size:13px;color:#445' }));
+      el.style.cssText = FS; cell.appendChild(el); g.appendChild(cell); return el;
+    }
+    // 啟用
     var enabled = U.el('input', { type: 'checkbox' }); enabled.checked = !!cfg.enabled;
-    box.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;margin:4px 0' }, [enabled, U.el('span', { text: '啟用 AD 登入（關閉＝維持目前本地／免登入）' })]));
-    lab('內建站點（選了帶入下面的伺服器）');
-    var preset = U.el('select', { style: S });
-    preset.appendChild(U.el('option', { value: '', text: '— 選站點 —' }));
-    (cfg.presets || []).forEach(function (p) { preset.appendChild(U.el('option', { value: p.ips.join(', '), text: p.site + '（' + p.ips.join(', ') + '）' })); });
-    box.appendChild(preset);
-    lab('LDAP 伺服器（逗號分隔，可自行編輯 IP）');
-    var servers = U.el('textarea', { rows: '2', style: S }); servers.value = (cfg.servers || []).join(', ');
-    box.appendChild(servers);
-    preset.addEventListener('change', function () { if (preset.value) servers.value = preset.value; });
-    lab('加密'); var enc = U.el('select', { style: S }); ['none', 'starttls', 'ldaps'].forEach(function (o) { enc.appendChild(U.el('option', { value: o, text: o })); }); enc.value = cfg.encryption || 'none'; box.appendChild(enc);
-    lab('綁定方式'); var bindStyle = U.el('select', { style: S }); [['upn', 'UPN（員編@後綴）'], ['nt', 'NT（網域\\員編）'], ['dn', 'DN 樣板']].forEach(function (o) { bindStyle.appendChild(U.el('option', { value: o[0], text: o[1] })); }); bindStyle.value = cfg.bind_style || 'upn'; box.appendChild(bindStyle);
-    lab('UPN 後綴（UPN 用，例 corp.example.com）'); var upn = U.el('input', { style: S, value: cfg.upn_suffix || '' }); box.appendChild(upn);
-    lab('NT 網域（NT 用，例 corp）'); var ntd = U.el('input', { style: S, value: cfg.nt_domain || '' }); box.appendChild(ntd);
-    lab('搜尋基準 base_dn（讀顯示名／部門用）'); var baseDn = U.el('input', { style: S, value: cfg.base_dn || '' }); box.appendChild(baseDn);
-    lab('顯示名屬性（對 Excel 負責人名）'); var nameAttr = U.el('input', { style: S, value: cfg.name_attr || 'displayName' }); box.appendChild(nameAttr);
-    lab('部門屬性'); var deptAttr = U.el('input', { style: S, value: cfg.dept_attr || 'department' }); box.appendChild(deptAttr);
-    lab('員編比對屬性（搜尋用）'); var loginAttr = U.el('input', { style: S, value: cfg.login_attr || 'sAMAccountName' }); box.appendChild(loginAttr);
-    lab('Super Admin 員編（逗號分隔）'); var supers = U.el('textarea', { rows: '2', style: S }); supers.value = (cfg.super_admins || []).join(', '); box.appendChild(supers);
-    lab('員編↔負責人名 對照（顯示名對不上時補；每行一筆 員編=負責人名）');
-    var empmap = U.el('textarea', { rows: '3', style: S });
-    empmap.value = Object.keys(cfg.emp_to_owner || {}).map(function (k) { return k + '=' + cfg.emp_to_owner[k]; }).join('\n'); box.appendChild(empmap);
+    box.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;margin:2px 0;font-weight:600' }, [enabled, U.el('span', { text: '啟用 AD 登入（關閉＝維持目前本地／免登入）' })]));
+
+    // ① 站點預設（可編輯，存 DB）
+    var pg = section('站點預設（填一次，之後「使用站點」可選；IP 存你伺服器 DB，不進公開程式碼）');
+    var presetInputs = [];
+    (cfg.presets || []).forEach(function (p) {
+      var ip = fld(pg, p.site + ' — LDAP IP（逗號分隔）', U.el('input', { value: (p.ips || []).join(', ') }));
+      presetInputs.push({ site: p.site, el: ip });
+    });
+
+    // ② 連線
+    var cg = section('連線');
+    var useSel = fld(cg, '使用站點（選了帶入下面伺服器）', U.el('select'));
+    useSel.appendChild(U.el('option', { value: '', text: '— 選站點 —' }));
+    presetInputs.forEach(function (p) { useSel.appendChild(U.el('option', { value: p.site, text: p.site })); });
+    var enc = fld(cg, '加密', U.el('select'));
+    ['none', 'starttls', 'ldaps'].forEach(function (o) { enc.appendChild(U.el('option', { value: o, text: o })); }); enc.value = cfg.encryption || 'none';
+    var servers = fld(cg, 'LDAP 伺服器（實際使用，逗號分隔，可手改）', U.el('input', { value: (cfg.servers || []).join(', ') }), true);
+    useSel.addEventListener('change', function () {
+      var p = presetInputs.filter(function (x) { return x.site === useSel.value; })[0];
+      if (p && p.el.value.trim()) servers.value = p.el.value.trim();
+    });
+
+    // ③ 綁定
+    var bg = section('綁定方式');
+    var bindStyle = fld(bg, '方式', U.el('select'));
+    [['upn', 'UPN（員編@後綴）'], ['nt', 'NT（網域\\員編）'], ['dn', 'DN 樣板']].forEach(function (o) { bindStyle.appendChild(U.el('option', { value: o[0], text: o[1] })); }); bindStyle.value = cfg.bind_style || 'upn';
+    var upn = fld(bg, 'UPN 後綴（UPN 用，例 corp.example.com）', U.el('input', { value: cfg.upn_suffix || '' }));
+    var ntd = fld(bg, 'NT 網域（NT 用，例 corp）', U.el('input', { value: cfg.nt_domain || '' }));
+
+    // ④ 讀取屬性
+    var ag = section('讀取屬性（綁定後向 AD 讀取）');
+    var baseDn = fld(ag, '搜尋基準 base_dn', U.el('input', { value: cfg.base_dn || '' }), true);
+    var nameAttr = fld(ag, '顯示名屬性（對 Excel 負責人名）', U.el('input', { value: cfg.name_attr || 'displayName' }));
+    var deptAttr = fld(ag, '部門屬性', U.el('input', { value: cfg.dept_attr || 'department' }));
+    var loginAttr = fld(ag, '員編比對屬性（搜尋用）', U.el('input', { value: cfg.login_attr || 'sAMAccountName' }));
+
+    // ⑤ 權限 / 對照
+    var sg = section('權限與對照');
+    var supers = fld(sg, 'Super Admin 員編（逗號分隔）', U.el('input', { value: (cfg.super_admins || []).join(', ') }), true);
+    var empmap = fld(sg, '員編↔負責人名 對照（顯示名對不上時補；每行一筆 員編=負責人名）', U.el('textarea', { rows: '3' }), true);
+    empmap.value = Object.keys(cfg.emp_to_owner || {}).map(function (k) { return k + '=' + cfg.emp_to_owner[k]; }).join('\n');
+
     function collect() {
       var m = {}; empmap.value.split(/\n/).forEach(function (l) { var i = l.indexOf('='); if (i > 0) { var k = l.slice(0, i).trim(), v = l.slice(i + 1).trim(); if (k) m[k] = v; } });
       return { enabled: enabled.checked, servers: servers.value.split(/[,\s]+/).filter(Boolean),
         encryption: enc.value, bind_style: bindStyle.value, upn_suffix: upn.value.trim(), nt_domain: ntd.value.trim(),
         base_dn: baseDn.value.trim(), name_attr: nameAttr.value.trim(), dept_attr: deptAttr.value.trim(), login_attr: loginAttr.value.trim(),
-        super_admins: supers.value.split(/[,\s]+/).filter(Boolean), emp_to_owner: m };
+        super_admins: supers.value.split(/[,\s]+/).filter(Boolean), emp_to_owner: m,
+        presets: presetInputs.map(function (p) { return { site: p.site, ips: p.el.value.split(/[,\s]+/).filter(Boolean) }; }) };
     }
-    // 測試連線
-    box.appendChild(U.el('div', { class: 'panel-head', style: 'margin-top:14px' }, [U.el('h3', { text: '測試連線' })]));
-    var tLogin = U.el('input', { style: S, placeholder: '員編' }); box.appendChild(tLogin);
-    var tPw = U.el('input', { type: 'password', style: S, placeholder: '密碼（只用於測試，不儲存）' }); box.appendChild(tPw);
-    var tBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '測試連線' });
+
+    // ⑥ 測試連線
+    var tg = section('測試連線（不會儲存密碼；先測成功再啟用）');
+    var tLogin = fld(tg, '員編', U.el('input', { placeholder: '員編' }));
+    var tPw = fld(tg, '密碼', U.el('input', { type: 'password', placeholder: '只用於測試' }));
+    var tBtn = U.el('button', { class: 'btn btn-secondary', text: '測試連線' });
     var tOut = U.el('span', { style: 'margin-left:10px;font-size:13px' });
     tBtn.addEventListener('click', async function () {
       tOut.textContent = '測試中…'; tOut.style.color = '#666';
@@ -1250,13 +1286,14 @@
         tOut.textContent = (r.ok ? '✅ ' : '⚠️ ') + (r.message || ''); tOut.style.color = r.ok ? '#1a7f4b' : '#c0392b';
       } catch (e) { tOut.textContent = '測試失敗'; tOut.style.color = '#c0392b'; }
     });
-    box.appendChild(U.el('div', { style: 'display:flex;align-items:center;margin:6px 0' }, [tBtn, tOut]));
+    box.appendChild(U.el('div', { style: 'display:flex;align-items:center;margin:8px 0' }, [tBtn, tOut]));
+
     var save = U.el('button', { class: 'btn btn-primary', text: '儲存設定' });
     save.addEventListener('click', async function () {
       var r = await fetch('/api/ad-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collect()) });
       if (r.ok) { UI.toast('已儲存 AD 設定', 'success'); UI.closeModal(); } else { UI.toast('儲存失敗', 'error'); }
     });
-    UI.openModal('AD 登入設定（Super Admin）', box, { footer: save, sticky: true });
+    UI.openModal('AD 登入設定（Super Admin）', box, { footer: save, sticky: true, wide: true });
   }
 
   // ---- 帳號與權限（Super Admin）：指定部門窗口及其部門 ----
@@ -1295,25 +1332,27 @@
     var ft = document.getElementById('file-name-tag');
     var fn = _dataFile || (ft && ft.textContent.trim()) || '（未知）';
     host.appendChild(U.el('div', { class: 'scope-info', style: 'margin:0 0 12px' }, [U.el('span', { text: '目前資料檔：' + fn })]));
-    // 觸發原本隱藏的功能按鈕(沿用既有流程，不重寫)。Email 設定＝左側「一鍵發送」，這裡不列。
-    var items = [['reload-btn', '重新選擇檔案（上傳新的弱點彙總 Excel）'], ['autoimport-btn', '自動匯入設定'],
-      ['features-btn', '功能開關'], ['help-btn', '使用說明'], ['security-btn', '資安說明'], ['clear-btn', '清除暫存資料']];
+    function trigger(id) { return function () { var el = document.getElementById(id); if (el) el.click(); else UI.toast('找不到此功能', 'error'); }; }
+    function btnRow(host2, label, onClick) {
+      var b = U.el('button', { class: 'btn btn-secondary', text: label, style: 'text-align:left' });
+      b.addEventListener('click', onClick); host2.appendChild(b); return b;
+    }
+    // 一般人看得到：唯讀文件
     var box = U.el('div', { style: 'display:flex;flex-direction:column;gap:8px;max-width:480px' });
-    items.forEach(function (it) {
-      var b = U.el('button', { class: 'btn btn-secondary', text: it[1], style: 'text-align:left' });
-      b.addEventListener('click', function () { var el = document.getElementById(it[0]); if (el) el.click(); else UI.toast('找不到此功能', 'error'); });
-      box.appendChild(b);
-    });
+    btnRow(box, '使用說明', trigger('help-btn'));
+    btnRow(box, '資安說明', trigger('security-btn'));
     host.appendChild(box);
-    // 系統管理（只有 Super Admin 看得到）：AD 登入設定、帳號與權限
+    // 系統管理（只有 Super Admin 看得到）：資料管理＋系統設定＋權限
     if (isSuper()) {
       host.appendChild(U.el('div', { class: 'panel-head', style: 'margin-top:18px' }, [U.el('h3', { text: '系統管理（Super Admin）' })]));
       var sbox = U.el('div', { style: 'display:flex;flex-direction:column;gap:8px;max-width:480px' });
-      var adBtn = U.el('button', { class: 'btn btn-secondary', text: 'AD 登入設定（LDAP／員編／測試連線）', style: 'text-align:left' });
-      adBtn.addEventListener('click', openAdSettings);
-      var uaBtn = U.el('button', { class: 'btn btn-secondary', text: '帳號與權限（指定部門窗口）', style: 'text-align:left' });
-      uaBtn.addEventListener('click', openUserAdmin);
-      sbox.appendChild(adBtn); sbox.appendChild(uaBtn);
+      btnRow(sbox, '上傳新的彙總表（重新選擇檔案）', trigger('reload-btn'));
+      btnRow(sbox, '自動匯入設定', trigger('autoimport-btn'));
+      btnRow(sbox, '功能開關', trigger('features-btn'));
+      btnRow(sbox, '清除暫存資料', trigger('clear-btn'));
+      btnRow(sbox, 'Email／SMTP 設定', trigger('email-settings-btn'));
+      btnRow(sbox, 'AD 登入設定（LDAP／員編／測試連線）', openAdSettings);
+      btnRow(sbox, '帳號與權限（指定部門窗口）', openUserAdmin);
       host.appendChild(sbox);
     }
   }
@@ -1337,10 +1376,12 @@
     var printBtn = U.el('button', { class: 'btn btn-primary btn-sm', text: '列印 / 存 PDF' });
     printBtn.addEventListener('click', function () { printReport(s); });
     btnWrap.appendChild(printBtn);
-    // 一鍵發送：收進「報」這頁(原獨立項已併入)；沿用原 Email 設定流程
-    var sendBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '一鍵發送' });
-    sendBtn.addEventListener('click', function () { var b = document.getElementById('email-settings-btn'); if (b) b.click(); else UI.toast('找不到 Email 設定', 'error'); });
-    btnWrap.appendChild(sendBtn);
+    // 一鍵發送：Super Admin 或 部門窗口(dept_admin) 可發；SMTP 設定本身仍只給 super
+    if (isAdminRole()) {
+      var sendBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '一鍵發送' });
+      sendBtn.addEventListener('click', function () { var b = document.getElementById('email-settings-btn'); if (b) b.click(); else UI.toast('找不到 Email 設定', 'error'); });
+      btnWrap.appendChild(sendBtn);
+    }
     headRow.appendChild(btnWrap);
     host.appendChild(headRow);
 
@@ -1732,8 +1773,8 @@
     // 開發期暫加 A/B 代號方便對話指稱；開發完畢再拿掉(搜 'DEV-LETTER' 一次清)
     { key: 'report', label: 'A. 主管週報', render: renderReportInto },    // 看＋報：總覽/負責人/到期倒數/處置落點/各清單(含一鍵發送鈕)
     { key: 'audit', label: 'B. 查核', render: renderAuditInto },          // 查：結案稽核＋對帳健檢＋資料缺口(查帳,非報告)
-    // 一鍵發送＝動作；沿用原 Email 設定流程。主管週報內也有同鈕。
-    { key: 'email', label: 'C. 一鍵發送', action: function () {
+    // 一鍵發送＝動作；super 或 部門窗口可用；沿用原 Email 設定流程。
+    { key: 'email', label: 'C. 一鍵發送', adminOnly: true, action: function () {
         var b = document.getElementById('email-settings-btn'); if (b) b.click(); else UI.toast('找不到 Email 設定', 'error');
       } },
     // 其他功能：原右上角選單移來這(資料管理/系統設定)；右上角改顯示資料版本
@@ -1794,6 +1835,8 @@
     nav.appendChild(head);
     // 小項
     GOV_ITEMS.forEach(function (item) {
+      if (item.superOnly && !isSuper()) return;   // 僅 Super Admin
+      if (item.adminOnly && !isAdminRole()) return;   // super 或 部門窗口(如一鍵發送)
       var b = U.el('button', { class: 'sheet-item webext-navitem', title: item.label },
         [U.el('span', { class: 'sheet-name', text: '　• ' + item.label })]);
       b.addEventListener('click', function () {
