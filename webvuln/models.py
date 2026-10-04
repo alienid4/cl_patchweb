@@ -123,6 +123,16 @@ class Case(Base):
     status_changed_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now)
 
 
+class AppSetting(Base):
+    """系統設定(key-value，value 存 JSON 字串)。AD 連線設定等放這，Super Admin 於畫面編輯、免重部署。"""
+    __tablename__ = "app_setting"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    value: Mapped[str | None] = mapped_column(Text)   # JSON
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now, onupdate=dt.datetime.now)
+
+
 class Attachment(Base):
     """申請佐證文件：展延／例外申請的 WBS、理由說明等，掛在弱點(穩定鍵)上。
 
