@@ -187,6 +187,11 @@ def api_findings(
     progress: str | None = None,
     no_owner: bool = False,
     no_due: bool = False,
+    risk: str | None = None,
+    apply_universe: bool = False,
+    not_apply: bool = False,
+    no_target: bool = False,
+    flagged: bool = False,
     due_min: int | None = None,
     due_max: int | None = None,
     lead: int = 0,
@@ -196,6 +201,8 @@ def api_findings(
                       severity=severity, band=band, keyword=keyword, sheet_key=sheet_key,
                       stage=stage, only_should_apply=should_apply, applied=applied,
                       apply_intent=apply_intent, progress=progress, no_owner=no_owner, no_due=no_due,
+                      risk=risk, apply_universe=apply_universe, not_apply=not_apply,
+                      no_target=no_target, flagged=flagged,
                       due_min=due_min, due_max=due_max, lead=lead)
 
 

@@ -221,6 +221,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
          only_should_apply: bool = False, applied: bool = False, apply_intent: bool = False,
          progress: Optional[str] = None,
          no_owner: bool = False, no_due: bool = False,
+         risk: Optional[str] = None, apply_universe: bool = False, not_apply: bool = False,
+         no_target: bool = False, flagged: bool = False,
          due_min: Optional[int] = None, due_max: Optional[int] = None, lead: int = 0,
          today: Optional[dt.date] = None) -> list[dict]:
     """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
@@ -260,6 +262,30 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if not (f.owner or "").strip()]
     if no_due:
         fs = [f for f in fs if not f.effective_due]
+    # 總覽「每個數字可下鑽」用的組合篩選：
+    if risk == "high":   # 高風險 = Critical/High
+        fs = [f for f in fs if f.severity in HIGH_RISK]
+    _in_universe = lambda f: should_apply(f, today) or f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
+    if apply_universe:   # 需申請母體 = 應申請未申請 + 已申請處置中
+        fs = [f for f in fs if _in_universe(f)]
+    if not_apply:        # 還不急 = 未結但不在申請母體(原始階段、未過行動線)
+        fs = [f for f in fs if not _in_universe(f)]
+    if no_target:        # 母體內「未回報預計完成日」(要催)
+        from .models import Case as _Ct
+        _tgt = {c.vuln_key for c in session.execute(
+            select(_Ct).where(_Ct.target_date.isnot(None))).scalars().all()}
+        fs = [f for f in fs if _in_universe(f) and "|".join(vuln_key(f)) not in _tgt]
+    if flagged:          # 需追查⚠️(說要申請/做完卻未反映：待查或可疑)
+        from .models import Case as _Cf
+        from .logic import classify_progress, FLAGGED_STATES, PROGRESS_VALUES, CLOSE_DONE as _CD
+        _b2 = latest_batch(session); _imp2 = _b2.imported_at if _b2 else None
+        _cm = {c.vuln_key: c for c in session.execute(select(_Cf)).scalars().all()}
+        def _flag(f):
+            c = _cm.get("|".join(vuln_key(f)))
+            p = c.status if (c and c.status in PROGRESS_VALUES) else ""
+            return classify_progress(p, f.close_status == _CD, f.stage,
+                                     (c.status_changed_at if c else None), _imp2) in FLAGGED_STATES
+        fs = [f for f in fs if _flag(f)]
     if due_min is not None or due_max is not None:  # 距到期天數範圍(到期倒數)；lead=申請提前量(行動期限=到期−lead)
         def _dd(f):
             return (f.effective_due - today).days - lead if f.effective_due else None
