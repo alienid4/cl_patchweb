@@ -4,7 +4,19 @@
 加上伺服器端新功能（承辦管線／結案統計／缺口示警／原封匯出／登入）。
 > 部署主機 IP／實際路徑屬內網識別，不寫進此公開檔；見本機（非公開）部署筆記。
 
-## 一鍵安裝（全新 Linux）
+## 一鍵安裝＋設定＋起服務（最省事；在 /tmp 解壓後一行搞定）
+
+在 /tmp 解開 repo 後，直接跑一支：自動搬到 /opt、建 venv、裝相依、設 systemd 服務並**啟動**、開防火牆；
+偵測到舊 `data/` 會保留（重裝不洗資料）。需 Python 3.10+、可連網。
+
+```bash
+cd cl_patchweb-main          # 解壓出來的目錄
+sudo bash deploy/oneclick.sh
+```
+
+覆蓋選項：`DEST=/opt/patchweb/src PORT=3100 NO_AUTH=1 OPEN_FIREWALL=1`（環境變數）。
+
+## 手動安裝（分步）
 
 ```bash
 # 1) 取得程式
