@@ -274,11 +274,15 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if hit(f)]
 
     # 系統內寫的疊加欄(追蹤備註/預計完成日/處理進度)：依穩定鍵對 Case 帶進每列(非 Excel 原值)
-    from .models import Case
+    from .models import Attachment, Case
     from .logic import PROGRESS_VALUES, classify_progress, CLOSE_DONE
     ov = {c.vuln_key: c for c in session.execute(
         select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None))
                            | (Case.status.in_(PROGRESS_VALUES)))).scalars().all()}
+    # 申請佐證文件數(依穩定鍵)：清單顯示 📎N
+    att_count: dict = {}
+    for (vk,) in session.execute(select(Attachment.vuln_key)).all():
+        att_count[vk] = att_count.get(vk, 0) + 1
     _b = latest_batch(session)
     _imp = _b.imported_at if _b else None
 
@@ -300,6 +304,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             "target_date": (c.target_date.isoformat() if (c and c.target_date) else None),
             "progress": progress,          # 管理人手動標(處理中/要申請展延/要申請例外/等複掃/'')
             "progress_state": pstate,      # 進度對帳(等複掃→複掃三態；要申請→申請三態；否則 None)
+            "att_count": att_count.get("|".join(vuln_key(f)), 0),   # 申請佐證文件數(📎)
             "raw": f.raw or {},   # 原始整列(原欄名→原值)，供「匯出此清單」帶出全部原始欄位
         }
 

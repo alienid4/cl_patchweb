@@ -14,6 +14,20 @@ def default_db_path() -> Path:
     return _DEFAULT_DB
 
 
+def _db_parent() -> Path:
+    """DB 所在資料夾（附件預設放這底下的 uploads/，跟 vuln.db 同處＝正式機可寫的 data 目錄）。"""
+    if DB_URL.startswith("sqlite:///"):
+        return Path(DB_URL[len("sqlite:///"):]).parent
+    return _DEFAULT_DB.parent
+
+
+# 申請佐證文件的實體儲存目錄；正式機可用 WEBVULN_UPLOAD_DIR 覆寫
+UPLOAD_DIR: Path = Path(os.environ.get("WEBVULN_UPLOAD_DIR") or (_db_parent() / "uploads"))
+# 允許的附件副檔名與單檔上限
+UPLOAD_ALLOWED_EXT = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".png", ".jpg", ".jpeg", ".zip", ".txt", ".csv"}
+UPLOAD_MAX_BYTES: int = int(os.environ.get("WEBVULN_UPLOAD_MAX_MB", "20")) * 1024 * 1024
+
+
 # 申請作業提前期（天）：到期前多久就該進入申請程序。過了「行動線」還沒動＝註定逾期。
 # 預設全域 30 天，可用 env 覆寫；可依嚴重度覆寫（短 SLA 的 Critical 會早早觸發＝立即行動）。
 APPLICATION_LEAD_DAYS: int = int(os.environ.get("WEBVULN_LEAD_DAYS", "30"))

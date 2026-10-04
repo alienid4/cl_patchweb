@@ -123,6 +123,30 @@ class Case(Base):
     status_changed_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now)
 
 
+class Attachment(Base):
+    """申請佐證文件：展延／例外申請的 WBS、理由說明等，掛在弱點(穩定鍵)上。
+
+    以 vuln_key 關聯(跟 Case 疊加層同命)：重匯 Excel 不洗、對 Excel 唯讀。
+    檔案實體存檔案系統(config.UPLOAD_DIR/stored_name)，此表只存 metadata；
+    同內容(同 sha256)多筆共用一個實體檔，刪到最後一個參照才刪檔。
+    """
+    __tablename__ = "attachment"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    vuln_key: Mapped[str] = mapped_column(String(400), index=True)  # sheet|plugin|host(正規化)
+    sheet_key: Mapped[str | None] = mapped_column(String(100))
+    plugin_id: Mapped[str | None] = mapped_column(String(50))
+    host: Mapped[str | None] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(30), default="其他")  # 展延申請書/例外申請書/WBS/佐證/其他
+    orig_name: Mapped[str] = mapped_column(String(300))            # 原始檔名(顯示用)
+    stored_name: Mapped[str] = mapped_column(String(80), index=True)  # 實體檔名(uuid.ext)
+    sha256: Mapped[str | None] = mapped_column(String(64), index=True)
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    content_type: Mapped[str | None] = mapped_column(String(120))
+    uploaded_by: Mapped[str | None] = mapped_column(String(100))
+    uploaded_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now, index=True)
+
+
 class Finding(Base):
     __tablename__ = "finding"
 

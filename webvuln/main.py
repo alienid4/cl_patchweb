@@ -7,11 +7,12 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from . import cases, config, export, importer, query, security
+from . import attachments, cases, config, export, importer, query, security
 from .db import SessionLocal, init_db
 from .models import User
 from .schemas import ImportIn, ImportResult
@@ -57,6 +58,15 @@ class _AnonUser:
     username = "(未登入)"
     role = config.ROLE_ADMIN
     display_name = "(未登入)"
+
+
+def require_view(user: User | None = Depends(current_user)) -> User:
+    """看／下載附件：需登入（任何角色）；免登入模式(NO_AUTH)比照內部開放。"""
+    if config.NO_AUTH:
+        return user or _AnonUser()
+    if user is None:
+        raise HTTPException(status_code=401, detail="請先登入")
+    return user
 
 
 def require_write_role(user: User | None = Depends(current_user)) -> User:
@@ -296,6 +306,56 @@ def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
                        target=f"vuln:{r['vuln_key']}", detail=str({k: v for k, v in r.items() if k in fields}),
                        ip=_client_ip(request))
     return r
+
+
+# ── 申請佐證文件（展延／例外的 WBS、理由說明…）：掛弱點(vuln_key)、重匯不洗、對 Excel 唯讀 ──
+@app.get("/api/findings/{finding_id}/attachments")
+def api_list_attachments(finding_id: int, db: Session = Depends(get_db),
+                         user: User = Depends(require_view)):
+    try:
+        return attachments.list_for_finding(db, finding_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/findings/{finding_id}/attachments")
+async def api_upload_attachment(finding_id: int, request: Request, name: str = "",
+                                kind: str = "其他", db: Session = Depends(get_db),
+                                user: User = Depends(require_write_role)):
+    """上傳一個附件：raw body＝檔案位元組，檔名/類型走 query（避免相依 python-multipart）。"""
+    clen = request.headers.get("content-length")
+    if clen and clen.isdigit() and int(clen) > config.UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="檔案過大（上限 %d MB）" % (config.UPLOAD_MAX_BYTES // (1024 * 1024)))
+    data = await request.body()
+    try:
+        r = attachments.save_for_finding(db, finding_id, data, name, kind, getattr(user, "username", None))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    security.log_audit(db, username=getattr(user, "username", None), action="attach_add",
+                       target=f"vuln:{r['vuln_key']}", detail=f"{r['kind']} {r['orig_name']} {r['size']}B",
+                       ip=_client_ip(request))
+    return r
+
+
+@app.get("/api/attachments/{att_id}/download")
+def api_download_attachment(att_id: int, db: Session = Depends(get_db),
+                            user: User = Depends(require_view)):
+    got = attachments.get_file(db, att_id)
+    if not got:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    a, path = got
+    return FileResponse(str(path), media_type="application/octet-stream", filename=a.orig_name)
+
+
+@app.delete("/api/attachments/{att_id}")
+def api_delete_attachment(att_id: int, request: Request, db: Session = Depends(get_db),
+                          user: User = Depends(require_write_role)):
+    ok = attachments.delete(db, att_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    security.log_audit(db, username=getattr(user, "username", None), action="attach_del",
+                       target=f"attachment:{att_id}", ip=_client_ip(request))
+    return {"deleted": True}
 
 
 @app.get("/api/export")

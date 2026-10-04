@@ -339,6 +339,67 @@
     return U.el('datalist', { id: id }, (items || []).map(function (v) { return U.el('option', { value: v }); }));
   }
 
+  // 申請佐證文件面板（展延／例外的 WBS、理由說明…）：列出／下載／上傳／刪除。掛此弱點、重匯不洗。
+  var ATTACH_KINDS = ['展延申請書', '例外申請書', 'WBS', '佐證', '其他'];
+  function fmtSize(n) { n = n || 0; if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB'; if (n >= 1024) return Math.round(n / 1024) + ' KB'; return n + ' B'; }
+  function attachPanel(row) {
+    var wrap = U.el('div', { style: 'margin:2px 0 12px' });
+    var listBox = U.el('div'); wrap.appendChild(listBox);
+    var writable = canWrite();
+    async function draw() {
+      listBox.innerHTML = '';
+      var atts;
+      try { atts = await jget('/api/findings/' + row.id + '/attachments'); }
+      catch (e) { listBox.appendChild(U.el('p', { class: 'empty-hint', text: '讀取附件失敗（可能需登入）。' })); return; }
+      if (!atts.length) { listBox.appendChild(U.el('p', { class: 'empty-hint', text: '尚無佐證文件。' })); return; }
+      var t = U.el('table', { class: 'tracking-table', style: 'margin:0' });
+      t.appendChild(U.el('thead', {}, [U.el('tr', {}, ['類型', '檔名', '大小', '上傳者', '時間', '操作'].map(function (h) { return U.el('th', { text: h }); }))]));
+      var tb = U.el('tbody');
+      atts.forEach(function (a) {
+        var dl = U.el('a', { href: '/api/attachments/' + a.id + '/download', text: '下載', style: 'color:#1a7f4b;font-weight:600' });
+        var ops = U.el('div', { style: 'display:flex;gap:10px;justify-content:center;align-items:center' }, [dl]);
+        if (writable) {
+          var del = U.el('button', { class: 'btn btn-sm', text: '刪', title: '刪除此附件' });
+          del.addEventListener('click', async function () {
+            if (!window.confirm('刪除附件「' + a.orig_name + '」？')) return;
+            var r = await fetch('/api/attachments/' + a.id, { method: 'DELETE' });
+            if (!r.ok) { UI.toast('刪除失敗', 'error'); return; }
+            UI.toast('已刪除', 'success'); draw();
+          });
+          ops.appendChild(del);
+        }
+        tb.appendChild(U.el('tr', {}, [
+          U.el('td', { text: a.kind }), U.el('td', { text: a.orig_name, style: 'text-align:left' }),
+          U.el('td', { text: fmtSize(a.size) }), U.el('td', { text: a.uploaded_by || '' }),
+          U.el('td', { text: (a.uploaded_at || '').replace('T', ' ').slice(0, 16) }), ops,
+        ]));
+      });
+      t.appendChild(tb); listBox.appendChild(t);
+    }
+    if (writable) {
+      var kindSel = U.el('select', {}, ATTACH_KINDS.map(function (k) { return U.el('option', { value: k, text: k }); }));
+      kindSel.value = '展延申請書';
+      var fileInput = U.el('input', { type: 'file', multiple: 'multiple' });
+      var up = U.el('button', { class: 'btn btn-secondary btn-sm', text: '上傳' });
+      up.addEventListener('click', async function () {
+        var files = fileInput.files; if (!files || !files.length) { UI.toast('請先選檔案', 'error'); return; }
+        up.disabled = true; up.textContent = '上傳中…';
+        for (var i = 0; i < files.length; i++) {
+          var f = files[i];
+          try {
+            var r = await fetch('/api/findings/' + row.id + '/attachments?name=' + encodeURIComponent(f.name) + '&kind=' + encodeURIComponent(kindSel.value), { method: 'POST', body: f });
+            if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast(f.name + '：' + (e.detail || r.status), 'error'); }
+          } catch (err) { UI.toast(f.name + ' 上傳失敗', 'error'); }
+        }
+        up.disabled = false; up.textContent = '上傳'; fileInput.value = ''; draw();
+        if (row) row.att_count = (row.att_count || 0) + 0;   // 標記已變動（清單重繪時會更新）
+      });
+      wrap.appendChild(U.el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px' }, [kindSel, fileInput, up]));
+    }
+    draw();
+    return wrap;
+  }
+
   // 管理員編輯一筆弱點的可寫欄位：開視窗、存系統疊加層、重匯不洗掉、不動 Excel
   async function editOverlay(row, done) {
     await ensureLists();
@@ -369,6 +430,13 @@
       _datalist('webext-owners', _ownerList),
       _datalist('webext-depts', _deptList),
     ]);
+    // 申請佐證文件（展延／例外的 WBS、理由說明…）
+    var attHint = U.el('p', { class: 'empty-hint', style: 'color:#c0392b;margin:0 0 4px' });
+    function updAttHint() { attHint.textContent = (progress.value === '要申請展延' || progress.value === '要申請例外') ? '⚠ 要申請展延／例外：請附上 WBS 或展延理由說明等佐證文件。' : ''; }
+    progress.addEventListener('change', updAttHint); updAttHint();
+    body.appendChild(U.el('label', { text: '申請佐證文件（展延／例外的 WBS、理由說明等；掛在此弱點、重匯不洗；下載需登入）' }));
+    body.appendChild(attHint);
+    body.appendChild(attachPanel(row));
     var save = U.el('button', { class: 'btn btn-primary', text: '存檔' });
     save.addEventListener('click', async function () {
       // 部門只能選現有(避免打錯多出部門)；留空＝清除回 Excel 值
@@ -414,6 +482,9 @@
   // 一列「操作」欄：固定有 🔍(看原始)，可寫入時再加 ✏️(編輯)
   function opsCell(row, onEditDone) {
     var ops = U.el('td');
+    if (row && row.att_count) {   // 有申請佐證文件：顯示 📎N（點 ✏️ 進編輯看/下載）
+      ops.appendChild(U.el('span', { text: '📎' + row.att_count, title: row.att_count + ' 份申請佐證文件（點 ✏️ 查看／下載）', style: 'margin-right:4px;font-size:13px;color:#1a7f4b;font-weight:700' }));
+    }
     var rawBtn = U.el('button', { class: 'btn btn-sm', text: '🔍', title: '看原始資料', style: 'margin-right:4px' });
     rawBtn.addEventListener('click', function () { showRawModal(row); });
     ops.appendChild(rawBtn);
