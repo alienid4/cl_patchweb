@@ -60,8 +60,22 @@ cd "$DEST"
 
 echo
 echo "==> [2/5] 建 .venv、裝相依"
+# 自動找 >=3.10 的 python（這台的 python3 可能太舊，例如 3.9）
+PYBIN=""
+for c in "${PYTHON:-}" python3.13 python3.12 python3.11 python3.10 python3; do
+  [ -n "$c" ] || continue
+  command -v "$c" >/dev/null 2>&1 || continue
+  if "$c" -c 'import sys; raise SystemExit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null; then PYBIN="$c"; break; fi
+done
+if [ -z "$PYBIN" ]; then
+  echo "    !! 找不到 Python 3.10+（這台 python3 是 $(python3 -V 2>&1)）。"
+  echo "       RHEL/CentOS 可裝： sudo dnf install -y python3.11 ，再重跑這支。"
+  echo "       或改用離線安裝包（自帶 Python 3.11，不需系統 Python／不需連網）。"
+  exit 1
+fi
+echo "    使用 $PYBIN（$("$PYBIN" -V 2>&1)）"
 rm -rf "$DEST/.venv"            # 重裝：重建乾淨的 venv
-bash deploy/install.sh
+PYTHON="$PYBIN" bash deploy/install.sh
 
 echo
 echo "==> [3/5] 設成 systemd 服務"
