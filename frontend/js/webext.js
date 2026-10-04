@@ -1266,6 +1266,8 @@
             { label: '等複掃', value: pg.rescan || 0, drill: function () { openFindings('等複掃', { progress: '等複掃' }); } },
           ]);
       } },
+      { label: '負責人', render: function (c) { renderOwnerInto(c); } },       // 併入：誰還有幾支＋狀態(每格下鑽)
+      { label: '到期倒數', render: function (c) { renderDueSoonInto(c); } },    // 併入：14/30/60/90 分桶(含 14 天申請行動線)
       { label: '處置落點', render: function (c) { renderStageLanding(c, s); } },
       { label: '應申請未申請（' + s.need_apply_list.length + '）', render: function (c) {
           listTab(c, '應申請未申請清單（主管要催承辦去提例外／展延）', s.need_apply_list);
@@ -1539,12 +1541,11 @@
   // ===== 左側第二大項「承辦管線」（與「總覽」並列，綠色），底下放全部新功能 =====
   // 架構＝四個角度：看（負責人追蹤）／做（到期倒數）／報（主管週報，含一鍵發送）／查（查核：結案稽核＋對帳健檢＋資料缺口）
   var GOV_ITEMS = [
-    // 開發期暫加 A/B/C/D 代號方便對話指稱；開發完畢再拿掉(搜 'DEV-LETTER' 一次清)
-    { key: 'byowner', label: 'A. 負責人追蹤', render: renderOwnerInto }, // 看：誰還有幾隻＋狀態(每格可下鑽)
-    { key: 'duesoon', label: 'B. 到期倒數', render: renderDueSoonInto },  // 做：依距到期天數看 14/30/60/90
-    { key: 'report', label: 'C. 主管週報', render: renderReportInto },    // 報：給主管的固定報告(含一鍵發送鈕)
-    { key: 'audit', label: 'D. 查核', render: renderAuditInto },          // 查：結案稽核＋對帳健檢＋資料缺口
-    // 一鍵發送＝動作(非角度，故不佔 A~D 字母)；放回左側好找，沿用原 Email 設定流程。C 主管週報內也有同鈕。
+    // 收斂：主管週報一站看完(負責人/到期倒數都併成其分頁，下鑽亦以負責人為主)；查核(查帳)獨立留。
+    // 開發期暫加 A/B 代號方便對話指稱；開發完畢再拿掉(搜 'DEV-LETTER' 一次清)
+    { key: 'report', label: 'A. 主管週報', render: renderReportInto },    // 看＋報：總覽/負責人/到期倒數/處置落點/各清單(含一鍵發送鈕)
+    { key: 'audit', label: 'B. 查核', render: renderAuditInto },          // 查：結案稽核＋對帳健檢＋資料缺口(查帳,非報告)
+    // 一鍵發送＝動作；放左側好找，沿用原 Email 設定流程。主管週報內也有同鈕。
     { key: 'email', label: '📧 一鍵發送', action: function () {
         var b = document.getElementById('email-settings-btn'); if (b) b.click(); else UI.toast('找不到 Email 設定', 'error');
       } },
