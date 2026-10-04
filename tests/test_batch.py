@@ -18,9 +18,9 @@ def _findings(client, **q):
 # ── 批次改狀態 ──
 def test_bulk_overlay_applies_to_selected(client):
     _import(client, [
-        {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "owner": "林楚彥",
+        {"host": "h1", "plugin_id": "p1", "sheet_key": "s", "owner": "王大明",
          "department": "資訊架構部", "remediation_due": "2026-04-01", "close_status": "未結案"},
-        {"host": "h2", "plugin_id": "p1", "sheet_key": "s", "owner": "林楚彥",
+        {"host": "h2", "plugin_id": "p1", "sheet_key": "s", "owner": "王大明",
          "department": "資訊架構部", "remediation_due": "2026-04-01", "close_status": "未結案"},
     ])
     ids = [f["id"] for f in _findings(client)]
@@ -66,7 +66,7 @@ def test_bulk_attachment_one_file_many_findings(client, engine):
 # ── 我的操作紀錄 ──
 def test_my_activity_records_actions(client):
     _import(client, [{"host": "h", "plugin_id": "p", "sheet_key": "s",
-                      "owner": "林楚彥", "close_status": "未結案"}])
+                      "owner": "王大明", "close_status": "未結案"}])
     fid = _findings(client)[0]["id"]
     client.post(f"/api/findings/{fid}/overlay", json={"set_progress": True, "progress": "處理中"})
     acts = client.get("/api/my-activity").json()

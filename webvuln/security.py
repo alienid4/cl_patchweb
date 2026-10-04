@@ -61,18 +61,20 @@ def create_user(session: Session, username: str, password: Optional[str], role: 
 def authenticate(session: Session, username: str, password: str) -> Optional[User]:
     """回傳驗證通過的 User，否則 None。
 
-    AD 優先：DB 設定 ad.enabled=True（或 env AUTH_BACKEND=ad）時走 AD 綁定（員編），
-    成功則 get-or-create 本地 User。否則走本地帳號密碼(pbkdf2)。
+    本地帳號自成一路：**有 password_hash 的帳號（測試帳號／管理員自建）只用本地驗證、不 fallback AD**。
+    這讓「AD 已啟用」時仍能用本地帳號登入；也避免本地帳號打錯密碼時誤去 bind AD（拖慢甚至鎖 AD 帳號）。
+    沒有本地密碼的帳號（AD 帳號 password_hash 為空）→ 若啟用 AD 則走 AD 綁定（員編），成功 get-or-create。
     """
     from . import appsettings, ad
+    u = session.execute(select(User).where(User.username == username)).scalars().first()
+    if u and u.password_hash:   # 本地帳號：只認本地，不往下走 AD
+        if u.is_active and verify_password(password, u.password_hash):
+            return u
+        return None
     ad_cfg = appsettings.get_ad_config(session)
     if ad_cfg.get("enabled") or config.AUTH_BACKEND == "ad":
         return ad.authenticate_ad(session, ad_cfg, username, password)
-    # 本地帳號
-    u = session.execute(select(User).where(User.username == username)).scalars().first()
-    if not u or not u.is_active:
-        return None
-    return u if verify_password(password, u.password_hash) else None
+    return None
 
 
 # ── session ──

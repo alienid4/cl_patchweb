@@ -271,13 +271,51 @@
     bP.addEventListener('click', function () { setMode('byplugin', bP); });
     bH.addEventListener('click', function () { setMode('byhost', bH); });
 
+    // ── 跨檢視共用的批次勾選（依負責人／依弱點／依主機都能勾，共用一組 selected）──
+    var writable = canWrite();
+    var selected = {};          // finding id -> true
+    var cntEl = null;           // 每次 draw 重建的「已選 N 筆」標籤
+    function selIds() { return Object.keys(selected).filter(function (k) { return selected[k]; }).map(Number); }
+    function updCount() { var n = selIds().length; if (cntEl) cntEl.textContent = '已選 ' + n + ' 筆'; }
+    function rowCb(id) {
+      var cb = U.el('input', { type: 'checkbox', class: 'wx-rowcb' });
+      cb.checked = !!selected[id];
+      cb.addEventListener('change', function () { selected[id] = cb.checked; updCount(); });
+      return cb;
+    }
+    function groupCb(ids) {   // 群組勾選框：勾一個群組＝選到它底下全部
+      var cb = U.el('input', { type: 'checkbox', class: 'wx-gcb' });
+      cb.checked = ids.length > 0 && ids.every(function (id) { return selected[id]; });
+      cb.addEventListener('click', function (e) { e.stopPropagation(); });   // 不要觸發整列的展開
+      cb.addEventListener('change', function () { ids.forEach(function (id) { selected[id] = cb.checked; }); updCount(); });
+      return cb;
+    }
+    function batchBar() {
+      ensureLists();
+      cntEl = U.el('span', { text: '已選 0 筆', style: 'font-weight:600;min-width:72px' });
+      function onDone() { self(); }
+      var bStatus = U.el('button', { class: 'btn btn-primary btn-sm', text: '批次改狀態' });
+      var bAttach = U.el('button', { class: 'btn btn-secondary btn-sm', text: '批次上傳佐證' });
+      bStatus.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchStatus(ids, onDone); });
+      bAttach.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchAttach(ids, onDone); });
+      var bSelAll = U.el('button', { class: 'btn btn-secondary btn-sm', text: '全選' });
+      var bSelNone = U.el('button', { class: 'btn btn-secondary btn-sm', text: '全不選' });
+      bSelAll.addEventListener('click', function () { rows.forEach(function (r) { selected[r.id] = true; }); draw(); });
+      bSelNone.addEventListener('click', function () { selected = {}; draw(); });
+      return U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px;padding:8px 12px;background:#f0f6f3;border:1px solid #cfe3d8;border-radius:8px' }, [
+        bSelAll, bSelNone, cntEl, bStatus, bAttach,
+        U.el('span', { class: 'empty-hint', style: 'margin:0', text: '三種檢視都能勾（勾「弱點」或「負責人」＝選到其底下全部）→ 一次改狀態或掛同一份佐證' }),
+      ]);
+    }
+
     // 依負責人：誰還有幾支＋其中逾期(主角度，追人不追 IP)；點名字展開他的明細
     function drawOwner() {
       var groups = {};
       rows.forEach(function (r) { var k = ((r.owner || '').trim()) || '— 未指派'; (groups[k] = groups[k] || []).push(r); });
       var keys = Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; });
       var table = U.el('table', { class: 'tracking-table' });
-      table.appendChild(U.el('thead', {}, [U.el('tr', {}, ['負責人', '部門', '筆數', '其中逾期', '附件'].map(function (h) { return U.el('th', { text: h }); }))]));
+      var oheads = (writable ? ['選'] : []).concat(['負責人', '部門', '筆數', '其中逾期', '附件']);
+      table.appendChild(U.el('thead', {}, [U.el('tr', {}, oheads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
       var icols = [['host', '主機'], ['severity', '嚴重度'], ['name', '弱點'], ['plugin_id', 'Plugin'],
         ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['overdue_days', '逾期天數'],
@@ -288,11 +326,14 @@
         var od = grp.filter(function (x) { return x.overdue_days != null && x.overdue_days > 0; }).length;
         var att = grp.reduce(function (s, x) { return s + (x.att_count || 0); }, 0);
         var nameTd = U.el('td', { text: '▸ ' + k, style: 'font-weight:600;color:#1a7f4b;cursor:pointer;text-align:left;min-width:120px' });
-        var head = U.el('tr', { style: 'cursor:pointer' }, [nameTd,
+        var cells = [];
+        if (writable) cells.push(U.el('td', {}, [groupCb(grp.map(function (x) { return x.id; }))]));
+        cells = cells.concat([nameTd,
           U.el('td', { text: r0.department || '' }),
           U.el('td', { text: String(grp.length), style: 'font-weight:700' }),
           U.el('td', { text: od ? String(od) : '—', style: od ? 'color:#c0392b;font-weight:600' : '' }),
           U.el('td', { text: att ? ('📎' + att) : '' })]);
+        var head = U.el('tr', { style: 'cursor:pointer' }, cells);
         var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
         var ih = icols.map(function (c) { return c[1]; }); ih.push('操作');
         inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
@@ -303,7 +344,7 @@
           itb.appendChild(U.el('tr', {}, tds));
         });
         inner.appendChild(itb); makeSortable(inner);
-        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: '5', style: 'background:#f6f8f7;padding:6px' }, [inner])]);
+        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(oheads.length), style: 'background:#f6f8f7;padding:6px' }, [inner])]);
         head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + k; });
         tb.appendChild(head); tb.appendChild(detail);
       });
@@ -311,45 +352,13 @@
     }
 
     function drawHost() {
-      var writable = canWrite();
-      var selected = {};   // id -> true
-      // 批次工具列（可寫才顯示）：勾選多筆 → 批次改狀態 or 一份檔案掛多筆
-      var cntEl;
-      if (writable) {
-        ensureLists();
-        var cbAll = U.el('input', { type: 'checkbox', title: '全選／全不選' });
-        cntEl = U.el('span', { text: '已選 0 筆', style: 'font-weight:600;min-width:72px' });
-        function selIds() { return Object.keys(selected).filter(function (k) { return selected[k]; }).map(Number); }
-        function onDone() { self(); }   // 重載下鑽
-        var bStatus = U.el('button', { class: 'btn btn-primary btn-sm', text: '批次改狀態' });
-        var bAttach = U.el('button', { class: 'btn btn-secondary btn-sm', text: '批次上傳佐證' });
-        bStatus.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchStatus(ids, onDone); });
-        bAttach.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchAttach(ids, onDone); });
-        var bar = U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px;padding:8px 12px;background:#f0f6f3;border:1px solid #cfe3d8;border-radius:8px' }, [
-          U.el('label', { style: 'display:inline-flex;align-items:center;gap:6px;cursor:pointer' }, [cbAll, U.el('span', { text: '全選' })]),
-          cntEl, bStatus, bAttach,
-          U.el('span', { class: 'empty-hint', style: 'margin:0', text: '勾選多筆 → 一次改狀態或掛同一份佐證（一份檔案掛多筆）' }),
-        ]);
-        listBox.appendChild(bar);
-        cbAll.addEventListener('change', function () {
-          listBox.querySelectorAll('input.wx-rowcb').forEach(function (cb) { cb.checked = cbAll.checked; cb.dispatchEvent(new Event('change')); });
-        });
-      }
       var heads = (writable ? ['選'] : []).concat(cols.map(function (c) { return c[1]; })); heads.push('操作');
       var table = U.el('table', { class: 'tracking-table' });
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
       rows.forEach(function (r) {
         var tds = [];
-        if (writable) {
-          var cb = U.el('input', { type: 'checkbox', class: 'wx-rowcb' });
-          cb.addEventListener('change', function () {
-            selected[r.id] = cb.checked;
-            var n = Object.keys(selected).filter(function (k) { return selected[k]; }).length;
-            cntEl.textContent = '已選 ' + n + ' 筆';
-          });
-          tds.push(U.el('td', {}, [cb]));
-        }
+        if (writable) tds.push(U.el('td', {}, [rowCb(r.id)]));
         cols.forEach(function (c) {
           var td = U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
           if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; }
@@ -388,6 +397,7 @@
       var HEADS = [['弱點', 'name'], ['Plugin', 'plugin'], ['嚴重度', 'sev'], ['台數', 'count'],
         ['到期日', 'effMin'], ['原始期限', 'origMin'], ['處置階段', 'stage'], ['其中逾期', 'od']];
       var htr = U.el('tr', {});
+      if (writable) htr.appendChild(U.el('th', { text: '選' }));
       HEADS.forEach(function (h) {
         var arrow = _pSort.key === h[1] ? (_pSort.dir === 1 ? ' ▲' : ' ▼') : '';
         var th = U.el('th', { text: h[0] + arrow, style: 'cursor:pointer;user-select:none' });
@@ -400,6 +410,7 @@
         htr.appendChild(th);
       });
       table.appendChild(U.el('thead', {}, [htr]));
+      var pColspan = HEADS.length + (writable ? 1 : 0);
       var tb = U.el('tbody');
       var icols = [['host', '主機'], ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
@@ -407,11 +418,14 @@
       aggs.forEach(function (a) {
         var grp = a.grp, r0 = a.r0;
         var nameTd = U.el('td', { text: '▸ ' + a.name, style: 'white-space:normal;font-weight:600;color:#1a7f4b;cursor:pointer;min-width:240px;text-align:left' });
-        var head = U.el('tr', { style: 'cursor:pointer' }, [nameTd,
+        var pcells = [];
+        if (writable) pcells.push(U.el('td', {}, [groupCb(grp.map(function (x) { return x.id; }))]));
+        pcells = pcells.concat([nameTd,
           U.el('td', { text: a.plugin }), U.el('td', { text: r0.severity || '' }),
           U.el('td', { text: String(a.count), style: 'font-weight:700' }),
           U.el('td', { text: a.effTxt }), U.el('td', { text: a.origTxt }), U.el('td', { text: a.stage }),
           U.el('td', { text: a.od ? String(a.od) : '—', style: a.od ? 'color:#c0392b;font-weight:600' : '' })]);
+        var head = U.el('tr', { style: 'cursor:pointer' }, pcells);
         // 展開：這個弱點影響的主機
         var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
         var ih = icols.map(function (c) { return c[1]; }); ih.push('操作');
@@ -423,13 +437,18 @@
           itb.appendChild(U.el('tr', {}, tds));
         });
         inner.appendChild(itb); makeSortable(inner);
-        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(HEADS.length), style: 'background:#f6f8f7;padding:6px' }, [inner])]);
+        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(pColspan), style: 'background:#f6f8f7;padding:6px' }, [inner])]);
         head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + a.name; });
         tb.appendChild(head); tb.appendChild(detail);
       });
       table.appendChild(tb); listBox.appendChild(table);
     }
-    function draw() { listBox.innerHTML = ''; (mode === 'byowner' ? drawOwner : mode === 'byplugin' ? drawPlugin : drawHost)(); }
+    function draw() {
+      listBox.innerHTML = '';
+      if (writable) listBox.appendChild(batchBar());
+      (mode === 'byowner' ? drawOwner : mode === 'byplugin' ? drawPlugin : drawHost)();
+      updCount();
+    }
     draw();
   }
 
@@ -1419,7 +1438,56 @@
       });
       UI.openModal('從 AD 補負責人信箱', fb, { footer: go, stack: true, sticky: true });
     });
-    box.appendChild(U.el('div', { style: 'margin:0 0 10px' }, [fetchBtn, fetchOut]));
+
+    // 本地測試帳號：Super Admin 自建，供測試不同角色（AD 啟用時也能用；本地優先）
+    function openLocalUserForm() {
+      var fb = U.el('div');
+      fb.appendChild(U.el('p', { class: 'empty-hint', text: '建立／重設一個本地帳號（有密碼）。同帳號再存＝更新密碼／角色。本地帳號即使啟用 AD 也能登入。' }));
+      var FS = 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px;width:100%;margin:4px 0';
+      var un = U.el('input', { placeholder: '帳號（如 user / admin / superadmin）' }); un.style.cssText = FS;
+      var pw = U.el('input', { type: 'text', placeholder: '密碼（至少 4 碼）' }); pw.style.cssText = FS;
+      var dn = U.el('input', { placeholder: '顯示名（一般使用者要對應某負責人就填那個人名，如 王小明）' }); dn.style.cssText = FS;
+      var dp = U.el('input', { placeholder: '部門（部門窗口要管的部門，需同 Excel 短名）' }); dp.style.cssText = FS;
+      var rl = U.el('select'); rl.style.cssText = FS;
+      [['user', '一般'], ['dept_admin', '部門窗口'], ['super_admin', 'Super Admin']].forEach(function (o) { rl.appendChild(U.el('option', { value: o[0], text: o[1] })); });
+      fb.appendChild(U.el('label', { text: '帳號', style: 'font-weight:600' })); fb.appendChild(un);
+      fb.appendChild(U.el('label', { text: '密碼', style: 'font-weight:600' })); fb.appendChild(pw);
+      fb.appendChild(U.el('label', { text: '角色', style: 'font-weight:600' })); fb.appendChild(rl);
+      fb.appendChild(U.el('label', { text: '顯示名', style: 'font-weight:600' })); fb.appendChild(dn);
+      fb.appendChild(U.el('label', { text: '部門', style: 'font-weight:600' })); fb.appendChild(dp);
+      var go = U.el('button', { class: 'btn btn-primary', text: '建立／重設' });
+      go.addEventListener('click', async function () {
+        if (!un.value.trim() || pw.value.length < 4) { UI.toast('帳號必填、密碼至少 4 碼', 'error'); return; }
+        try {
+          var r = await fetch('/api/users/local', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: un.value.trim(), password: pw.value, role: rl.value, display_name: dn.value, department: dp.value }) });
+          var j = await r.json();
+          if (!r.ok) { UI.toast(j.detail || '失敗', 'error'); return; }
+          UI.toast((j.created ? '已建立 ' : '已更新 ') + j.username + '（' + rl.value + '）', 'success');
+          UI.closeModal(); openUserAdmin();
+        } catch (e) { UI.toast('失敗', 'error'); }
+      });
+      UI.openModal('新增／重設本地帳號', fb, { footer: go, stack: true, sticky: true });
+    }
+
+    var localBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '新增／重設本地帳號' });
+    localBtn.addEventListener('click', openLocalUserForm);
+    var seedBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '一鍵建三個測試帳號' });
+    seedBtn.addEventListener('click', async function () {
+      var pwd = window.prompt('設定這三個測試帳號（superadmin / admin / user）的共同密碼：', 'test-1234');
+      if (!pwd) return;
+      if (pwd.length < 4) { UI.toast('密碼至少 4 碼', 'error'); return; }
+      var defs = [['superadmin', 'super_admin', '本地最高管理員'], ['admin', 'dept_admin', '本地部門窗口'], ['user', 'user', '本地一般使用者']];
+      var ok = 0;
+      for (var i = 0; i < defs.length; i++) {
+        try {
+          var r = await fetch('/api/users/local', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: defs[i][0], password: pwd, role: defs[i][1], display_name: defs[i][2] }) });
+          if (r.ok) ok++;
+        } catch (e) {}
+      }
+      UI.toast('已建立／重設 ' + ok + '/3 個測試帳號，密碼：' + pwd, ok === 3 ? 'success' : 'error');
+      openUserAdmin();
+    });
+    box.appendChild(U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 10px' }, [fetchBtn, localBtn, seedBtn, fetchOut]));
 
     if (!users.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '尚無帳號（AD 登入後會自動建立）。' })); UI.openModal('帳號與權限（Super Admin）', box, { sticky: true, wide: true }); return; }
     var table = U.el('table', { class: 'tracking-table' });
@@ -1719,29 +1787,42 @@
     UI.openModal('系統設定（Super Admin）', box, { sticky: true });
   }
 
-  // ---- 其他功能（原右上角「其他功能」選單，移到左側成一項）：資料管理＋系統設定 ----
+  // ---- 其他功能（移到左側成一項）：卡片式分類、全部靠左對齊 ----
   function renderMoreInto(host) {
     if (!host) return;
     host.innerHTML = ''; host.classList.remove('webext-rpt');
-    host.appendChild(U.el('p', { class: 'empty-hint', text: '其他功能：資料管理與系統設定。' }));
     var ft = document.getElementById('file-name-tag');
     var fn = _dataFile || (ft && ft.textContent.trim()) || '（未知）';
-    host.appendChild(U.el('div', { class: 'scope-info', style: 'margin:0 0 12px' }, [U.el('span', { text: '目前資料檔：' + fn })]));
+    host.appendChild(U.el('div', { class: 'scope-info', style: 'margin:0 0 14px;text-align:left' }, [U.el('span', { text: '目前資料檔：' + fn })]));
+
     function trigger(id) { return function () { var el = document.getElementById(id); if (el) el.click(); else UI.toast('找不到此功能', 'error'); }; }
-    function btnRow(host2, label, onClick) {
-      var b = U.el('button', { class: 'btn btn-secondary', text: label, style: 'text-align:left' });
-      b.addEventListener('click', onClick); host2.appendChild(b); return b;
+    // 分類卡片容器
+    var wrap = U.el('div', { style: 'display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start' });
+    host.appendChild(wrap);
+    function card(title) {
+      var c = U.el('div', { style: 'flex:1 1 320px;min-width:300px;max-width:460px;border:1px solid #e1e7ec;border-radius:10px;padding:12px 14px;background:#fff' });
+      c.appendChild(U.el('div', { style: 'font-weight:700;font-size:15px;color:#1a7f4b;text-align:left;margin:0 0 10px;padding-left:8px;border-left:3px solid #1a7f4b' }, [U.el('span', { text: title })]));
+      wrap.appendChild(c); return c;
     }
-    // 一般人看得到：唯讀文件
-    var box = U.el('div', { style: 'display:flex;flex-direction:column;gap:8px;max-width:480px' });
-    btnRow(box, '使用說明', trigger('help-btn'));
-    btnRow(box, '資安說明', trigger('security-btn'));
-    btnRow(box, '我的操作紀錄（查我申請／上傳／變更了什麼）', openMyActivity);
-    host.appendChild(box);
-    // 部門窗口：自管「每週一自動收部門週報」開關
+    // 靠左的功能列：粗體標題＋灰色說明，整顆按鈕 justify 靠左
+    function item(c, label, desc, onClick) {
+      var inner = U.el('span', { style: 'display:flex;flex-direction:column;align-items:flex-start;gap:1px;text-align:left;line-height:1.3' }, [
+        U.el('span', { text: label, style: 'font-weight:600' }),
+      ]);
+      if (desc) inner.appendChild(U.el('span', { text: desc, style: 'font-size:12px;color:#8a97a3' }));
+      var b = U.el('button', { class: 'btn btn-secondary', style: 'display:flex;justify-content:flex-start;text-align:left;width:100%;margin:0 0 8px;padding:9px 12px' }, [inner]);
+      b.addEventListener('click', onClick); c.appendChild(b); return b;
+    }
+
+    // ① 說明文件（所有人）
+    var cDoc = card('說明文件');
+    item(cDoc, '使用說明', '系統怎麼用', trigger('help-btn'));
+    item(cDoc, '資安說明', '弱點與處置邏輯', trigger('security-btn'));
+
+    // ② 我的（登入者；免登入時也顯示我的紀錄）
+    var cMine = card('我的');
+    item(cMine, '我的操作紀錄', '查我何時申請／上傳／變更了什麼', openMyActivity);
     if (me.authenticated && me.role === 'dept_admin') {
-      host.appendChild(U.el('div', { class: 'panel-head', style: 'margin-top:18px' }, [U.el('h3', { text: '每週報告' })]));
-      var wbox = U.el('div', { style: 'max-width:480px' });
       var wcb = U.el('input', { type: 'checkbox' }); wcb.checked = !!me.weekly_report;
       wcb.addEventListener('change', async function () {
         try {
@@ -1750,23 +1831,29 @@
           else { wcb.checked = !wcb.checked; UI.toast('設定失敗', 'error'); }
         } catch (e) { wcb.checked = !wcb.checked; UI.toast('設定失敗', 'error'); }
       });
-      wbox.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:600;cursor:pointer' }, [wcb, U.el('span', { text: '每週一早上自動把我部門的週報寄給我（方便向上報告）' })]));
-      host.appendChild(wbox);
+      cMine.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:flex-start;text-align:left;cursor:pointer;padding:9px 12px;border:1px dashed #cfe3d8;border-radius:8px' }, [
+        wcb, U.el('span', { style: 'display:flex;flex-direction:column;gap:1px' }, [
+          U.el('span', { text: '每週一自動收我部門的週報', style: 'font-weight:600' }),
+          U.el('span', { text: '方便向上報告；可隨時關', style: 'font-size:12px;color:#8a97a3' })]) ]));
     }
-    // 系統管理（只有 Super Admin 看得到）：資料管理＋系統設定＋權限
-    if (isSuper()) {
-      host.appendChild(U.el('div', { class: 'panel-head', style: 'margin-top:18px' }, [U.el('h3', { text: '系統管理（Super Admin）' })]));
-      var sbox = U.el('div', { style: 'display:flex;flex-direction:column;gap:8px;max-width:480px' });
-      btnRow(sbox, '上傳新的彙總表（重新選擇檔案）', trigger('reload-btn'));
-      btnRow(sbox, '功能開關', trigger('features-btn'));
-      btnRow(sbox, '清除暫存資料', trigger('clear-btn'));
-      btnRow(sbox, 'Email／SMTP 設定', openEmailSettings);
-      btnRow(sbox, '發信紀錄（逐封寄送結果）', openMailLog);
-      btnRow(sbox, '系統設定（登入時數／每週排程試跑）', openGeneralSettings);
-      btnRow(sbox, 'AD 登入設定（LDAP／員編／測試連線）', openAdSettings);
-      btnRow(sbox, '帳號與權限（部門窗口／信箱／AD 補 mail）', openUserAdmin);
-      host.appendChild(sbox);
-    }
+
+    if (!isSuper()) return;
+    // ③ 資料管理（Super Admin）
+    var cData = card('資料管理（Super Admin）');
+    item(cData, '上傳新的彙總表', '重新選擇弱點彙總 Excel', trigger('reload-btn'));
+    item(cData, '清除暫存資料', '清掉本機暫存', trigger('clear-btn'));
+    item(cData, '功能開關', '前端功能的開關', trigger('features-btn'));
+
+    // ④ 通知（Super Admin）
+    var cMail = card('通知 Email（Super Admin）');
+    item(cMail, 'Email／SMTP 設定', 'relay 主機／寄件人／備份信箱／每週排程', openEmailSettings);
+    item(cMail, '發信紀錄', '逐封寄送結果（成功／失敗／轉窗口）', openMailLog);
+
+    // ⑤ 權限與系統（Super Admin）
+    var cSys = card('權限與系統（Super Admin）');
+    item(cSys, '帳號與權限', '指定部門窗口／補信箱／從 AD 補 mail', openUserAdmin);
+    item(cSys, 'AD 登入設定', 'LDAP／員編／測試連線', openAdSettings);
+    item(cSys, '系統設定', '登入時數／每週排程試跑', openGeneralSettings);
   }
 
   // ---- 主管週報（應申請未申請／已申請／預計完成彙總／落後；可列印存 PDF） ----

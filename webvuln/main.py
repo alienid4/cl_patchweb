@@ -850,6 +850,47 @@ def api_send_weekly(request: Request, only: str | None = None, db: Session = Dep
     return summary
 
 
+class LocalUserIn(BaseModel):
+    username: str
+    password: str
+    role: str = config.ROLE_USER
+    display_name: str | None = None
+    department: str | None = None
+
+
+@app.post("/api/users/local")
+def api_create_local_user(body: LocalUserIn, request: Request, db: Session = Depends(get_db),
+                          user: User = Depends(require_super)):
+    """Super Admin 建立／重設一個『本地帳號』（有密碼，供測試不同角色；AD 啟用時也能登入）。
+    已存在同員編＝更新其密碼／角色／部門（冪等）。"""
+    uname = (body.username or "").strip()
+    if not uname:
+        raise HTTPException(status_code=400, detail="請填帳號")
+    if not body.password or len(body.password) < 4:
+        raise HTTPException(status_code=400, detail="密碼至少 4 碼")
+    role = body.role if body.role in (config.ROLE_SUPER, config.ROLE_DEPT_ADMIN, config.ROLE_USER) else config.ROLE_USER
+    u = db.execute(select(User).where(User.username == uname)).scalars().first()
+    created = u is None
+    if u is None:
+        u = User(username=uname, is_active=True)
+        db.add(u)
+    u.password_hash = security.hash_password(body.password)
+    u.role = role
+    u.is_active = True
+    if body.display_name is not None:
+        u.display_name = body.display_name.strip() or uname
+    elif created and not u.display_name:
+        u.display_name = uname
+    if body.department is not None:
+        u.department = body.department.strip() or None
+    db.commit()
+    security.log_audit(db, username=getattr(user, "username", None), action="local_user",
+                       target=f"user:{uname}", detail=f"{'create' if created else 'update'} role={role}",
+                       ip=_client_ip(request))
+    return {"id": u.id, "username": u.username, "role": config.canon_role(u.role),
+            "display_name": u.display_name, "department": u.department, "created": created}
+
+
 @app.get("/api/export")
 def api_export(batch_id: int | None = None, department: str | None = None,
                db: Session = Depends(get_db)):
