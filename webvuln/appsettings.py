@@ -67,6 +67,7 @@ AD_DEFAULTS: dict[str, Any] = {
 #   include_soon   納入近期到期
 #   soon_days      近期到期天數門檻
 #   global_fallback 查無負責人與部門窗口信箱時，統一轉寄給（選填）
+#   copy_to        系統總備份信箱：每封都密件備份一份（免登入時操作者無信箱，靠這個留底可核對）
 EMAIL_DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "smtp_host": "",
@@ -79,6 +80,14 @@ EMAIL_DEFAULTS: dict[str, Any] = {
     "include_soon": False,
     "soon_days": 30,
     "global_fallback": "",
+    "copy_to": "",
+    "site_url": "",   # 系統網址（每週報告信裡放直達連結用，例 http://10.30.0.1:3100）
+}
+
+# 一般系統設定（Super Admin 畫面可調、存 DB、免重部署）。
+#   session_ttl_hours  登入 session 有效時數（預設 12；改這裡只影響「新登入」）
+GENERAL_DEFAULTS: dict[str, Any] = {
+    "session_ttl_hours": 12,
 }
 
 
@@ -143,6 +152,35 @@ def set_ad_config(session: Session, patch: dict) -> dict:
     return clean
 
 
+def get_general_config(session: Session) -> dict:
+    """一般系統設定（session 時數等）；預設值 + DB 覆寫。"""
+    cfg = dict(GENERAL_DEFAULTS)
+    saved = get_json(session, "general", {}) or {}
+    if isinstance(saved, dict):
+        cfg.update({k: saved[k] for k in saved if k in GENERAL_DEFAULTS})
+    try:
+        cfg["session_ttl_hours"] = int(cfg["session_ttl_hours"])
+    except (TypeError, ValueError):
+        cfg["session_ttl_hours"] = GENERAL_DEFAULTS["session_ttl_hours"]
+    # 合理範圍 1~720 小時（防誤填 0 或天文數字）
+    cfg["session_ttl_hours"] = max(1, min(720, cfg["session_ttl_hours"]))
+    return cfg
+
+
+def set_general_config(session: Session, patch: dict) -> dict:
+    cfg = get_general_config(session)
+    for k, v in (patch or {}).items():
+        if k in GENERAL_DEFAULTS:
+            cfg[k] = v
+    clean = {k: cfg[k] for k in GENERAL_DEFAULTS}
+    try:
+        clean["session_ttl_hours"] = max(1, min(720, int(clean["session_ttl_hours"])))
+    except (TypeError, ValueError):
+        clean["session_ttl_hours"] = GENERAL_DEFAULTS["session_ttl_hours"]
+    set_json(session, "general", clean)
+    return clean
+
+
 def get_email_config(session: Session) -> dict:
     """Email／SMTP 設定（預設值 + DB 覆寫）。不含密碼（relay 免認證）。"""
     cfg = dict(EMAIL_DEFAULTS)
@@ -167,7 +205,7 @@ def set_email_config(session: Session, patch: dict) -> dict:
             clean[intk] = EMAIL_DEFAULTS[intk]
     for bk in ("enabled", "use_tls", "cc_self", "include_overdue", "include_soon"):
         clean[bk] = bool(clean[bk])
-    for sk in ("smtp_host", "from_default", "subject_prefix", "global_fallback"):
+    for sk in ("smtp_host", "from_default", "subject_prefix", "global_fallback", "copy_to", "site_url"):
         clean[sk] = str(clean[sk] or "").strip()
     set_json(session, "email", clean)
     return clean

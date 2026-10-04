@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from . import ad, appsettings, attachments, cases, config, export, importer, mailer, query, security
 from .db import SessionLocal, init_db
-from .models import Finding, User, UserSession
+from .models import AuditLog, Finding, MailLog, User, UserSession
 from .schemas import ImportIn, ImportResult
 
 _FRONTEND = Path(__file__).resolve().parents[1] / "frontend"
@@ -150,7 +150,7 @@ def api_login(body: LoginIn, request: Request, response: Response, db: Session =
     token = security.create_session(db, user)
     response.set_cookie(
         config.SESSION_COOKIE, token, httponly=True, samesite="lax",
-        secure=config.COOKIE_SECURE, max_age=config.SESSION_TTL_HOURS * 3600,
+        secure=config.COOKIE_SECURE, max_age=security.session_ttl_hours(db) * 3600,
     )
     security.log_audit(db, username=user.username, action="login", ip=_client_ip(request))
     return {"username": user.username, "display_name": user.display_name, "role": user.role}
@@ -187,7 +187,8 @@ def api_me(user: User | None = Depends(current_user), db: Session = Depends(get_
     return {"authenticated": True, "username": user.username,
             "display_name": user.display_name, "role": role,
             "department": user.department, "open_write": open_mode,
-            "is_super": open_mode or role == config.ROLE_SUPER, "online": online}
+            "is_super": open_mode or role == config.ROLE_SUPER, "online": online,
+            "weekly_report": bool(getattr(user, "weekly_report", False))}
 
 
 @app.post("/api/import", response_model=ImportResult)
@@ -380,6 +381,97 @@ def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
     return r
 
 
+class BulkOverlayIn(BaseModel):
+    ids: list[int]
+    owner: str | None = None
+    department: str | None = None
+    note: str | None = None
+    target_date: str | None = None
+    progress: str | None = None
+    set_owner: bool = False
+    set_department: bool = False
+    set_note: bool = False
+    set_target: bool = False
+    set_progress: bool = False
+
+
+@app.post("/api/findings/bulk-overlay")
+def api_bulk_overlay(body: BulkOverlayIn, request: Request, db: Session = Depends(get_db),
+                     user: User = Depends(require_write_role)):
+    """批次改多筆弱點的疊加欄（負責人／部門／備註／預計完成日／處理進度）：一次套同一個值。
+    逐筆過範圍檢查，無權限者略過並列出；不中斷整批。"""
+    fields = {}
+    if body.set_owner:
+        fields["owner"] = body.owner
+    if body.set_department:
+        fields["department"] = body.department
+    if body.set_note:
+        fields["note"] = body.note
+    if body.set_target:
+        fields["target_date"] = body.target_date
+    if body.set_progress:
+        fields["progress"] = body.progress
+    if not fields:
+        raise HTTPException(status_code=400, detail="沒有要改的欄位")
+    if not body.ids:
+        raise HTTPException(status_code=400, detail="未選取任何弱點")
+    if len(body.ids) > 1000:
+        raise HTTPException(status_code=400, detail="一次最多 1000 筆")
+    applied, skipped, failed = 0, [], []
+    for fid in body.ids:
+        f = db.get(Finding, fid)
+        if f is None:
+            failed.append({"id": fid, "error": "不存在"}); continue
+        if not _scope_ok(user, f, db):
+            skipped.append({"id": fid, "host": f.host, "error": "無權限"}); continue
+        try:
+            cases.set_overlay(db, fid, fields)
+            applied += 1
+        except ValueError as e:
+            failed.append({"id": fid, "error": str(e)})
+    security.log_audit(db, username=getattr(user, "username", None), action="bulk_overlay",
+                       target=f"count:{applied}", detail="fields=%s skipped=%d failed=%d" % (
+                           list(fields.keys()), len(skipped), len(failed)),
+                       ip=_client_ip(request))
+    return {"applied": applied, "skipped": skipped, "failed": failed, "total": len(body.ids)}
+
+
+@app.post("/api/attachments/bulk")
+async def api_bulk_attachment(request: Request, ids: str = "", name: str = "",
+                              kind: str = "其他", db: Session = Depends(get_db),
+                              user: User = Depends(require_write_role)):
+    """一份檔案掛多筆弱點：raw body＝檔案位元組；ids＝逗號分隔的 finding id。
+    實體檔靠 sha256 去重只存一份，建多筆 metadata。逐筆過範圍檢查，略過無權限者。"""
+    id_list = [int(x) for x in ids.replace(" ", "").split(",") if x.strip().isdigit()]
+    if not id_list:
+        raise HTTPException(status_code=400, detail="未選取任何弱點")
+    if len(id_list) > 1000:
+        raise HTTPException(status_code=400, detail="一次最多 1000 筆")
+    clen = request.headers.get("content-length")
+    if clen and clen.isdigit() and int(clen) > config.UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="檔案過大（上限 %d MB）" % (config.UPLOAD_MAX_BYTES // (1024 * 1024)))
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="空檔案")
+    applied, skipped, failed = 0, [], []
+    for fid in id_list:
+        f = db.get(Finding, fid)
+        if f is None:
+            failed.append({"id": fid, "error": "不存在"}); continue
+        if not _scope_ok(user, f, db):
+            skipped.append({"id": fid, "host": f.host, "error": "無權限"}); continue
+        try:
+            attachments.save_for_finding(db, fid, data, name, kind, getattr(user, "username", None))
+            applied += 1
+        except ValueError as e:
+            failed.append({"id": fid, "error": str(e)})
+    security.log_audit(db, username=getattr(user, "username", None), action="attach_bulk",
+                       target=f"count:{applied}", detail="%s %dB skipped=%d failed=%d" % (
+                           (name or "")[:80], len(data), len(skipped), len(failed)),
+                       ip=_client_ip(request))
+    return {"applied": applied, "skipped": skipped, "failed": failed, "total": len(id_list)}
+
+
 # ── 申請佐證文件（展延／例外的 WBS、理由說明…）：掛弱點(vuln_key)、重匯不洗、對 Excel 唯讀 ──
 @app.get("/api/findings/{finding_id}/attachments")
 def api_list_attachments(finding_id: int, db: Session = Depends(get_db),
@@ -476,14 +568,18 @@ def api_list_users(db: Session = Depends(get_db), user: User = Depends(require_s
     from sqlalchemy import select as _sel
     rows = db.execute(_sel(User).order_by(User.role, User.username)).scalars().all()
     return [{"id": u.id, "username": u.username, "display_name": u.display_name,
-             "department": u.department, "role": config.canon_role(u.role), "is_active": u.is_active}
+             "email": u.email, "department": u.department,
+             "role": config.canon_role(u.role), "is_active": u.is_active,
+             "weekly_report": bool(u.weekly_report)}
             for u in rows]
 
 
 class UserRoleIn(BaseModel):
     role: str | None = None          # super_admin/dept_admin/user
     department: str | None = None    # 設定窗口負責的部門
+    email: str | None = None         # 收件人涵蓋率：Super Admin 可手補負責人信箱
     is_active: bool | None = None
+    weekly_report: bool | None = None  # 每週部門週報開關（通常本人自管，super 也可代設）
 
 
 @app.post("/api/users/{user_id}/role")
@@ -498,13 +594,18 @@ def api_set_user_role(user_id: int, body: UserRoleIn, request: Request,
         u.role = body.role
     if body.department is not None:
         u.department = body.department or None
+    if body.email is not None:
+        u.email = body.email.strip() or None
     if body.is_active is not None:
         u.is_active = body.is_active
+    if body.weekly_report is not None:
+        u.weekly_report = body.weekly_report
     db.commit()
     security.log_audit(db, username=getattr(user, "username", None), action="set_user_role",
-                       target=f"user:{u.username}", detail=f"role={u.role} dept={u.department}",
+                       target=f"user:{u.username}", detail=f"role={u.role} dept={u.department} email={'Y' if u.email else 'N'}",
                        ip=_client_ip(request))
-    return {"id": u.id, "username": u.username, "role": config.canon_role(u.role), "department": u.department}
+    return {"id": u.id, "username": u.username, "role": config.canon_role(u.role),
+            "department": u.department, "email": u.email, "weekly_report": bool(u.weekly_report)}
 
 
 # ── Email／SMTP 設定（Super Admin 專用；存 DB，畫面可編輯、免重部署）──
@@ -587,6 +688,164 @@ def api_send_reminders(body: SendRemindersIn, request: Request, db: Session = De
                        detail="sent=%d fallback=%d skipped=%d failed=%d dept=%s" % (
                            summary["sent"], summary["fallback"], summary["skipped"],
                            summary["failed"], dept or "全部"),
+                       ip=_client_ip(request))
+    return summary
+
+
+@app.get("/api/send-reminders/sample")
+def api_send_reminders_sample(owner: str | None = None, department: str | None = None,
+                             db: Session = Depends(get_db), user: User = Depends(require_write_role)):
+    """寄前看範例信：回一封（預設計畫中第一位）的主旨與內文。"""
+    scope = _require_send_role(user, db)
+    dept = scope if scope is not None else department
+    cfg = appsettings.get_email_config(db)
+    return mailer.build_sample(db, cfg, owner=owner, department=dept)
+
+
+# ── 我的操作紀錄（本人自查：何時申請/上傳/變更了什麼）──
+_ACTION_LABEL = {
+    "set_overlay": "變更弱點（負責人／備註／預計完成／進度）",
+    "bulk_overlay": "批次變更弱點",
+    "attach_add": "上傳佐證文件",
+    "attach_bulk": "批次上傳佐證文件",
+    "attach_del": "刪除佐證文件",
+    "import": "匯入彙總表",
+    "send_reminders": "寄送催辦信",
+    "purge_orphans": "清除已消失紀錄",
+    "ad_settings": "變更 AD 設定",
+    "email_settings": "變更 Email 設定",
+    "general_settings": "變更系統設定",
+    "set_user_role": "變更帳號權限",
+    "login": "登入",
+    "logout": "登出",
+    "login_failed": "登入失敗",
+}
+
+
+@app.get("/api/my-activity")
+def api_my_activity(limit: int = 300, db: Session = Depends(get_db),
+                    user: User = Depends(require_view)):
+    """本人操作紀錄（一般＝只看自己；部門窗口＝自己＋本部門成員；super＝全部）。"""
+    role = config.canon_role(getattr(user, "role", ""))
+    uname = getattr(user, "username", None)
+    is_open = _open_mode(db)
+    q = select(AuditLog).order_by(AuditLog.at.desc()).limit(max(1, min(2000, limit)))
+    if not (is_open or role == config.ROLE_SUPER):
+        if role == config.ROLE_DEPT_ADMIN and getattr(user, "department", None):
+            members = db.execute(select(User.username).where(User.department == user.department)).scalars().all()
+            names = set(members) | ({uname} if uname else set())
+            q = select(AuditLog).where(AuditLog.username.in_(names)).order_by(AuditLog.at.desc()).limit(max(1, min(2000, limit)))
+        else:
+            q = select(AuditLog).where(AuditLog.username == uname).order_by(AuditLog.at.desc()).limit(max(1, min(2000, limit)))
+    rows = db.execute(q).scalars().all()
+    out = []
+    for a in rows:
+        tgt = (a.target or "")
+        if tgt.startswith("vuln:"):
+            tgt = tgt[5:]
+        out.append({"at": a.at.isoformat(timespec="seconds") if a.at else None,
+                    "username": a.username, "action": a.action,
+                    "action_label": _ACTION_LABEL.get(a.action, a.action),
+                    "target": tgt, "detail": a.detail})
+    return {"scope": "全部" if (is_open or role == config.ROLE_SUPER) else
+            ("本部門" if role == config.ROLE_DEPT_ADMIN else "本人"), "items": out}
+
+
+# ── 發信紀錄（Super Admin）──
+@app.get("/api/mail-log")
+def api_mail_log(limit: int = 300, db: Session = Depends(get_db), user: User = Depends(require_super)):
+    rows = db.execute(select(MailLog).order_by(MailLog.sent_at.desc())
+                      .limit(max(1, min(2000, limit)))).scalars().all()
+    return [{"sent_at": m.sent_at.isoformat(timespec="seconds") if m.sent_at else None,
+             "sender": m.sender, "owner": m.owner, "to": m.to, "cc": m.cc,
+             "mode": m.mode, "status": m.status, "count": m.count, "error": m.error}
+            for m in rows]
+
+
+# ── 一般系統設定（Super Admin）：session 時數等 ──
+@app.get("/api/general-settings")
+def api_get_general_settings(db: Session = Depends(get_db), user: User = Depends(require_super)):
+    return appsettings.get_general_config(db)
+
+
+@app.post("/api/general-settings")
+def api_set_general_settings(body: dict, request: Request, db: Session = Depends(get_db),
+                             user: User = Depends(require_super)):
+    cfg = appsettings.set_general_config(db, body or {})
+    security.log_audit(db, username=getattr(user, "username", None), action="general_settings",
+                       detail="session_ttl_hours=%s" % cfg.get("session_ttl_hours"),
+                       ip=_client_ip(request))
+    return cfg
+
+
+# ── 收件人涵蓋率：Super Admin 用自己帳密，一次從 AD 補齊負責人信箱 ──
+class FetchMailsIn(BaseModel):
+    login: str
+    password: str
+
+
+@app.post("/api/users/fetch-ad-mails")
+def api_fetch_ad_mails(body: FetchMailsIn, request: Request, db: Session = Depends(get_db),
+                       user: User = Depends(require_super)):
+    """對最新快照的負責人清單，向 AD 以顯示名搜 mail，補進對應帳號（沒有帳號就建立）。"""
+    names = query.owners(db)
+    if not names:
+        return {"ok": False, "message": "尚無負責人（請先匯入）"}
+    cfg = appsettings.get_ad_config(db)
+    res = ad.fetch_mails_by_names(cfg, body.login, body.password, names)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error") or "AD 查詢失敗")
+    found = res.get("found") or {}
+    updated, created = 0, 0
+    for name, mail in found.items():
+        u = db.execute(select(User).where(User.display_name == name)).scalars().first()
+        if u is None:
+            db.add(User(username="mail:" + name, password_hash=None, display_name=name,
+                        email=mail, role=config.ROLE_USER, is_active=True))
+            created += 1
+        elif (u.email or "") != mail:
+            u.email = mail
+            updated += 1
+    db.commit()
+    security.log_audit(db, username=getattr(user, "username", None), action="fetch_ad_mails",
+                       detail="names=%d found=%d updated=%d created=%d" % (
+                           len(names), len(found), updated, created), ip=_client_ip(request))
+    return {"ok": True, "names": len(names), "found": len(found),
+            "updated": updated, "created": created}
+
+
+# ── #8 每週部門週報：本人開關 + 排程手動試跑 ──
+class MyWeeklyIn(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/my-weekly")
+def api_set_my_weekly(body: MyWeeklyIn, request: Request, db: Session = Depends(get_db),
+                      user: User = Depends(require_login)):
+    """部門窗口自行開/關『每週一自動收部門週報』。"""
+    u = db.get(User, user.id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="帳號不存在")
+    u.weekly_report = bool(body.enabled)
+    db.commit()
+    security.log_audit(db, username=u.username, action="set_my_weekly",
+                       detail="weekly=%s" % u.weekly_report, ip=_client_ip(request))
+    return {"weekly_report": bool(u.weekly_report)}
+
+
+@app.post("/api/send-weekly")
+def api_send_weekly(request: Request, only: str | None = None, db: Session = Depends(get_db),
+                    user: User = Depends(require_super)):
+    """手動試跑每週排程（平時由 cron 於週一 08:00 跑）。only＝逗號分隔員編，只寄這些人。"""
+    cfg = appsettings.get_email_config(db)
+    names = [x for x in (only or "").split(",") if x.strip()] or None
+    try:
+        summary = mailer.send_weekly(db, cfg, only_usernames=names)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    security.log_audit(db, username=getattr(user, "username", None), action="send_weekly",
+                       detail="sent=%d skipped=%d failed=%d" % (
+                           summary["sent"], summary["skipped"], summary["failed"]),
                        ip=_client_ip(request))
     return summary
 

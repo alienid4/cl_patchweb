@@ -59,6 +59,8 @@ class User(Base):
     department: Mapped[str | None] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(20), default="viewer", index=True)  # admin/承辦/viewer
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # #8 每週一自動寄部門週報：由本人(dept_admin)決定開/關，預設關(不煩少用的人)
+    weekly_report: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now)
 
 
@@ -155,6 +157,25 @@ class Attachment(Base):
     content_type: Mapped[str | None] = mapped_column(String(120))
     uploaded_by: Mapped[str | None] = mapped_column(String(100))
     uploaded_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now, index=True)
+
+
+class MailLog(Base):
+    """一鍵發送的逐封寄送紀錄（供「發信紀錄」查：誰在何時寄給誰、成功/失敗/轉窗口）。
+
+    與 AuditLog 分開：AuditLog 記「動作」（寄送這批），MailLog 記「每一封」的結果明細。
+    """
+    __tablename__ = "mail_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sent_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now, index=True)
+    sender: Mapped[str | None] = mapped_column(String(100), index=True)   # 操作者員編
+    owner: Mapped[str | None] = mapped_column(String(100))                # 該封對應的負責人
+    to: Mapped[str | None] = mapped_column(String(300))                   # 實際收件人
+    cc: Mapped[str | None] = mapped_column(String(500))
+    mode: Mapped[str] = mapped_column(String(20), default="send")         # send/fallback/skip
+    status: Mapped[str] = mapped_column(String(20), default="ok")         # ok/failed/skip
+    count: Mapped[int] = mapped_column(Integer, default=0)                # 該封涵蓋的弱點數
+    error: Mapped[str | None] = mapped_column(Text)
 
 
 class Finding(Base):

@@ -76,12 +76,21 @@ def authenticate(session: Session, username: str, password: str) -> Optional[Use
 
 
 # ── session ──
+def session_ttl_hours(session: Session) -> int:
+    """登入有效時數：DB 一般設定優先（畫面可調），讀不到退回 env 預設。"""
+    try:
+        from . import appsettings
+        return int(appsettings.get_general_config(session).get("session_ttl_hours") or config.SESSION_TTL_HOURS)
+    except Exception:  # noqa: BLE001
+        return config.SESSION_TTL_HOURS
+
+
 def create_session(session: Session, user: User) -> str:
     token = secrets.token_urlsafe(32)
     now = dt.datetime.now()
     session.add(UserSession(
         token=token, user_id=user.id, created_at=now,
-        expires_at=now + dt.timedelta(hours=config.SESSION_TTL_HOURS),
+        expires_at=now + dt.timedelta(hours=session_ttl_hours(session)),
     ))
     session.commit()
     return token

@@ -313,42 +313,26 @@
     function drawHost() {
       var writable = canWrite();
       var selected = {};   // id -> true
-      // 批次工具列（可寫才顯示）：勾選下方 → 指定新負責人 → 一次套用
-      var cntEl, ownerInp, applyBtn;
+      // 批次工具列（可寫才顯示）：勾選多筆 → 批次改狀態 or 一份檔案掛多筆
+      var cntEl;
       if (writable) {
         ensureLists();
         var cbAll = U.el('input', { type: 'checkbox', title: '全選／全不選' });
         cntEl = U.el('span', { text: '已選 0 筆', style: 'font-weight:600;min-width:72px' });
-        ownerInp = U.el('input', { type: 'text', list: 'webext-owners', autocomplete: 'off', placeholder: '改負責人為…（可打新名字）', style: 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px;min-width:200px' });
-        applyBtn = U.el('button', { class: 'btn btn-primary btn-sm', text: '套用到已選' });
+        function selIds() { return Object.keys(selected).filter(function (k) { return selected[k]; }).map(Number); }
+        function onDone() { self(); }   // 重載下鑽
+        var bStatus = U.el('button', { class: 'btn btn-primary btn-sm', text: '批次改狀態' });
+        var bAttach = U.el('button', { class: 'btn btn-secondary btn-sm', text: '批次上傳佐證' });
+        bStatus.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchStatus(ids, onDone); });
+        bAttach.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchAttach(ids, onDone); });
         var bar = U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px;padding:8px 12px;background:#f0f6f3;border:1px solid #cfe3d8;border-radius:8px' }, [
           U.el('label', { style: 'display:inline-flex;align-items:center;gap:6px;cursor:pointer' }, [cbAll, U.el('span', { text: '全選' })]),
-          cntEl, ownerInp, applyBtn,
-          _datalist('webext-owners', _ownerList),
+          cntEl, bStatus, bAttach,
+          U.el('span', { class: 'empty-hint', style: 'margin:0', text: '勾選多筆 → 一次改狀態或掛同一份佐證（一份檔案掛多筆）' }),
         ]);
         listBox.appendChild(bar);
         cbAll.addEventListener('change', function () {
           listBox.querySelectorAll('input.wx-rowcb').forEach(function (cb) { cb.checked = cbAll.checked; cb.dispatchEvent(new Event('change')); });
-        });
-        applyBtn.addEventListener('click', async function () {
-          var ids = Object.keys(selected).filter(function (k) { return selected[k]; });
-          if (!ids.length) { UI.toast('請先勾選要改的項目', 'error'); return; }
-          var nv = (ownerInp.value || '').trim();
-          if (!nv) { UI.toast('請輸入新的負責人', 'error'); ownerInp.focus(); return; }
-          if (!window.confirm('把已勾選的 ' + ids.length + ' 筆的負責人改成「' + nv + '」？')) return;
-          applyBtn.disabled = true; applyBtn.textContent = '套用中…';
-          var ok = 0;
-          for (var i = 0; i < ids.length; i++) {
-            try {
-              var r = await fetch('/api/findings/' + ids[i] + '/overlay', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ set_owner: true, owner: nv }),
-              });
-              if (r.ok) ok++;
-            } catch (e) { }
-          }
-          UI.toast('已改 ' + ok + '/' + ids.length + ' 筆負責人為「' + nv + '」', ok === ids.length ? 'success' : 'error');
-          self();   // 重載下鑽（反映新負責人）
         });
       }
       var heads = (writable ? ['選'] : []).concat(cols.map(function (c) { return c[1]; })); heads.push('操作');
@@ -447,6 +431,100 @@
     }
     function draw() { listBox.innerHTML = ''; (mode === 'byowner' ? drawOwner : mode === 'byplugin' ? drawPlugin : drawHost)(); }
     draw();
+  }
+
+  var PROGRESS_OPTS = [['', '（不變）'], ['處理中', '處理中'], ['要申請展延', '要申請展延'],
+    ['要申請例外', '要申請例外'], ['等複掃', '等複掃'], ['__clear__', '清除進度']];
+
+  // 批次改狀態：對已勾選 N 筆套同一組疊加欄（負責人／部門／進度／預計完成日／備註）。詳細預覽後才套。
+  function openBatchStatus(ids, onDone) {
+    ensureLists();
+    var box = U.el('div');
+    box.appendChild(U.el('p', { class: 'empty-hint', text: '只勾「要改」的欄位才會套用；其餘保持不動。已選 ' + ids.length + ' 筆。' }));
+    var FS = 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px;width:100%';
+    function rowField(labelText, inputEl) {
+      var use = U.el('input', { type: 'checkbox' });
+      inputEl.style.cssText = FS;
+      var r = U.el('div', { style: 'display:grid;grid-template-columns:20px 120px 1fr;gap:8px;align-items:center;margin:6px 0' }, [
+        use, U.el('span', { text: labelText, style: 'font-weight:600' }), inputEl]);
+      box.appendChild(r);
+      return { use: use, el: inputEl };
+    }
+    var fOwner = rowField('負責人', U.el('input', { list: 'webext-owners', placeholder: '改負責人為…（可打新名字）' }));
+    var fDept = rowField('部門', U.el('input', { list: 'webext-depts', placeholder: '改部門為…' }));
+    var progSel = U.el('select'); PROGRESS_OPTS.forEach(function (o) { progSel.appendChild(U.el('option', { value: o[0], text: o[1] })); });
+    var fProg = rowField('處理進度', progSel);
+    var fTarget = rowField('預計完成日', U.el('input', { type: 'date' }));
+    var fNote = rowField('追蹤備註', U.el('input', { placeholder: '管理追蹤備註' }));
+    box.appendChild(_datalist('webext-owners', _ownerList));
+    box.appendChild(_datalist('webext-depts', _deptList));
+    var preview = U.el('div', { class: 'empty-hint', style: 'margin-top:8px' });
+    box.appendChild(preview);
+
+    function collect() {
+      var body = { ids: ids };
+      var changes = [];
+      if (fOwner.use.checked) { body.set_owner = true; body.owner = fOwner.el.value.trim(); changes.push('負責人 → ' + (body.owner || '（清除）')); }
+      if (fDept.use.checked) { body.set_department = true; body.department = fDept.el.value.trim(); changes.push('部門 → ' + (body.department || '（清除）')); }
+      if (fProg.use.checked) { body.set_progress = true; body.progress = progSel.value === '__clear__' ? '' : progSel.value; changes.push('處理進度 → ' + (body.progress || '（清除）')); }
+      if (fTarget.use.checked) { body.set_target = true; body.target_date = fTarget.el.value; changes.push('預計完成日 → ' + (body.target_date || '（清除）')); }
+      if (fNote.use.checked) { body.set_note = true; body.note = fNote.el.value; changes.push('追蹤備註 → ' + (body.note || '（清除）')); }
+      return { body: body, changes: changes };
+    }
+    function refresh() {
+      var c = collect();
+      preview.innerHTML = '';
+      if (!c.changes.length) { preview.textContent = '尚未勾選要改的欄位。'; return; }
+      preview.appendChild(U.el('div', { style: 'font-weight:600;color:#1a7f4b' }, [U.el('span', { text: '即將對 ' + ids.length + ' 筆套用：' })]));
+      c.changes.forEach(function (t) { preview.appendChild(U.el('div', { text: '· ' + t })); });
+      preview.appendChild(U.el('div', { class: 'empty-hint', style: 'margin-top:4px', text: '（無權限的筆數會自動略過並列出）' }));
+    }
+    [fOwner, fDept, fProg, fTarget, fNote].forEach(function (f) { f.use.addEventListener('change', refresh); f.el.addEventListener('input', refresh); f.el.addEventListener('change', refresh); });
+    refresh();
+
+    var apply = U.el('button', { class: 'btn btn-primary', text: '確認套用' });
+    apply.addEventListener('click', async function () {
+      var c = collect();
+      if (!c.changes.length) { UI.toast('請至少勾一個要改的欄位', 'error'); return; }
+      if (!window.confirm('對 ' + ids.length + ' 筆套用：\n' + c.changes.join('\n') + '\n\n確定？')) return;
+      apply.disabled = true; apply.textContent = '套用中…';
+      try {
+        var r = await fetch('/api/findings/bulk-overlay', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c.body) });
+        var j = await r.json();
+        if (!r.ok) { UI.toast(j.detail || '失敗', 'error'); apply.disabled = false; apply.textContent = '確認套用'; return; }
+        UI.toast('已套用 ' + j.applied + ' 筆' + (j.skipped.length ? ('，略過 ' + j.skipped.length + '（無權限）') : '') + (j.failed.length ? ('，失敗 ' + j.failed.length) : ''), j.failed.length ? 'error' : 'success');
+        UI.closeModal(); if (onDone) onDone();
+      } catch (e) { UI.toast('套用時發生錯誤', 'error'); apply.disabled = false; apply.textContent = '確認套用'; }
+    });
+    UI.openModal('批次改狀態', box, { footer: apply, stack: true, sticky: true });
+  }
+
+  // 批次上傳佐證：一份檔案掛已勾選的 N 筆（實體檔去重只存一份）。
+  function openBatchAttach(ids, onDone) {
+    var box = U.el('div');
+    box.appendChild(U.el('p', { class: 'empty-hint', text: '選一個檔案，掛到已勾選的 ' + ids.length + ' 筆弱點（只上傳一次、系統建 ' + ids.length + ' 筆關聯、硬碟只存一份）。' }));
+    var kindSel = U.el('select', { style: 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px' });
+    ATTACH_KINDS.forEach(function (k) { kindSel.appendChild(U.el('option', { value: k, text: k })); });
+    var fileInp = U.el('input', { type: 'file' });
+    box.appendChild(U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0' }, [
+      U.el('span', { text: '類型', style: 'font-weight:600' }), kindSel, fileInp]));
+    var apply = U.el('button', { class: 'btn btn-primary', text: '上傳並掛到 ' + ids.length + ' 筆' });
+    apply.addEventListener('click', async function () {
+      var f = fileInp.files && fileInp.files[0];
+      if (!f) { UI.toast('請先選檔案', 'error'); return; }
+      if (!window.confirm('把「' + f.name + '」掛到已勾選的 ' + ids.length + ' 筆？')) return;
+      apply.disabled = true; apply.textContent = '上傳中…';
+      try {
+        var buf = await f.arrayBuffer();
+        var url = '/api/attachments/bulk?ids=' + ids.join(',') + '&name=' + encodeURIComponent(f.name) + '&kind=' + encodeURIComponent(kindSel.value);
+        var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: buf });
+        var j = await r.json();
+        if (!r.ok) { UI.toast(j.detail || '上傳失敗', 'error'); apply.disabled = false; apply.textContent = '上傳並掛到 ' + ids.length + ' 筆'; return; }
+        UI.toast('已掛到 ' + j.applied + ' 筆' + (j.skipped.length ? ('，略過 ' + j.skipped.length + '（無權限）') : '') + (j.failed.length ? ('，失敗 ' + j.failed.length) : ''), j.failed.length ? 'error' : 'success');
+        UI.closeModal(); if (onDone) onDone();
+      } catch (e) { UI.toast('上傳時發生錯誤', 'error'); apply.disabled = false; apply.textContent = '上傳並掛到 ' + ids.length + ' 筆'; }
+    });
+    UI.openModal('批次上傳佐證', box, { footer: apply, stack: true, sticky: true });
   }
 
   // 既有部門/負責人清單(可搜尋下拉用)；開一次抓、之後快取
@@ -1317,26 +1395,52 @@
     try { users = await jget('/api/users'); }
     catch (e) { UI.toast('讀取失敗（需最高權限）', 'error'); return; }
     var box = U.el('div');
-    box.appendChild(U.el('p', { class: 'empty-hint', text: '指定部門窗口(dept_admin)與其負責部門；一般(user)只能管自己的。改完按該列「儲存」。' }));
-    if (!users.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '尚無帳號（AD 登入後會自動建立）。' })); UI.openModal('帳號與權限（Super Admin）', box, { sticky: true }); return; }
+    box.appendChild(U.el('p', { class: 'empty-hint', text: '指定部門窗口(dept_admin)與其負責部門；一般(user)只能管自己的。信箱供一鍵發送用，可手補。改完按該列「儲存」。' }));
+
+    // 收件人涵蓋率：從 AD 一次撈齊所有負責人信箱（很多負責人從沒登入、沒信箱）
+    var fetchOut = U.el('span', { style: 'margin-left:10px;font-size:13px' });
+    var fetchBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '從 AD 補負責人信箱' });
+    fetchBtn.addEventListener('click', function () {
+      var fb = U.el('div');
+      var li = U.el('input', { placeholder: '員編', style: 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:6px;width:100%;margin:4px 0' });
+      var pw = U.el('input', { type: 'password', placeholder: '密碼（只用於這次 AD 查詢，不儲存）', style: 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:6px;width:100%;margin:4px 0' });
+      fb.appendChild(U.el('p', { class: 'empty-hint', text: '用你的 AD 帳密綁定，依負責人顯示名向 AD 搜 mail，補進對應帳號。' }));
+      fb.appendChild(li); fb.appendChild(pw);
+      var go = U.el('button', { class: 'btn btn-primary', text: '開始補' });
+      go.addEventListener('click', async function () {
+        go.disabled = true; go.textContent = '查詢中…';
+        try {
+          var r = await fetch('/api/users/fetch-ad-mails', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ login: li.value, password: pw.value }) });
+          var j = await r.json();
+          if (!r.ok) { UI.toast(j.detail || '查詢失敗', 'error'); go.disabled = false; go.textContent = '開始補'; return; }
+          UI.toast('負責人 ' + j.names + '：查到 ' + j.found + '，更新 ' + j.updated + '、新建 ' + j.created, 'success');
+          UI.closeModal(); openUserAdmin();
+        } catch (e) { UI.toast('查詢失敗', 'error'); go.disabled = false; go.textContent = '開始補'; }
+      });
+      UI.openModal('從 AD 補負責人信箱', fb, { footer: go, stack: true, sticky: true });
+    });
+    box.appendChild(U.el('div', { style: 'margin:0 0 10px' }, [fetchBtn, fetchOut]));
+
+    if (!users.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '尚無帳號（AD 登入後會自動建立）。' })); UI.openModal('帳號與權限（Super Admin）', box, { sticky: true, wide: true }); return; }
     var table = U.el('table', { class: 'tracking-table' });
-    table.appendChild(U.el('thead', {}, [U.el('tr', {}, ['員編', '顯示名', '角色', '部門', '啟用', '操作'].map(function (h) { return U.el('th', { text: h }); }))]));
+    table.appendChild(U.el('thead', {}, [U.el('tr', {}, ['員編', '顯示名', '角色', '部門', '信箱', '啟用', '操作'].map(function (h) { return U.el('th', { text: h }); }))]));
     var tb = U.el('tbody');
     users.forEach(function (u) {
       var roleSel = U.el('select', {}, [['super_admin', 'Super Admin'], ['dept_admin', '部門窗口'], ['user', '一般']].map(function (o) { return U.el('option', { value: o[0], text: o[1] }); }));
       roleSel.value = u.role;
-      var deptInp = U.el('input', { type: 'text', value: u.department || '', style: 'padding:5px;border:1px solid #cdd5dd;border-radius:5px;width:140px' });
+      var deptInp = U.el('input', { type: 'text', value: u.department || '', style: 'padding:5px;border:1px solid #cdd5dd;border-radius:5px;width:120px' });
+      var mailInp = U.el('input', { type: 'text', value: u.email || '', placeholder: '（無）', style: 'padding:5px;border:1px solid #cdd5dd;border-radius:5px;width:180px' });
       var act = U.el('input', { type: 'checkbox' }); act.checked = u.is_active;
       var sv = U.el('button', { class: 'btn btn-sm btn-primary', text: '儲存' });
       sv.addEventListener('click', async function () {
-        var r = await fetch('/api/users/' + u.id + '/role', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: roleSel.value, department: deptInp.value, is_active: act.checked }) });
+        var r = await fetch('/api/users/' + u.id + '/role', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: roleSel.value, department: deptInp.value, email: mailInp.value, is_active: act.checked }) });
         UI.toast(r.ok ? '已更新 ' + u.username : '更新失敗', r.ok ? 'success' : 'error');
       });
       tb.appendChild(U.el('tr', {}, [U.el('td', { text: u.username }), U.el('td', { text: u.display_name || '' }),
-        U.el('td', {}, [roleSel]), U.el('td', {}, [deptInp]), U.el('td', {}, [act]), U.el('td', {}, [sv])]));
+        U.el('td', {}, [roleSel]), U.el('td', {}, [deptInp]), U.el('td', {}, [mailInp]), U.el('td', {}, [act]), U.el('td', {}, [sv])]));
     });
-    table.appendChild(tb); box.appendChild(table);
-    UI.openModal('帳號與權限（Super Admin）', box, { sticky: true });
+    table.appendChild(tb); box.appendChild(U.el('div', { class: 'table-scroll' }, [table]));
+    UI.openModal('帳號與權限（Super Admin）', box, { sticky: true, wide: true });
   }
 
   // ---- Email／SMTP 設定（Super Admin）：伺服器端寄信設定，存 DB、免重部署 ----
@@ -1373,9 +1477,11 @@
 
     var fg = section('寄件與內容');
     var fromDef = fld(fg, '系統預設寄件人（操作者本人無信箱時用）', U.el('input', { value: cfg.from_default || '', placeholder: 'noreply@公司' }), true);
-    var subj = fld(fg, '主旨前綴', U.el('input', { value: cfg.subject_prefix || '' }), true);
+    var subj = fld(fg, '主旨前綴', U.el('input', { value: cfg.subject_prefix || '' }));
+    var copyTo = fld(fg, '系統總備份信箱（每封密件備份一份，可核對有無寄出）', U.el('input', { value: cfg.copy_to || '', placeholder: '選填，建議填一個留底信箱' }));
+    var siteUrl = fld(fg, '系統網址（每週報告信裡放直達連結用）', U.el('input', { value: cfg.site_url || '', placeholder: '例 http://10.30.0.1:3100' }), true);
     var ccSelf = U.el('input', { type: 'checkbox' }); ccSelf.checked = !!cfg.cc_self;
-    var ccCell = U.el('div', { style: 'grid-column:1 / -1' }); ccCell.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:600' }, [ccSelf, U.el('span', { text: '每封副本給操作者本人' })])); fg.appendChild(ccCell);
+    var ccCell = U.el('div', { style: 'grid-column:1 / -1' }); ccCell.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:600' }, [ccSelf, U.el('span', { text: '每封副本給操作者本人（登入者才有信箱）' })])); fg.appendChild(ccCell);
 
     var rg = section('納入範圍');
     var incOver = U.el('input', { type: 'checkbox' }); incOver.checked = cfg.include_overdue !== false;
@@ -1388,6 +1494,7 @@
     function collect() {
       return { enabled: enabled.checked, smtp_host: host.value.trim(), smtp_port: parseInt(port.value, 10) || 25,
         use_tls: tls.checked, from_default: fromDef.value.trim(), subject_prefix: subj.value,
+        copy_to: copyTo.value.trim(), site_url: siteUrl.value.trim(),
         cc_self: ccSelf.checked, include_overdue: incOver.checked, include_soon: incSoon.checked,
         soon_days: parseInt(soon.value, 10) || 30, global_fallback: gfb.value.trim() };
     }
@@ -1445,10 +1552,25 @@
     }
 
     var checks = {};
+    var sampleBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '看範例信' });
+    sampleBtn.addEventListener('click', async function () {
+      var first = plan.filter(function (p) { return p.mode !== 'skip'; })[0] || plan[0];
+      try {
+        var s = await jget('/api/send-reminders/sample?' + qd({ owner: first.owner }));
+        if (!s.ok) { UI.toast(s.message || '無法產生範例', 'error'); return; }
+        var sb = U.el('div', {}, [
+          U.el('p', { class: 'empty-hint', text: '收件人：' + (s.to || '（查無，將轉窗口／略過）') + '　·　' + s.owner }),
+          U.el('div', { style: 'font-weight:700;margin:4px 0' }, [U.el('span', { text: s.subject })]),
+          U.el('pre', { style: 'white-space:pre-wrap;background:#f6f8f7;padding:10px;border-radius:6px;font-family:inherit;font-size:13px', text: s.body }),
+        ]);
+        UI.openModal('範例信（' + s.owner + '）', sb, { stack: true, sticky: true });
+      } catch (e) { UI.toast('讀取範例失敗', 'error'); }
+    });
     var tools = U.el('div', { class: 'batch-tools', style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' }, [
       U.el('span', { class: 'batch-tools-label', text: '勾選要寄的負責人（可寄 ' + sendable.length + '　轉窗口 ' + nFall + '　查無信箱 ' + nSkip + '）' }),
       U.el('button', { class: 'btn btn-secondary btn-sm', text: '全選', onclick: function () { Object.keys(checks).forEach(function (k) { checks[k].checked = true; }); } }),
       U.el('button', { class: 'btn btn-secondary btn-sm', text: '全不選', onclick: function () { Object.keys(checks).forEach(function (k) { checks[k].checked = false; }); } }),
+      sampleBtn,
     ]);
     box.appendChild(tools);
 
@@ -1504,6 +1626,99 @@
     UI.openModal('一鍵發送（催辦信）', box, { footer: sendBtn, sticky: true, wide: true });
   }
 
+  // ---- 我的操作紀錄（本人自查：何時申請/上傳/變更了什麼）----
+  async function openMyActivity() {
+    var data;
+    try { data = await jget('/api/my-activity'); }
+    catch (e) { UI.toast('讀取失敗', 'error'); return; }
+    var box = U.el('div');
+    box.appendChild(U.el('p', { class: 'empty-hint', text: '範圍：' + (data.scope || '本人') + '　·　最近 ' + (data.items || []).length + ' 筆（新到舊）。' }));
+    if (!data.items || !data.items.length) {
+      box.appendChild(U.el('p', { class: 'empty-hint', text: '尚無紀錄。' }));
+      UI.openModal('我的操作紀錄', box, { sticky: true, wide: true }); return;
+    }
+    var showUser = data.scope !== '本人';
+    var table = U.el('table', { class: 'tracking-table' });
+    var heads = ['時間'].concat(showUser ? ['員編'] : []).concat(['動作', '對象', '內容']);
+    table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
+    var tb = U.el('tbody');
+    data.items.forEach(function (a) {
+      var tds = [U.el('td', { text: (a.at || '').replace('T', ' '), style: 'white-space:nowrap' })];
+      if (showUser) tds.push(U.el('td', { text: a.username || '' }));
+      tds.push(U.el('td', { text: a.action_label || a.action }));
+      tds.push(U.el('td', { text: a.target || '', style: 'white-space:normal;text-align:left' }));
+      tds.push(U.el('td', { text: a.detail || '', style: 'white-space:normal;text-align:left;color:#667' }));
+      tb.appendChild(U.el('tr', {}, tds));
+    });
+    table.appendChild(tb); makeSortable(table);
+    box.appendChild(U.el('div', { class: 'table-scroll' }, [table]));
+    UI.openModal('我的操作紀錄', box, { sticky: true, wide: true });
+  }
+
+  // ---- 發信紀錄（Super Admin）：逐封寄送結果 ----
+  async function openMailLog() {
+    var rows;
+    try { rows = await jget('/api/mail-log'); }
+    catch (e) { UI.toast('讀取失敗（需最高權限）', 'error'); return; }
+    var box = U.el('div');
+    if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '尚無發信紀錄。' })); UI.openModal('發信紀錄', box, { sticky: true, wide: true }); return; }
+    var table = U.el('table', { class: 'tracking-table' });
+    var cols = [['sent_at', '時間'], ['sender', '操作者'], ['owner', '負責人'], ['to', '收件人'], ['mode', '方式'], ['status', '狀態'], ['count', '筆數'], ['error', '錯誤']];
+    table.appendChild(U.el('thead', {}, [U.el('tr', {}, cols.map(function (c) { return U.el('th', { text: c[1] }); }))]));
+    var tb = U.el('tbody');
+    var modeLabel = { send: '寄本人', fallback: '轉窗口', skip: '略過', weekly: '每週' };
+    rows.forEach(function (m) {
+      var tr = U.el('tr', { class: (m.status === 'failed' ? 'row-overdue' : '') });
+      cols.forEach(function (c) {
+        var v = m[c[0]];
+        if (c[0] === 'sent_at') v = (v || '').replace('T', ' ');
+        if (c[0] === 'mode') v = modeLabel[v] || v;
+        var td = U.el('td', { text: v == null ? '' : String(v) });
+        if (c[0] === 'error' || c[0] === 'to') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; }
+        tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+    table.appendChild(tb); makeSortable(table);
+    box.appendChild(U.el('div', { class: 'table-scroll' }, [table]));
+    UI.openModal('發信紀錄（' + rows.length + ' 筆）', box, { sticky: true, wide: true });
+  }
+
+  // ---- 系統設定（Super Admin）：session 時數、每週排程試跑 ----
+  async function openGeneralSettings() {
+    var cfg;
+    try { cfg = await jget('/api/general-settings'); }
+    catch (e) { UI.toast('讀取失敗（需最高權限）', 'error'); return; }
+    var box = U.el('div');
+    var FS = 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px;width:120px';
+    box.appendChild(U.el('div', { style: 'margin:8px 0 6px;font-weight:700;color:#1a7f4b' }, [U.el('span', { text: '登入有效時數' })]));
+    var ttl = U.el('input', { type: 'number', min: '1', max: '720', value: String(cfg.session_ttl_hours || 12) }); ttl.style.cssText = FS;
+    box.appendChild(U.el('div', { style: 'display:flex;gap:10px;align-items:center' }, [ttl, U.el('span', { class: 'empty-hint', style: 'margin:0', text: '小時（改完只影響「新登入」；1～720）' })]));
+    var save = U.el('button', { class: 'btn btn-primary btn-sm', text: '儲存', style: 'margin-top:8px' });
+    save.addEventListener('click', async function () {
+      var r = await fetch('/api/general-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_ttl_hours: parseInt(ttl.value, 10) || 12 }) });
+      UI.toast(r.ok ? '已儲存' : '儲存失敗', r.ok ? 'success' : 'error');
+    });
+    box.appendChild(save);
+
+    box.appendChild(U.el('div', { style: 'margin:18px 0 6px;font-weight:700;color:#1a7f4b;border-top:1px solid #eef2f5;padding-top:12px' }, [U.el('span', { text: '每週部門週報（排程）' })]));
+    box.appendChild(U.el('p', { class: 'empty-hint', text: '平時由伺服器 cron 每週一 08:00 自動寄給「有開啟」的部門窗口。可在此手動試跑一次。' }));
+    var runOut = U.el('span', { style: 'margin-left:10px;font-size:13px' });
+    var runBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '立即試跑一次' });
+    runBtn.addEventListener('click', async function () {
+      if (!window.confirm('立即寄一次每週週報給所有「有開啟」的部門窗口？')) return;
+      runOut.textContent = '寄送中…'; runOut.style.color = '#666';
+      try {
+        var r = await fetch('/api/send-weekly', { method: 'POST' });
+        var j = await r.json();
+        if (!r.ok) { runOut.textContent = '⚠️ ' + (j.detail || '失敗'); runOut.style.color = '#c0392b'; return; }
+        runOut.textContent = '✅ 寄出 ' + j.sent + '　略過 ' + j.skipped + '　失敗 ' + j.failed; runOut.style.color = '#1a7f4b';
+      } catch (e) { runOut.textContent = '試跑失敗'; runOut.style.color = '#c0392b'; }
+    });
+    box.appendChild(U.el('div', { style: 'display:flex;align-items:center' }, [runBtn, runOut]));
+    UI.openModal('系統設定（Super Admin）', box, { sticky: true });
+  }
+
   // ---- 其他功能（原右上角「其他功能」選單，移到左側成一項）：資料管理＋系統設定 ----
   function renderMoreInto(host) {
     if (!host) return;
@@ -1521,7 +1736,23 @@
     var box = U.el('div', { style: 'display:flex;flex-direction:column;gap:8px;max-width:480px' });
     btnRow(box, '使用說明', trigger('help-btn'));
     btnRow(box, '資安說明', trigger('security-btn'));
+    btnRow(box, '我的操作紀錄（查我申請／上傳／變更了什麼）', openMyActivity);
     host.appendChild(box);
+    // 部門窗口：自管「每週一自動收部門週報」開關
+    if (me.authenticated && me.role === 'dept_admin') {
+      host.appendChild(U.el('div', { class: 'panel-head', style: 'margin-top:18px' }, [U.el('h3', { text: '每週報告' })]));
+      var wbox = U.el('div', { style: 'max-width:480px' });
+      var wcb = U.el('input', { type: 'checkbox' }); wcb.checked = !!me.weekly_report;
+      wcb.addEventListener('change', async function () {
+        try {
+          var r = await fetch('/api/my-weekly', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: wcb.checked }) });
+          if (r.ok) { me.weekly_report = wcb.checked; UI.toast(wcb.checked ? '已開啟：每週一自動寄你部門週報' : '已關閉每週週報', 'success'); }
+          else { wcb.checked = !wcb.checked; UI.toast('設定失敗', 'error'); }
+        } catch (e) { wcb.checked = !wcb.checked; UI.toast('設定失敗', 'error'); }
+      });
+      wbox.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:600;cursor:pointer' }, [wcb, U.el('span', { text: '每週一早上自動把我部門的週報寄給我（方便向上報告）' })]));
+      host.appendChild(wbox);
+    }
     // 系統管理（只有 Super Admin 看得到）：資料管理＋系統設定＋權限
     if (isSuper()) {
       host.appendChild(U.el('div', { class: 'panel-head', style: 'margin-top:18px' }, [U.el('h3', { text: '系統管理（Super Admin）' })]));
@@ -1530,8 +1761,10 @@
       btnRow(sbox, '功能開關', trigger('features-btn'));
       btnRow(sbox, '清除暫存資料', trigger('clear-btn'));
       btnRow(sbox, 'Email／SMTP 設定', openEmailSettings);
+      btnRow(sbox, '發信紀錄（逐封寄送結果）', openMailLog);
+      btnRow(sbox, '系統設定（登入時數／每週排程試跑）', openGeneralSettings);
       btnRow(sbox, 'AD 登入設定（LDAP／員編／測試連線）', openAdSettings);
-      btnRow(sbox, '帳號與權限（指定部門窗口）', openUserAdmin);
+      btnRow(sbox, '帳號與權限（部門窗口／信箱／AD 補 mail）', openUserAdmin);
       host.appendChild(sbox);
     }
   }
@@ -1555,6 +1788,9 @@
     var printBtn = U.el('button', { class: 'btn btn-primary btn-sm', text: '列印 / 存 PDF' });
     printBtn.addEventListener('click', function () { printReport(s); });
     btnWrap.appendChild(printBtn);
+    var qBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '季度總覽（列印 / PDF）' });
+    qBtn.addEventListener('click', function () { printQuarter(s); });
+    btnWrap.appendChild(qBtn);
     // 一鍵發送：Super Admin 或 部門窗口(dept_admin) 可發；SMTP 設定本身仍只給 super
     if (isAdminRole()) {
       var sendBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '一鍵發送' });
@@ -1943,6 +2179,49 @@
     if (!w) { UI.toast('瀏覽器擋了新視窗，請允許彈出視窗後再試', 'error'); return; }
     w.document.open(); w.document.write(html); w.document.close();
     setTimeout(function () { try { w.focus(); w.print(); } catch (e) {} }, 300);
+  }
+
+  // 季度總覽（可列印／存 PDF）：本期概況 ＋ 近一季趨勢（每批未結/逾期）＋ 本期新結案。供季度報告直接用。
+  async function printQuarter(s) {
+    var scope = (s.department && s.department !== '全部') ? s.department : '全部門';
+    function esc(x) { return String(x == null ? '' : x).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+    var trend = [], close = null;
+    try { trend = await jget('/api/trend?' + qd({ limit: 13 })); } catch (e) {}
+    try { close = await jget('/api/close-stats?' + qd()); } catch (e) {}
+    var kv = function (k, v) { return '<span class="kv"><b>' + esc(v) + '</b> ' + esc(k) + '</span>'; };
+    var trendRows = (trend || []).map(function (t) {
+      return '<tr><td>' + esc(t.date || '') + '</td><td>' + esc(t.open) + '</td><td>' + esc(t.overdue) + '</td></tr>';
+    }).join('');
+    var closerRows = (close && close.by_closer || []).map(function (c) {
+      return '<tr><td>' + esc(c.name) + '</td><td>' + esc(c.closed) + '</td></tr>';
+    }).join('');
+    var html = '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">'
+      + '<title>季度總覽_' + esc(scope) + '_' + esc(s.today) + '</title><style>'
+      + 'body{font-family:"Microsoft JhengHei","PingFang TC",sans-serif;color:#1a1a1a;margin:28px;font-size:13px}'
+      + 'h1{font-size:20px;margin:0 0 4px}h3{margin:18px 0 6px;border-left:4px solid #1a7f4b;padding-left:8px}'
+      + '.muted{color:#777}.sub{color:#555;margin:0 0 12px}'
+      + '.kv{display:inline-block;margin:0 16px 6px 0}.kv b{font-size:16px;color:#1a7f4b}'
+      + '.block{background:#f6f8f7;border:1px solid #e3e6ea;border-radius:8px;padding:10px 12px;margin:8px 0}'
+      + 'table{border-collapse:collapse;width:100%;margin:4px 0 10px}'
+      + 'th,td{border:1px solid #d6dbdf;padding:4px 7px;text-align:left}th{background:#eef3f0}@media print{button{display:none}}'
+      + '</style></head><body>'
+      + '<h1>弱點修補 季度總覽</h1>'
+      + '<p class="sub">範圍：' + esc(scope) + '　|　基準日：' + esc(s.today) + '</p>'
+      + '<div class="block"><b>本期概況（未結案）</b><br>'
+      + kv('未結案', s.unresolved) + kv('逾期', s.overdue) + kv('如期', s.on_track)
+      + kv('高風險', s.high_risk) + kv('高風險且逾期', s.high_risk_overdue) + '</div>'
+      + '<div class="block"><b>申請進度</b><br>'
+      + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已申請處置中', s.applied_count) + '</div>'
+      + '<h3>近一季未結趨勢（每次匯入）</h3>'
+      + (trendRows ? ('<table><thead><tr><th>日期</th><th>未結</th><th>其中逾期</th></tr></thead><tbody>' + trendRows + '</tbody></table>') : '<p class="muted">尚無足夠歷史。</p>')
+      + '<h3>本期新結案' + (close ? '（' + esc(close.new_closed) + '）' : '') + '</h3>'
+      + (closerRows ? ('<table><thead><tr><th>結案人</th><th>結案數</th></tr></thead><tbody>' + closerRows + '</tbody></table>') : '<p class="muted">本期無新結案或尚無上一批可比。</p>')
+      + '<p class="muted" style="margin-top:16px">結論以資安 Excel 為準。</p>'
+      + '</body></html>';
+    var w = window.open('', '_blank');
+    if (!w) { UI.toast('瀏覽器擋了新視窗，請允許彈出視窗後再試', 'error'); return; }
+    w.document.open(); w.document.write(html); w.document.close();
+    setTimeout(function () { try { w.focus(); w.print(); } catch (e) {} }, 400);
   }
 
   // ===== 左側第二大項「承辦管線」（與「總覽」並列，綠色），底下放全部新功能 =====

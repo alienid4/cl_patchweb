@@ -122,6 +122,45 @@ def test_connection(cfg: dict, login: str, password: str) -> dict:
     return {"ok": True, "message": msg, "name": attrs.get("name"), "department": attrs.get("department")}
 
 
+def fetch_mails_by_names(cfg: dict, login: str, password: str, names: list) -> dict:
+    """用給定帳密綁定 AD，依『顯示名』逐一搜 mail。回 {name: mail}（只含查到的）。
+
+    供「收件人涵蓋率」批次補 email：很多負責人從沒登入過系統、沒信箱，
+    由 Super Admin 一次用自己的帳密對 AD 撈齊。回 {ok, found:{...}, error}。
+    """
+    ok, conn, err = _bind(cfg, login, password)
+    if not ok:
+        return {"ok": False, "found": {}, "error": err or "綁定失敗"}
+    base = cfg.get("base_dn") or ""
+    name_attr = cfg.get("name_attr") or "displayName"
+    mail_attr = cfg.get("mail_attr") or "mail"
+    found: dict[str, str] = {}
+    try:
+        if not base:
+            return {"ok": False, "found": {}, "error": "未設定 base_dn，無法搜尋"}
+        seen = set()
+        for raw in names:
+            nm = (raw or "").strip()
+            if not nm or nm in seen:
+                continue
+            seen.add(nm)
+            try:
+                esc = nm.replace("\\", "\\5c").replace("(", "\\28").replace(")", "\\29").replace("*", "\\2a")
+                conn.search(base, f"({name_attr}={esc})", attributes=[mail_attr])
+                if conn.entries:
+                    e = conn.entries[0]
+                    if mail_attr in e and e[mail_attr].value:
+                        found[nm] = str(e[mail_attr].value)
+            except Exception:  # noqa: BLE001 - 單筆查詢失敗略過
+                continue
+    finally:
+        try:
+            conn.unbind()
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": True, "found": found, "error": None}
+
+
 def authenticate_ad(session: Session, cfg: dict, login: str, password: str) -> Optional[User]:
     """AD 綁定成功 → get-or-create 本地 User（username＝員編）。角色：員編在 super_admins 清單→super_admin，否則 user。"""
     ok, conn, _err = _bind(cfg, login, password)

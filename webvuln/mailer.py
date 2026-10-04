@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from . import config, query
 from .logic import CLOSE_OPEN, overdue_days
-from .models import Finding, User
+from .models import Finding, MailLog, User
 
 
 # ── 收件人解析 ──
@@ -192,10 +192,22 @@ def send_plan(db: Session, cfg: dict, sender, selected_owners: Optional[list] = 
     cc_base = []
     if cfg.get("cc_self") and from_addr:
         cc_base = [from_addr]
+    bcc = (cfg.get("copy_to") or "").strip()   # 系統總備份信箱：每封密件備份一份
 
+    sender_name = getattr(sender, "username", None) or "(未登入)"
     summary = {"sent": 0, "fallback": 0, "skipped": 0, "failed": 0, "details": []}
     port = int(cfg.get("smtp_port") or 25)
     srv = None
+
+    def _log(owner, to, cc, mode, status, count, error=""):
+        try:
+            db.add(MailLog(sender=sender_name, owner=owner, to=to or "",
+                           cc=", ".join(cc) if cc else "", mode=mode, status=status,
+                           count=count, error=error or None))
+            db.commit()
+        except Exception:  # noqa: BLE001 - 紀錄失敗不影響寄信結果
+            db.rollback()
+
     try:
         srv = smtplib.SMTP(host, port, timeout=20)
         if cfg.get("use_tls"):
@@ -206,22 +218,152 @@ def send_plan(db: Session, cfg: dict, sender, selected_owners: Optional[list] = 
                 summary["skipped"] += 1
                 summary["details"].append({"owner": owner, "mode": "skip", "to": "",
                                            "error": p.get("reason") or "查無信箱"})
+                _log(owner, "", [], "skip", "skip", p["count"], p.get("reason") or "查無信箱")
                 continue
             cc = [c for c in cc_base if c and c != to]
             note = p.get("reason") if mode == "fallback" else ""
             subject = _subject(cfg, owner, p["count"], today)
             body = _body(owner, p["items"], today, note)
-            recipients = [to] + cc
+            envelope = [to] + cc + ([bcc] if bcc and bcc not in ([to] + cc) else [])
             try:
                 msg = _build_message(from_addr, to, cc, subject, body)
-                srv.sendmail(from_addr, recipients, msg.as_string())
+                srv.sendmail(from_addr, envelope, msg.as_string())
                 summary["sent" if mode == "send" else "fallback"] += 1
                 summary["details"].append({"owner": owner, "mode": mode, "to": to,
                                            "cc": ", ".join(cc), "error": ""})
+                _log(owner, to, cc, mode, "ok", p["count"])
             except Exception as e:  # noqa: BLE001 - 單封失敗不中斷整批
                 summary["failed"] += 1
                 summary["details"].append({"owner": owner, "mode": mode, "to": to,
                                            "error": str(e)[:200]})
+                _log(owner, to, cc, mode, "failed", p["count"], str(e)[:200])
+    except (smtplib.SMTPException, OSError) as e:
+        raise ValueError("連不到 SMTP 主機：%s" % (str(e)[:200]))
+    finally:
+        if srv is not None:
+            try:
+                srv.quit()
+            except Exception:  # noqa: BLE001
+                pass
+    return summary
+
+
+def build_sample(db: Session, cfg: dict, owner: Optional[str] = None,
+                 department: Optional[str] = None, today: Optional[dt.date] = None) -> dict:
+    """產一封範例信（寄前預覽內容用）。owner 給值取該人；否則取計畫中第一位。"""
+    today = today or dt.date.today()
+    plan = build_plan(db, cfg, department=department, today=today)
+    if not plan:
+        return {"ok": False, "message": "目前無待催辦項目"}
+    p = next((x for x in plan if x["owner"] == owner), None) if owner else plan[0]
+    if p is None:
+        p = plan[0]
+    note = p.get("reason") if p["mode"] == "fallback" else ""
+    return {
+        "ok": True, "owner": p["owner"], "to": p["to"], "mode": p["mode"],
+        "subject": _subject(cfg, p["owner"], p["count"], today),
+        "body": _body(p["owner"], p["items"], today, note),
+    }
+
+
+# ── #8 每週部門週報（排程寄給有開啟的部門窗口 dept_admin）──
+def _weekly_body(rep: dict, dept: str, site_url: str) -> str:
+    ch = rep.get("change") or {}
+    tg = rep.get("target") or {}
+    lines = [
+        "%s 部門弱點週報（%s）" % (dept, rep.get("today", "")),
+        "",
+        "未結案：%d　逾期：%d　高風險且逾期：%d" % (
+            rep.get("unresolved", 0), rep.get("overdue", 0), rep.get("high_risk_overdue", 0)),
+        "應申請未申請：%d　已申請處置中：%d" % (
+            rep.get("need_apply_count", 0), rep.get("applied_count", 0)),
+        "預計完成未回報：%d　已逾自訂完成日：%d" % (
+            tg.get("no_target", 0), tg.get("target_overdue", 0)),
+    ]
+    if ch.get("has_prev"):
+        lines.append("本週變化：新增 %d、解決 %d（淨 %+d）" % (
+            ch.get("new", 0), ch.get("resolved", 0), ch.get("delta", 0)))
+    lines += ["", "最需要處理（落後清單前幾筆）："]
+    for d in (rep.get("overdue_list") or [])[:8]:
+        lines.append("· %s｜%s｜%s｜逾期 %s 天" % (
+            d.get("owner") or "", d.get("host") or "", d.get("severity") or "",
+            d.get("overdue_days")))
+    if not (rep.get("overdue_list")):
+        lines.append("（目前無逾期項目）")
+    if site_url:
+        lines += ["", "完整週報（可列印／存 PDF）：%s" % site_url.rstrip("/")]
+    lines += ["", "（本信由弱點彙總系統每週一自動發送；如不需要可於系統內關閉）"]
+    return "\n".join(lines)
+
+
+def send_weekly(db: Session, cfg: dict, today: Optional[dt.date] = None,
+                only_usernames: Optional[list] = None) -> dict:
+    """排程寄部門週報給『有開啟 weekly_report 且有信箱』的部門窗口。
+
+    自動寄送無操作者 → 寄件人用 from_default。only_usernames 給值＝只寄這些人（測試用）。
+    回摘要 {sent, skipped, failed, details[]}。設定未啟用/未設 SMTP/無 from_default → ValueError。
+    """
+    if not cfg.get("enabled"):
+        raise ValueError("尚未啟用寄信（Email／SMTP 設定）")
+    host = (cfg.get("smtp_host") or "").strip()
+    if not host:
+        raise ValueError("尚未設定 SMTP 主機")
+    from_addr = (cfg.get("from_default") or "").strip()
+    if not from_addr:
+        raise ValueError("每週排程為自動寄送，需先設定『系統預設寄件人 from_default』")
+
+    today = today or dt.date.today()
+    site_url = (cfg.get("site_url") or "").strip()
+    bcc = (cfg.get("copy_to") or "").strip()
+    prefix = cfg.get("subject_prefix") or ""
+
+    admins = db.execute(
+        select(User).where(User.weekly_report.is_(True), User.is_active.is_(True))
+    ).scalars().all()
+    if only_usernames is not None:
+        want = set(only_usernames)
+        admins = [u for u in admins if u.username in want]
+
+    summary = {"sent": 0, "skipped": 0, "failed": 0, "details": []}
+    port = int(cfg.get("smtp_port") or 25)
+    srv = None
+
+    def _log(owner, to, mode, status, error=""):
+        try:
+            db.add(MailLog(sender="(每週排程)", owner=owner, to=to or "", cc="",
+                           mode=mode, status=status, count=0, error=error or None))
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+
+    try:
+        srv = smtplib.SMTP(host, port, timeout=20)
+        if cfg.get("use_tls"):
+            srv.starttls()
+        for u in admins:
+            email = (u.email or "").strip()
+            dept = (u.department or "").strip()
+            label = u.display_name or u.username
+            if not email or not dept:
+                summary["skipped"] += 1
+                summary["details"].append({"owner": label, "to": email,
+                                           "error": "無信箱" if not email else "未設部門"})
+                _log(label, email, "weekly", "skip", "無信箱" if not email else "未設部門")
+                continue
+            try:
+                rep = query.weekly_report(db, department=dept, today=today)
+                subject = "%s%s 部門週報（%s）" % (prefix, dept, today.isoformat())
+                body = _weekly_body(rep, dept, site_url)
+                envelope = [email] + ([bcc] if bcc and bcc != email else [])
+                msg = _build_message(from_addr, email, [], subject, body)
+                srv.sendmail(from_addr, envelope, msg.as_string())
+                summary["sent"] += 1
+                summary["details"].append({"owner": label, "to": email, "dept": dept, "error": ""})
+                _log(label, email, "weekly", "ok")
+            except Exception as e:  # noqa: BLE001
+                summary["failed"] += 1
+                summary["details"].append({"owner": label, "to": email, "error": str(e)[:200]})
+                _log(label, email, "weekly", "failed", str(e)[:200])
     except (smtplib.SMTPException, OSError) as e:
         raise ValueError("連不到 SMTP 主機：%s" % (str(e)[:200]))
     finally:
