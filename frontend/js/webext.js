@@ -244,8 +244,7 @@
     curRows = rows;
     var self = function () { openFindings(title, params); };
     var nPlugin = (function () { var s = {}; rows.forEach(function (r) { s[(r.plugin_id || '') + '|' + (r.name || '')] = 1; }); return Object.keys(s).length; })();
-    box.appendChild(U.el('p', { class: 'empty-hint', text: '共 ' + rows.length + ' 筆、' + nPlugin + ' 種弱點'
-      + (canWrite() ? '；點 ✏️ 編輯（存系統、重匯不洗）' : '') + '。修補以「弱點」為單位（同弱點常一次補完多台）。' }));
+    box.appendChild(U.el('p', { class: 'empty-hint', text: '共 ' + rows.length + ' 筆、' + nPlugin + ' 種弱點（修補以弱點為單位）。' }));
     // 切換：依負責人(預設，追人) / 依弱點彙總 / 依主機明細
     var tgl = U.el('nav', { class: 'subtabs', style: 'margin:4px 0 10px' });
     var bO = U.el('button', { class: 'subtab-btn active', text: '依負責人' });
@@ -665,7 +664,7 @@
     catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
     var d = s.due_buckets || {};
     var basis = _dueLeadOn ? '行動期限（到期日 − ' + DUE_LEAD_DAYS + ' 天申請緩衝）' : '實際到期日';
-    host.appendChild(U.el('p', { class: 'empty-hint', text: '依「' + basis + '」倒數分桶（未結案）。「已逾期」在含提前量時＝已過行動期限（再不動手，申請跑完就來不及）。無到期日的不在此（見待辦清單）。' }));
+    host.appendChild(U.el('p', { class: 'empty-hint', text: '依「' + basis + '」倒數分桶（未結案）；無到期日者不列。' }));
     host.appendChild(leadToggle(function () { renderDueSoonInto(host); }));
     var pm = function (extra) { var p = Object.assign({}, extra); if (lead) p.lead = lead; return p; };
     // 長條圖：各到期桶數量一眼看出近期壓力（紅＝已逾期），點長條下鑽該桶明細。
@@ -677,10 +676,10 @@
     }));
     renderTabs(host, [
       { label: '已逾期（' + (d.overdue || 0) + '）', render: function (c) { renderActionListInto(c, _dueLeadOn ? '已過行動期限' : '已逾期', pm({ due_max: '-1' })); } },
-      { label: '30天內（' + (d.d30 || 0) + '）', render: function (c) { renderActionListInto(c, '30 天內' + (_dueLeadOn ? '要動手' : '到期'), pm({ due_min: '0', due_max: '30' })); } },
+      { label: '30天內（' + (d.d30 || 0) + '）', render: function (c) { renderActionListInto(c, '30 天內', pm({ due_min: '0', due_max: '30' })); } },
       { label: '31–60天（' + (d.d31_60 || 0) + '）', render: function (c) { renderActionListInto(c, '31–60 天', pm({ due_min: '31', due_max: '60' })); } },
       { label: '61–90天（' + (d.d61_90 || 0) + '）', render: function (c) { renderActionListInto(c, '61–90 天', pm({ due_min: '61', due_max: '90' })); } },
-      { label: '90天以上（' + (d.d90plus || 0) + '）', render: function (c) { renderActionListInto(c, '90 天以上（較安全）', pm({ due_min: '91' })); } },
+      { label: '90天以上（' + (d.d90plus || 0) + '）', render: function (c) { renderActionListInto(c, '90 天以上', pm({ due_min: '91' })); } },
     ], 'duesoon');
   }
 
@@ -919,7 +918,7 @@
   async function renderOwnerInto(host) {
     if (!host) return;
     host.innerHTML = ''; host.classList.remove('webext-rpt');
-    host.appendChild(U.el('p', { class: 'empty-hint', text: '每位負責人「近期到期」還有幾隻（明年才到期的＝還沒到期，預設不看）。切到期範圍看各負責人怎麼變化；各範圍含已逾期。處置階段相加＝該範圍未結；等複掃/逾期為疊加。點負責人看他的全部。' }));
+    host.appendChild(U.el('p', { class: 'empty-hint', text: '各負責人於所選到期範圍內的未結數（含逾期）。點負責人查看明細。' }));
     // 到期範圍：統一用膠囊頁籤(同「到期倒數」)，預設聚焦近期 90 天
     var curRange = '90';
     host.appendChild(U.el('div', {}, [U.el('label', { text: '到期範圍　', style: 'font-size:14px' }),
@@ -1007,7 +1006,7 @@
       var terms = (search.value || '').toLowerCase().split(/\s+/).filter(function (t) { return t; });
       shown = terms.length ? rows.filter(function (r) { return matchRow(r, terms); }) : rows;
       if (!shown.length) {
-        box.appendChild(U.el('p', { class: 'empty-hint', text: terms.length ? '找不到符合「' + search.value.trim() + '」的項目。' : '目前無項目 👍' }));
+        box.appendChild(U.el('p', { class: 'empty-hint', text: terms.length ? '查無符合「' + search.value.trim() + '」的項目。' : '目前無項目。' }));
         return;
       }
       // 以負責人分組(主角度)：先列每位負責人幾隻，點名字展開明細
@@ -1058,10 +1057,10 @@
     function overviewTab(c0) {
       c0.appendChild(group('結案統計（快照比對）', [
         card(s.new_closed, '本期新結案'),
-        card(s.source_confirmed, '來源(Excel)確認'),
-        card(s.claimed_unconfirmed, '承辦聲稱未確認(可疑)', true),
+        card(s.source_confirmed, '來源（Excel）確認'),
+        card(s.claimed_unconfirmed, '聲稱完成·來源未確認', true),
       ]));
-      c0.appendChild(U.el('p', { class: 'empty-hint', text: '「本期新結案」＝上期未結、這期變已結（快照比對）；「承辦聲稱未確認」＝承辦標完成但來源仍未結，可能自行浮報。' }));
+      c0.appendChild(U.el('p', { class: 'empty-hint', text: '本期新結案＝上期未結、本期已結（快照比對）；聲稱完成·來源未確認＝已標記完成但來源仍未結案，需查核。' }));
     }
     function byCloserTab(c0) {
       if (!(s.by_closer && s.by_closer.length)) { c0.appendChild(U.el('p', { class: 'empty-hint', text: '本期無新結案。' })); return; }
@@ -1093,7 +1092,7 @@
     // 大橫幅：全綠或有問題
     var banner = U.el('div', { style: 'padding:12px 16px;border-radius:8px;font-size:16px;font-weight:700;margin:4px 0 12px;'
       + (s.all_ok ? 'background:#e8f5e9;color:#1a7f4b;border:1px solid #1a7f4b' : 'background:#fdecea;color:#c0392b;border:1px solid #c0392b') },
-      [U.el('span', { text: s.all_ok ? '✅ 全部對帳一致——畫面數字彼此兜得起來，可放心。' : '⚠️ 發現不一致，請看下方紅色項目。' })]);
+      [U.el('span', { text: s.all_ok ? '✅ 對帳一致：各項數字相符。' : '⚠️ 發現不一致，詳見下方紅色項目。' })]);
     host.appendChild(banner);
     // 來源
     host.appendChild(U.el('p', { class: 'empty-hint', text:
@@ -1116,7 +1115,7 @@
     });
     table.appendChild(tb); host.appendChild(table);
     host.appendChild(U.el('p', { class: 'empty-hint', text:
-      '怎麼核到原始 Excel：① 每個統計數字都能點進去看清單、每列按 🔍 看原始整列；② 用各清單的「完整匯出 (CSV)」拉出來，跟資安那份 Excel 逐列比對。「匯入列數」應等於來源 Excel 的資料列數。' }));
+      '核對方式：點數字展開清單、每列「🔍」查看原始整列；或以「完整匯出 (CSV)」與來源 Excel 逐列比對（匯入列數應等於來源資料列數）。' }));
 
     // 資料缺口（原在「待辦清單」，移來這裡集中「查」）：無人負責／無到期日，點數字看清單
     if (sum) {
@@ -1195,7 +1194,7 @@
     host.appendChild(headRow);
 
     var fresh = (s.freshness.days_ago == null) ? '尚無匯入' : ('資料距今 ' + s.freshness.days_ago + ' 天');
-    host.appendChild(U.el('p', { class: 'empty-hint', text: '產生時間 ' + (s.generated_at || '').replace('T', ' ') + '　·　' + fresh + '（彙總自系統內「預計完成日／追蹤備註」與備註申請紀錄）' }));
+    host.appendChild(U.el('p', { class: 'empty-hint', text: '產生時間 ' + (s.generated_at || '').replace('T', ' ') + '　·　' + fresh }));
 
     // 選了特定部門 → 清單裡每列部門都一樣,「部門」欄多餘,隱藏(全部門時才顯示,用來分辨)
     var showDept = !(s.department && s.department !== '全部');
@@ -1227,7 +1226,7 @@
     // Excel 式頁籤：總覽(KPI 三表) / 處置落點 / 應申請未申請 / 落後，一次一張、不用長捲
     renderTabs(host, [
       { label: '總覽', render: function (c) {
-          var notApply = Math.max(s.unresolved - s.apply_universe, 0);   // 還不急：未結但還沒到該申請的時機
+          var notApply = Math.max(s.unresolved - s.apply_universe, 0);   // 暫無需申請：未結、尚未達申請時機
           var pg = s.progress || {};
           // ① 一句白話總結（粗體數字，重點可點下鑽）
           function hot(v, danger, drill) {
@@ -1236,33 +1235,33 @@
             return e;
           }
           var sp = U.el('div', { class: 'wx-summary' });
-          [U.el('span', { text: scope + '還有 ' }), hot(s.unresolved, false, function () { openFindings('未結案', {}); }),
-           U.el('span', { text: ' 支未結：' }), hot(s.overdue, true, function () { openFindings('已逾期', { band: '已逾期' }); }),
-           U.el('span', { text: ' 已逾期、' }), hot(s.high_risk, true, function () { openFindings('高風險（Critical/High）', { risk: 'high' }); }),
-           U.el('span', { text: ' 高風險（其中 ' }), hot(s.high_risk_overdue, true, function () { openFindings('高風險且逾期', { risk: 'high', band: '已逾期' }); }),
-           U.el('span', { text: ' 又逾期，最急）。需要申請展延／例外的 ' }), hot(s.apply_universe, false, function () { openFindings('需申請母體', { apply_universe: 'true' }); }),
-           U.el('span', { text: ' 支，其中 ' }), hot(s.need_apply_count, true, function () { openFindings('應申請未申請', { should_apply: 'true' }); }),
-           U.el('span', { text: ' 支還沒去申請（要催）、' }), hot(s.target.no_target, true, function () { openFindings('未報預計完成日', { no_target: 'true' }); }),
-           U.el('span', { text: ' 支還沒回報預計完成日。' })].forEach(function (n) { sp.appendChild(n); });
+          [U.el('span', { text: scope + '未結 ' }), hot(s.unresolved, false, function () { openFindings('未結案', {}); }),
+           U.el('span', { text: ' 筆：逾期 ' }), hot(s.overdue, true, function () { openFindings('已逾期', { band: '已逾期' }); }),
+           U.el('span', { text: '、高風險 ' }), hot(s.high_risk, true, function () { openFindings('高風險（Critical/High）', { risk: 'high' }); }),
+           U.el('span', { text: '（其中逾期 ' }), hot(s.high_risk_overdue, true, function () { openFindings('高風險且逾期', { risk: 'high', band: '已逾期' }); }),
+           U.el('span', { text: '）。需申請展延／例外 ' }), hot(s.apply_universe, false, function () { openFindings('需申請母體', { apply_universe: 'true' }); }),
+           U.el('span', { text: ' 筆，其中未申請 ' }), hot(s.need_apply_count, true, function () { openFindings('應申請未申請', { should_apply: 'true' }); }),
+           U.el('span', { text: '、未回報預計完成日 ' }), hot(s.target.no_target, true, function () { openFindings('未回報預計完成日', { no_target: 'true' }); }),
+           U.el('span', { text: ' 筆。' })].forEach(function (n) { sp.appendChild(n); });
           c.appendChild(sp);
 
-          // ② 分解條：把母體關係用「看」的講清楚（避免被誤加）
-          stackedBar(c, '未結 ' + s.unresolved + '　＝　要申請 ＋ 還不急', s.unresolved, [
-            { label: '要申請', value: s.apply_universe, color: '#1a7f4b', onClick: function () { openFindings('需申請母體', { apply_universe: 'true' }); } },
-            { label: '還不急（到期還遠，直接修即可）', value: notApply, color: '#b0bec5', onClick: function () { openFindings('還不急（未到申請時機）', { not_apply: 'true' }); } },
+          // ② 分解條：母體＝子項相加，以視覺呈現避免誤加
+          stackedBar(c, '未結 ' + s.unresolved + '　＝　需申請 ＋ 暫無需申請', s.unresolved, [
+            { label: '需申請', value: s.apply_universe, color: '#1a7f4b', onClick: function () { openFindings('需申請母體', { apply_universe: 'true' }); } },
+            { label: '暫無需申請', value: notApply, color: '#b0bec5', onClick: function () { openFindings('暫無需申請（期限內）', { not_apply: 'true' }); } },
           ]);
-          stackedBar(c, '其中「要申請」' + s.apply_universe + '　＝　未申請 ＋ 已申請', s.apply_universe, [
-            { label: '應申請未申請（要催）', value: s.need_apply_count, color: '#c0392b', onClick: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
+          stackedBar(c, '需申請 ' + s.apply_universe + '　＝　未申請 ＋ 已申請', s.apply_universe, [
+            { label: '應申請未申請', value: s.need_apply_count, color: '#c0392b', onClick: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
             { label: '已申請處置中', value: s.applied_count, color: '#1a7f4b', onClick: function () { openFindings('已申請處置中', { applied: 'true' }); } },
           ]);
 
-          // ③ 只留「要催的」關鍵數字（紅），一排對齊
-          kpiCards(c, '要催的（最該盯）', [
-            { label: '已逾期', value: s.overdue, danger: true, drill: function () { openFindings('落後（已逾期）', { band: '已逾期' }); } },
+          // ③ 須優先處理的關鍵數字
+          kpiCards(c, '須優先處理', [
+            { label: '已逾期', value: s.overdue, danger: true, drill: function () { openFindings('已逾期', { band: '已逾期' }); } },
             { label: '高風險且逾期', value: s.high_risk_overdue, danger: true, drill: function () { openFindings('高風險且逾期', { risk: 'high', band: '已逾期' }); } },
             { label: '應申請未申請', value: s.need_apply_count, danger: true, drill: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
-            { label: '未報預計完成日', value: s.target.no_target, danger: true, drill: function () { openFindings('未報預計完成日', { no_target: 'true' }); } },
-            { label: '需追查 ⚠️', value: pg.flagged || 0, danger: true, drill: function () { openFindings('需追查（說要申請/做完卻未反映）', { flagged: 'true' }); } },
+            { label: '未回報預計完成日', value: s.target.no_target, danger: true, drill: function () { openFindings('未回報預計完成日', { no_target: 'true' }); } },
+            { label: '待追查', value: pg.flagged || 0, danger: true, drill: function () { openFindings('待追查（聲稱申請或完成，來源未反映）', { flagged: 'true' }); } },
           ]);
 
           // ④ 視覺：嚴重度圓餅 + 到期倒數長條（皆可點下鑽）
@@ -1292,11 +1291,11 @@
             ], '未結趨勢（每次匯入）');
           }).catch(function () { });
           if (s.change && s.change.has_prev) {
-            c.appendChild(U.el('p', { class: 'empty-hint', text: '本週（本批 vs 上批）：新增 ' + s.change.new + '、解決 ' + s.change.resolved + '，淨變化 ' + (s.change.delta > 0 ? '+' : '') + s.change.delta + '。' }));
+            c.appendChild(U.el('p', { class: 'empty-hint', text: '本期變化（本批 vs 上批）：新增 ' + s.change.new + '、解決 ' + s.change.resolved + '，淨變化 ' + (s.change.delta > 0 ? '+' : '') + s.change.delta + '。' }));
           }
 
           // ⑥ 處理進度（管理人標註，次要資訊）
-          kpiCards(c, '處理進度（管理人標註；結論仍以資安 Excel 為主）', [
+          kpiCards(c, '處理進度（管理人標註；結論以資安 Excel 為準）', [
             { label: '要申請展延', value: pg.apply_ext || 0, drill: function () { openFindings('要申請展延', { progress: '要申請展延' }); } },
             { label: '要申請例外', value: pg.apply_exc || 0, drill: function () { openFindings('要申請例外', { progress: '要申請例外' }); } },
             { label: '處理中', value: pg.wip || 0, drill: function () { openFindings('處理中', { progress: '處理中' }); } },
@@ -1307,16 +1306,16 @@
       { label: '到期倒數', render: function (c) { renderDueSoonInto(c); } },    // 併入：14/30/60/90 分桶(含 14 天申請行動線)
       { label: '處置落點', render: function (c) { renderStageLanding(c, s); } },
       { label: '應申請未申請（' + s.need_apply_list.length + '）', render: function (c) {
-          listTab(c, '應申請未申請清單（主管要催承辦去提例外／展延）', s.need_apply_list);
+          listTab(c, '應申請未申請清單', s.need_apply_list);
       } },
       { label: '要申請·送審中（' + (s.apply_intent_list || []).length + '）', render: function (c) {
-          listTab(c, '要申請·送審中（管理人標了要申請、Excel 尚未反映）', s.apply_intent_list || []);
+          listTab(c, '要申請·送審中（已標註申請，來源尚未反映）', s.apply_intent_list || []);
       } },
-      { label: '需追查⚠️（' + (s.flagged_list || []).length + '）', render: function (c) {
-          listTab(c, '需追查（說要申請/做完卻未反映：待查或可疑）', s.flagged_list || []);
+      { label: '待追查（' + (s.flagged_list || []).length + '）', render: function (c) {
+          listTab(c, '待追查清單（聲稱申請或完成，來源未反映）', s.flagged_list || []);
       } },
-      { label: '落後（' + s.overdue_list.length + '）', render: function (c) {
-          listTab(c, '落後清單（已逾真正到期日）', s.overdue_list);
+      { label: '逾期（' + s.overdue_list.length + '）', render: function (c) {
+          listTab(c, '逾期清單（已逾到期日）', s.overdue_list);
       } },
     ], 'report');
   }
@@ -1552,22 +1551,22 @@
           + kv('淨變化', (s.change.delta > 0 ? '+' : '') + s.change.delta)
           + kv('本週新增', s.change.new) + kv('本週解決', s.change.resolved) + '</div>') : '')
       + '<div class="block"><b>本期概況（未結案）</b><br>'
-      + kv('未結案', s.unresolved) + kv('落後(逾期)', s.overdue) + kv('如期', s.on_track)
+      + kv('未結案', s.unresolved) + kv('逾期', s.overdue) + kv('如期', s.on_track)
       + kv('高風險', s.high_risk) + kv('高風險且逾期', s.high_risk_overdue) + '</div>'
       + '<div class="block"><b>申請進度</b><br>'
       + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已申請處置中', s.applied_count) + '</div>'
       + '<div class="block"><b>預計完成彙總</b><br>'
-      + kv('已回報預計日', s.target.with_target) + kv('未回報(要催)', s.target.no_target)
+      + kv('已回報預計日', s.target.with_target) + kv('未回報', s.target.no_target)
       + kv('已過預計日', s.target.target_overdue) + kv('預計30天內完成', s.target.target_soon) + '</div>'
       + '<div class="block"><b>處理進度分佈（管理人標註）</b><br>'
       + kv('要申請展延', (s.progress || {}).apply_ext || 0) + kv('要申請例外', (s.progress || {}).apply_exc || 0)
       + kv('處理中', (s.progress || {}).wip || 0) + kv('等複掃', (s.progress || {}).rescan || 0)
-      + kv('需追查⚠️', (s.progress || {}).flagged || 0) + '</div>'
+      + kv('待追查', (s.progress || {}).flagged || 0) + '</div>'
       + tbl('應申請未申請清單', s.need_apply_list)
-      + tbl('要申請·送審中（Excel 尚未反映）', s.apply_intent_list || [])
-      + tbl('需追查⚠️（說要申請/做完卻未反映）', s.flagged_list || [])
-      + tbl('落後清單', s.overdue_list)
-      + '<p class="muted" style="margin-top:16px">結論以資安 Excel 為主；「處理進度」為管理人追蹤標註。彙總自系統「預計完成日／追蹤備註」與備註申請紀錄（例外管理／展延 iForm）。</p>'
+      + tbl('要申請·送審中（來源尚未反映）', s.apply_intent_list || [])
+      + tbl('待追查（聲稱申請或完成，來源未反映）', s.flagged_list || [])
+      + tbl('逾期清單', s.overdue_list)
+      + '<p class="muted" style="margin-top:16px">結論以資安 Excel 為準；「處理進度」為管理人追蹤標註。</p>'
       + '</body></html>';
     var w = window.open('', '_blank');
     if (!w) { UI.toast('瀏覽器擋了新視窗，請允許彈出視窗後再試', 'error'); return; }
