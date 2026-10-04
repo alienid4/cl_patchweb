@@ -1586,7 +1586,7 @@
         var b = document.getElementById('email-settings-btn'); if (b) b.click(); else UI.toast('找不到 Email 設定', 'error');
       } },
     // 其他功能：原右上角選單移來這(資料管理/系統設定)；右上角改顯示資料版本
-    { key: 'more', label: '其他功能', render: renderMoreInto },
+    { key: 'more', label: 'D. 其他功能', render: renderMoreInto },
   ];
 
   // 全站匯出統一成「原封 Excel」：攔截所有匯出鈕(原本各表的匯出CSV等)→改下載原封 xlsx。

@@ -27,8 +27,18 @@ echo "==> [2/4] 建立虛擬環境 .venv"
 . .venv/bin/activate
 
 echo "==> [3/4] 安裝相依套件"
-pip install --upgrade pip >/dev/null
-pip install -r requirements.txt
+# 離線模式：若同層有 offline_wheels/（或 wheels/）內含 .whl，就不連網、直接用這些輪子裝
+WHEELS=""
+for d in offline_wheels wheels ../offline_wheels; do
+  if [ -d "$d" ] && ls "$d"/*.whl >/dev/null 2>&1; then WHEELS="$d"; break; fi
+done
+if [ -n "$WHEELS" ]; then
+  echo "   離線模式：用 $WHEELS 的輪子安裝（不連網，共 $(ls "$WHEELS"/*.whl | wc -l) 個）"
+  pip install --no-index --find-links "$WHEELS" -r requirements.txt
+else
+  pip install --upgrade pip >/dev/null 2>&1 || true
+  pip install -r requirements.txt
+fi
 
 echo "==> [4/4] 建立資料目錄"
 mkdir -p data
