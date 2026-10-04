@@ -71,19 +71,29 @@
     setTimeout(function () { suppressPersist = false; }, 0);
   }
 
-  // 目前載入的資料檔名(版本)：顯示在右上角(原「其他功能」位置)，一眼知道是哪一版，不用點進去看
+  // 右上角資訊堆疊：上＝資料檔(版本)，下＝登入者／角色／目前登入人數
   var _dataFile = '';
+  function _headInfo() {
+    var ha = document.querySelector('.header-actions'); if (!ha) return null;
+    var stack = document.getElementById('webext-headinfo');
+    if (!stack) {
+      stack = U.el('div', { id: 'webext-headinfo', style: 'display:flex;flex-direction:column;align-items:flex-end;gap:3px;align-self:center' });
+      var df = U.el('span', { id: 'webext-datafile', title: '目前載入的資料檔（版本）',
+        style: 'font-weight:700;color:#fff;background:rgba(255,255,255,.18);padding:5px 12px;border-radius:8px;font-size:14px;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' });
+      var who = U.el('span', { id: 'webext-whoami', style: 'color:#eaf5ef;font-size:12.5px;white-space:nowrap' });
+      stack.appendChild(df); stack.appendChild(who); ha.appendChild(stack);
+    }
+    return stack;
+  }
   function showDataFile(name) {
     if (name) _dataFile = name;
-    var ha = document.querySelector('.header-actions'); if (!ha) return;
+    if (!_headInfo()) return;
     var slot = document.getElementById('webext-datafile');
-    if (!slot) {
-      slot = U.el('span', { id: 'webext-datafile', title: '目前載入的資料檔（版本）' });
-      slot.style.cssText = 'font-weight:700;color:#fff;background:rgba(255,255,255,.18);padding:6px 12px;border-radius:8px;font-size:14px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;align-self:center';
-      ha.appendChild(slot);
-    }
     slot.textContent = _dataFile ? ('📄 ' + _dataFile) : '';
     slot.title = _dataFile ? ('目前資料檔：' + _dataFile) : '';
+  }
+  function _roleLabel(role) {
+    return role === 'super_admin' ? '最高管理員' : role === 'dept_admin' ? '部門窗口' : role === 'user' ? '一般使用者' : '使用者';
   }
 
   async function loadFromServer() {
@@ -610,20 +620,25 @@
   // ---- 登入 ----
   async function refreshMe() {
     try { me = await jget('/api/me'); } catch (e) { me = { authenticated: false }; }
-    var span = document.getElementById('webext-user');
+    _headInfo();
+    var who = document.getElementById('webext-whoami');
+    var span = document.getElementById('webext-user');   // 原生 header 的使用者區(保留，隱藏)
     var btn = document.getElementById('webext-login-btn');
-    if (!span || !btn) return;
-    if (me.open_write && !me.authenticated) {
-      // 免登入模式：不需登入即可寫入，隱藏登入鈕避免困惑
-      span.classList.add('hidden'); btn.classList.add('hidden');
-      return;
+    if (span) span.classList.add('hidden');              // 改用 whoami 行，原 span 不用
+    var online = (me.online != null) ? ('　·　目前登入 ' + me.online + ' 人') : '';
+    if (who) {
+      if (me.authenticated) {
+        who.textContent = '歡迎 ' + (me.display_name || me.username) + '（' + _roleLabel(me.role) + '）登入' + online;
+      } else if (me.open_write) {
+        who.textContent = '免登入模式（最高權限）' + online;
+      } else {
+        who.textContent = '尚未登入，請先登入' + online;
+      }
     }
-    btn.classList.remove('hidden');
-    if (me.authenticated) {
-      span.textContent = (me.display_name || me.username) + '（' + me.role + '）';
-      span.classList.remove('hidden'); btn.textContent = '登出';
-    } else {
-      span.classList.add('hidden'); btn.textContent = '登入';
+    if (btn) {
+      // 已登入→顯示登出；其餘(含免登入模式，方便切換帳號測試)→顯示登入
+      btn.classList.remove('hidden');
+      btn.textContent = me.authenticated ? '登出' : '登入';
     }
   }
   function openLogin() {

@@ -6,15 +6,18 @@ from pathlib import Path
 
 from urllib.parse import quote
 
+import datetime as dt
+
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import ad, appsettings, attachments, cases, config, export, importer, query, security
 from .db import SessionLocal, init_db
-from .models import Finding, User
+from .models import Finding, User, UserSession
 from .schemas import ImportIn, ImportResult
 
 _FRONTEND = Path(__file__).resolve().parents[1] / "frontend"
@@ -54,38 +57,49 @@ def require_login(user: User | None = Depends(current_user)) -> User:
 
 
 class _AnonUser:
-    """免登入模式(WEBVULN_NO_AUTH)用的匿名寫入身分；audit 會記成『(未登入)』。"""
+    """免登入模式用的匿名身分（＝Super Admin）；audit 會記成『(未登入)』。"""
     username = "(未登入)"
-    role = config.ROLE_ADMIN
+    role = config.ROLE_SUPER
     display_name = "(未登入)"
+    department = None
 
 
-def require_view(user: User | None = Depends(current_user)) -> User:
-    """看／下載附件：需登入（任何角色）；免登入模式(NO_AUTH)比照內部開放。"""
-    if config.NO_AUTH:
+def _open_mode(db: Session) -> bool:
+    """是否『免登入』：env NO_AUTH 開、且『未啟用 AD 登入』。
+    啟用 AD 登入(設定畫面) → 一律需登入（DB 開關為主，覆蓋 env 的過渡設定）。"""
+    if not config.NO_AUTH:
+        return False
+    try:
+        return not appsettings.get_ad_config(db).get("enabled")
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def require_view(user: User | None = Depends(current_user), db: Session = Depends(get_db)) -> User:
+    """看／下載附件：需登入；免登入模式比照內部開放。"""
+    if _open_mode(db):
         return user or _AnonUser()
     if user is None:
         raise HTTPException(status_code=401, detail="請先登入")
     return user
 
 
-def require_write_role(user: User | None = Depends(current_user)) -> User:
-    """可寫入端點：需登入(任何角色)或免登入模式。實際能改哪些由各端點的「範圍檢查」決定
-    (super_admin 全部；dept_admin 限自己部門；user 限自己的 owner)。"""
+def require_write_role(user: User | None = Depends(current_user), db: Session = Depends(get_db)) -> User:
+    """可寫入端點：需登入或免登入模式。能改哪些由各端點的「範圍檢查」決定。"""
     if config.DISABLE_WRITE:
         raise HTTPException(status_code=503, detail="寫入維護中（暫停）")
-    if config.NO_AUTH:
-        return user or _AnonUser()   # 免登入＝super_admin（過渡期）
+    if _open_mode(db):
+        return user or _AnonUser()
     if user is None:
         raise HTTPException(status_code=401, detail="請先登入")
     return user
 
 
-def require_super(user: User | None = Depends(current_user)) -> User:
+def require_super(user: User | None = Depends(current_user), db: Session = Depends(get_db)) -> User:
     """系統級動作(匯入、清除、AD 設定)：僅 Super Admin（免登入過渡期比照）。"""
     if config.DISABLE_WRITE:
         raise HTTPException(status_code=503, detail="寫入維護中（暫停）")
-    if config.NO_AUTH:
+    if _open_mode(db):
         return user or _AnonUser()
     if user is None:
         raise HTTPException(status_code=401, detail="請先登入")
@@ -94,9 +108,9 @@ def require_super(user: User | None = Depends(current_user)) -> User:
     return user
 
 
-def _scope_ok(user, finding) -> bool:
+def _scope_ok(user, finding, db) -> bool:
     """此使用者可否改這筆弱點：super 全部；dept_admin 限同部門；user 限自己(owner＝display_name)。"""
-    if config.NO_AUTH:
+    if _open_mode(db):
         return True
     role = config.canon_role(getattr(user, "role", ""))
     if role == config.ROLE_SUPER:
@@ -106,8 +120,8 @@ def _scope_ok(user, finding) -> bool:
     return bool(getattr(user, "display_name", None)) and (finding.owner or "") == user.display_name
 
 
-def _require_scope(user, finding):
-    if not _scope_ok(user, finding):
+def _require_scope(user, finding, db):
+    if not _scope_ok(user, finding, db):
         raise HTTPException(status_code=403, detail="權限不足：只能處理你負責（或你部門）的弱點")
 
 
@@ -149,16 +163,27 @@ def api_logout(request: Request, response: Response, db: Session = Depends(get_d
     return {"ok": True}
 
 
+def _online_count(db: Session) -> int:
+    """目前登入人數＝有未過期 session 的不重複使用者數。"""
+    try:
+        return db.execute(select(func.count(func.distinct(UserSession.user_id)))
+                          .where(UserSession.expires_at > dt.datetime.now())).scalar() or 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 @app.get("/api/me")
-def api_me(user: User | None = Depends(current_user)):
+def api_me(user: User | None = Depends(current_user), db: Session = Depends(get_db)):
     # open_write：伺服器目前是否免登入即可寫入（WEBVULN_NO_AUTH）→ 前端據此顯示操作鈕
+    online = _online_count(db)
+    open_mode = _open_mode(db)
     if user is None:
-        return {"authenticated": False, "open_write": config.NO_AUTH, "is_super": config.NO_AUTH}
+        return {"authenticated": False, "open_write": open_mode, "is_super": open_mode, "online": online}
     role = config.canon_role(user.role)
     return {"authenticated": True, "username": user.username,
             "display_name": user.display_name, "role": role,
-            "department": user.department, "open_write": config.NO_AUTH,
-            "is_super": config.NO_AUTH or role == config.ROLE_SUPER}
+            "department": user.department, "open_write": open_mode,
+            "is_super": open_mode or role == config.ROLE_SUPER, "online": online}
 
 
 @app.post("/api/import", response_model=ImportResult)
@@ -327,7 +352,7 @@ def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
     _f = db.get(Finding, finding_id)
     if _f is None:
         raise HTTPException(status_code=404, detail="弱點不存在")
-    _require_scope(user, _f)   # super 全部／dept_admin 限自己部門／user 限自己的
+    _require_scope(user, _f, db)   # super 全部／dept_admin 限自己部門／user 限自己的
     fields = {}
     if body.set_owner:
         fields["owner"] = body.owner
@@ -369,7 +394,7 @@ async def api_upload_attachment(finding_id: int, request: Request, name: str = "
     _f = db.get(Finding, finding_id)
     if _f is None:
         raise HTTPException(status_code=404, detail="弱點不存在")
-    _require_scope(user, _f)
+    _require_scope(user, _f, db)
     clen = request.headers.get("content-length")
     if clen and clen.isdigit() and int(clen) > config.UPLOAD_MAX_BYTES:
         raise HTTPException(status_code=413, detail="檔案過大（上限 %d MB）" % (config.UPLOAD_MAX_BYTES // (1024 * 1024)))
