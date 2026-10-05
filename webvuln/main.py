@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import datetime as dt
+import json
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -33,6 +34,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="CL_WebVuln 弱點彙總（網頁版）", version="0.1.0", lifespan=lifespan)
 # 回應壓縮：開頁快照 ~5MB 的長文字(Description/Plugin Output)壓縮後約剩兩成，下載最花時間的就是它
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+@app.middleware("http")
+async def _sheet_scope(request: Request, call_next):
+    """?sheet=<工作表名> → 這個請求的所有統計只算那張表（見 query.SHEET_SCOPE）。"""
+    tok = query.SHEET_SCOPE.set(request.query_params.get("sheet") or None)
+    try:
+        return await call_next(request)
+    finally:
+        query.SHEET_SCOPE.reset(tok)
 
 
 def get_db():
@@ -207,6 +218,12 @@ def import_data(payload: ImportIn, request: Request, db: Session = Depends(get_d
     return ImportResult(batch_id=batch.id, row_count=batch.row_count, is_latest=batch.is_latest)
 
 
+@app.get("/api/sheets")
+def api_sheets(db: Session = Depends(get_db)):
+    """最新快照的工作表清單＋各表未結筆數（週報『選工作表』用）。"""
+    return query.sheets(db)
+
+
 @app.get("/api/departments")
 def api_departments(db: Session = Depends(get_db)):
     return query.departments(db)
@@ -329,6 +346,42 @@ def api_cases(status: str | None = None, department: str | None = None,
     """承辦案件清單（申請管線）。可篩 status/department/orphan/suspect。"""
     return cases.list_cases(db, status=status, department=department,
                             orphan=orphan, suspect=suspect)
+
+
+# ── 承辦狀態備份／還原（Super Admin）：把一台的處理進度/預計完成日/備註帶到另一台 ──
+@app.get("/api/cases/backup")
+def api_cases_backup(request: Request, db: Session = Depends(get_db), user: User = Depends(require_super)):
+    from . import casebackup
+    data = casebackup.export(db)
+    security.log_audit(db, username=getattr(user, "username", None), action="case_backup",
+                       target="case", detail=f"items={data['count']}", ip=_client_ip(request))
+    db.commit()
+    name = "承辦狀態備份_" + dt.datetime.now().strftime("%Y%m%d_%H%M") + ".json"
+    return Response(content=json.dumps(data, ensure_ascii=False, indent=1), media_type="application/json",
+                    headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(name)})
+
+
+class CaseRestoreIn(BaseModel):
+    data: dict
+    overwrite: bool = False   # 跟現有資料衝突時是否覆蓋（預設保留現有）
+    apply: bool = False       # False＝只預覽
+
+
+@app.post("/api/cases/restore")
+def api_cases_restore(body: CaseRestoreIn, request: Request, db: Session = Depends(get_db),
+                      user: User = Depends(require_super)):
+    from . import casebackup
+    db_path = config.DB_URL[len("sqlite:///"):] if config.DB_URL.startswith("sqlite:///") else None
+    try:
+        rep = casebackup.restore(db, body.data, overwrite=body.overwrite, apply=body.apply, db_path=db_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if rep["applied"]:
+        security.log_audit(db, username=getattr(user, "username", None), action="case_restore", target="case",
+                           detail=f"new={rep['new']} overwritten={rep['overwritten']} skipped={rep['skipped_conflict']} "
+                                  f"unmatched={rep['unmatched']} backup={rep['db_backup']}", ip=_client_ip(request))
+        db.commit()
+    return rep
 
 
 @app.post("/api/cases/purge-orphans")

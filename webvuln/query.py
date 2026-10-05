@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from contextvars import ContextVar
 from typing import Optional
 
 from sqlalchemy import select
@@ -31,6 +32,12 @@ def latest_batch(session: Session) -> Optional[ImportBatch]:
     ).scalars().first()
 
 
+# 「只看某一張工作表」：由 main 的中介層依網址參數 ?sheet= 設定，這個請求內所有統計都只算那張表。
+# 用 contextvar 而不是每個函式加參數：週報、到期倒數、負責人、趨勢…十幾支查詢都經過 _latest_findings，
+# 一處生效就不會有哪個面板漏改、數字對不起來。
+SHEET_SCOPE: ContextVar[Optional[str]] = ContextVar("SHEET_SCOPE", default=None)
+
+
 def _latest_findings(session: Session, department: Optional[str] = None) -> list[Finding]:
     b = latest_batch(session)
     if not b:
@@ -38,7 +45,27 @@ def _latest_findings(session: Session, department: Optional[str] = None) -> list
     q = select(Finding).where(Finding.batch_id == b.id)
     if department and department != "全部":
         q = q.where(Finding.department == department)
+    sheet = SHEET_SCOPE.get()
+    if sheet:
+        q = q.where(Finding.sheet_key == sheet)
     return list(session.execute(q).scalars().all())
+
+
+def sheets(session: Session) -> list[dict]:
+    """最新快照有哪些工作表（依原本順序）與各自未結筆數；不受 ?sheet= 影響。"""
+    b = latest_batch(session)
+    if not b:
+        return []
+    order: list[str] = []
+    cnt: dict[str, int] = {}
+    for f in session.execute(select(Finding).where(Finding.batch_id == b.id).order_by(Finding.id)).scalars().all():
+        k = f.sheet_key or "未分類"
+        if k not in cnt:
+            cnt[k] = 0
+            order.append(k)
+        if f.close_status == CLOSE_OPEN:
+            cnt[k] += 1
+    return [{"sheet_key": k, "open": cnt[k]} for k in order]
 
 
 def reconcile_check(session: Session, department: Optional[str] = None,
@@ -579,7 +606,11 @@ def ranking_by_department(session: Session, today: Optional[dt.date] = None) -> 
 
 
 def vuln_key(f: Finding) -> tuple:
-    """穩定識別鍵：sheet+plugin+正規化 host（跨快照追同一弱點；host 去空白轉小寫）。"""
+    """穩定識別鍵。有 row_key(新制，見 rowkey.py)就用它；沒有(轉換前或轉換失敗)才用舊的
+    sheet+plugin+正規化 host。轉換是全庫一次做完，所以同一時間不會新舊混用。"""
+    rk = getattr(f, "row_key", None)
+    if rk:
+        return (rk,)
     host = (f.host or "").strip().lower()
     return ((f.sheet_key or ""), (f.plugin_id or ""), host)
 

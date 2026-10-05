@@ -54,6 +54,11 @@ def create_batch(session: Session, data: ImportIn) -> ImportBatch:
     for sheet_key, columns in (data.sheet_columns or {}).items():
         batch.sheets.append(SheetColumns(sheet_key=sheet_key, columns=list(columns)))
 
+    # 每一列的穩定識別碼（轉換過才用新制；沒轉過就維持舊鍵，避免新舊混用）
+    from . import rowkey
+    if rowkey.migrated(session):
+        rowkey.assign(batch.findings)
+
     session.add(batch)
     session.commit()
     session.refresh(batch)

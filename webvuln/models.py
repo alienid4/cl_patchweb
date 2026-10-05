@@ -187,6 +187,8 @@ class Finding(Base):
     batch_id: Mapped[int] = mapped_column(
         ForeignKey("import_batch.id", ondelete="CASCADE"), index=True
     )
+    # 每一列的穩定識別碼(見 rowkey.py)；承辦疊加層／附件／趨勢靠它對到同一列。舊資料由啟動時一次性轉換補上
+    row_key: Mapped[str | None] = mapped_column(String(500), index=True)
     sheet_key: Mapped[str | None] = mapped_column(String(100), index=True)
     plugin_id: Mapped[str | None] = mapped_column(String(50))
     name: Mapped[str | None] = mapped_column(Text)

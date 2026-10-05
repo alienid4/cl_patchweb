@@ -45,6 +45,8 @@ _ENSURE_COLUMNS = {
     # weekly_report：#8 每週排程本人開關（SQLite 無 bool，用 INTEGER 0/1）
     "app_user": [("email", "VARCHAR(200)"), ("weekly_report", "INTEGER DEFAULT 0"),
                  ("note", "VARCHAR(300)")],
+    # row_key：每一列的穩定識別碼（2026-10-05，見 rowkey.py）
+    "finding": [("row_key", "VARCHAR(500)")],
 }
 
 
@@ -63,6 +65,8 @@ def _ensure_columns(eng: Engine) -> None:
             for name, decl in cols:
                 if name not in have:
                     conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        if conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table' AND name='finding'").fetchone():
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_finding_row_key ON finding (row_key)")
 
 
 def init_db(target_engine: Engine | None = None) -> None:
@@ -72,6 +76,22 @@ def init_db(target_engine: Engine | None = None) -> None:
         Path(eng.url.database).parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(eng)
     _ensure_columns(eng)
+    _migrate_rowkey(eng)
+
+
+def _migrate_rowkey(eng: Engine) -> None:
+    """一次性：既有資料補 row_key、承辦記錄與附件改掛新鍵（rowkey.migrate，冪等）。
+    失敗就整段 rollback：資料維持舊鍵、照舊運作（rowkey.migrated 為 False 時一律走舊鍵），不讓服務起不來。"""
+    from . import rowkey
+    s = Session(bind=eng, autoflush=False, expire_on_commit=False)
+    try:
+        db_path = eng.url.database if eng.url.get_backend_name() == "sqlite" else None
+        rowkey.migrate(s, db_path=db_path)
+    except Exception as e:  # noqa: BLE001
+        s.rollback()
+        print(f"[rowkey] !! 轉換失敗，維持舊鍵運作：{e!r}")
+    finally:
+        s.close()
 
 
 def get_session() -> Session:

@@ -161,8 +161,24 @@
   function isAdminRole() { return !!(me.is_super || me.role === 'dept_admin'); }   // super 或 部門窗口(可發送報告)
   async function jget(u) { var r = await fetch(u); if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); }
   // 讀「左側目前選的部門」（沿用原本 #my-dept-select），承辦管線各面板都要吃它
-  function curDept() { var s = document.getElementById('my-dept-select'); var v = s && s.value; return (v && v !== '__all__') ? v : null; }
-  function qd(params) { var d = curDept(); if (d) (params = params || {}).department = d; return new URLSearchParams(params || {}).toString(); }
+  // 週報上方可另外指定部門／工作表（記在這台瀏覽器）。部門沒指定時沿用左側選單；左側選單一換就以左側為準。
+  function _lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function _lsSet(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { } }
+  var _deptPick = _lsGet('wx_dept');     // null＝跟左側；'__all__'＝全部門；其他＝部門名
+  var _sheetPick = _lsGet('wx_sheet');   // null／''＝全部工作表
+  function curDept() {
+    if (_deptPick) return _deptPick === '__all__' ? null : _deptPick;
+    var s = document.getElementById('my-dept-select'); var v = s && s.value; return (v && v !== '__all__') ? v : null;
+  }
+  function curSheet() { return _sheetPick || null; }
+  function qd(params) {
+    var d = curDept(); if (d) (params = params || {}).department = d;
+    var sh = curSheet(); if (sh) (params = params || {}).sheet = sh;
+    return new URLSearchParams(params || {}).toString();
+  }
+  document.addEventListener('change', function (e) {
+    if (e.target && e.target.id === 'my-dept-select' && _deptPick) { _deptPick = null; _lsSet('wx_dept', null); }
+  }, true);
 
   function card(value, label, danger, onDrill) {
     var c = U.el('div', { class: 'metric-card' }, [
@@ -270,7 +286,7 @@
   async function openFindings(title, params) {
     var box = U.el('div');
     var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
-      ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['overdue_days', '逾期天數'],
+      ['plugin_id', 'Plugin'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
       ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
       ['department', '部門'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
     var curRows = [];   // 載入後填入,供「匯出」用(匯的是眼前這份子集)
@@ -301,6 +317,35 @@
     // 處置統計：總筆數／逾期／展延／例外／修補中／已送審／待複掃（跟著搜尋結果變）
     var statsEl = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' });
     stickyTop.appendChild(statsEl);
+    // 到期篩選（依真正到期日、今天起算）：14／30／60 天內不含已逾期，已逾期另一顆；跟搜尋可疊加
+    var dueMode = 'all';
+    var DUE_OPTS = [['all', '全部'], ['overdue', '已逾期'], ['14', '14 天內'], ['30', '30 天內'], ['60', '60 天內']];
+    var dueBar = U.el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px' },
+      [U.el('span', { text: '到期：', style: 'color:#6b7a73;font-size:14px' })]);
+    var dueBtns = DUE_OPTS.map(function (o) {
+      var b = U.el('button', { class: 'subtab-btn' + (o[0] === 'all' ? ' active' : ''), text: o[1], style: 'padding:3px 12px;font-size:14px' });
+      b.addEventListener('click', function () {
+        dueMode = o[0];
+        dueBtns.forEach(function (x) { x.classList.toggle('active', x === b); });
+        applyFilter(); draw();
+      });
+      dueBar.appendChild(b); return b;
+    });
+    stickyTop.appendChild(dueBar);
+    var _today = (function () { var d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
+    function daysToDue(r) {
+      if (!r.effective_due) return null;
+      var p = String(r.effective_due).slice(0, 10).split('-');
+      var d = new Date(+p[0], +p[1] - 1, +p[2]);
+      return Math.round((d - _today) / 86400000);
+    }
+    function passDue(r) {
+      if (dueMode === 'all') return true;
+      var n = daysToDue(r);
+      if (n == null) return false;
+      if (dueMode === 'overdue') return n < 0;
+      return n >= 0 && n <= +dueMode;
+    }
 
     // 搜尋：可一次貼一整欄 IP（從 Excel 複製，換行／空白／逗號分隔都行）
     //   IP → 跟主機欄「完全相同」才算（避免 .2 誤中 .22）；其他字 → 主機／負責人／弱點／Plugin／部門／處理進度／追蹤備註／預計完成日 包含即中
@@ -320,12 +365,13 @@
     function applyFilter() {
       var toks = qInput.value.split(/[\s,;，；、]+/).map(function (t) { return t.trim(); }).filter(Boolean);
       var uniq = {}; toks = toks.filter(function (t) { var k = t.toLowerCase(); if (uniq[k]) return false; uniq[k] = 1; return true; });
-      if (!toks.length) { rows = allRows; qInfo.textContent = ''; return; }
+      var base = allRows.filter(passDue);
+      if (!toks.length) { rows = base; qInfo.textContent = ''; return; }
       var ips = toks.filter(function (t) { return IP_RE.test(t); });
       var words = toks.filter(function (t) { return !IP_RE.test(t); }).map(function (t) { return t.toLowerCase(); });
       var ipSet = {}; ips.forEach(function (ip) { ipSet[ip] = 1; });
       var hitTok = {};
-      rows = allRows.filter(function (r) {
+      rows = base.filter(function (r) {
         var ok = false;
         hostIps(r.host).forEach(function (ip) { if (ipSet[ip]) { ok = true; hitTok[ip] = 1; } });
         if (words.length) {
@@ -365,7 +411,7 @@
       var vis = {}; rows.forEach(function (r) { vis[r.id] = 1; });
       var hidden = ids.filter(function (id) { return !vis[id]; }).length;
       if (cntEl) {
-        cntEl.textContent = '已選 ' + n + ' 筆' + (hidden ? '（其中 ' + hidden + ' 筆不在目前搜尋結果中）' : '');
+        cntEl.textContent = '已選 ' + n + ' 筆' + (hidden ? '（其中 ' + hidden + ' 筆不在目前篩選結果中）' : '');
         cntEl.style.color = hidden ? '#c0392b' : '';
       }
     }
@@ -390,7 +436,7 @@
       var bAttach = U.el('button', { class: 'btn btn-secondary btn-sm', text: '批次上傳佐證' });
       bStatus.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchStatus(ids, onDone); });
       bAttach.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchAttach(ids, onDone); });
-      var bSelAll = U.el('button', { class: 'btn btn-secondary btn-sm', text: rows.length < allRows.length ? '全選搜尋結果' : '全選' });
+      var bSelAll = U.el('button', { class: 'btn btn-secondary btn-sm', text: rows.length < allRows.length ? '全選篩選結果' : '全選' });
       var bSelNone = U.el('button', { class: 'btn btn-secondary btn-sm', text: '全不選' });
       bSelAll.addEventListener('click', function () { rows.forEach(function (r) { selected[r.id] = true; }); draw(); });
       bSelNone.addEventListener('click', function () { selected = {}; draw(); });
@@ -410,7 +456,7 @@
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, oheads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
       var icols = [['host', '主機'], ['severity', '嚴重度'], ['name', '弱點'], ['plugin_id', 'Plugin'],
-        ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['overdue_days', '逾期天數'],
+        ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
       keys.forEach(function (k) {
@@ -492,7 +538,7 @@
       var table = U.el('table', { class: 'tracking-table' });
       // 可排序表頭：[顯示字, 排序鍵]；點擊切換升降序
       var HEADS = [['弱點', 'name'], ['Plugin', 'plugin'], ['嚴重度', 'sev'], ['台數', 'count'],
-        ['到期日', 'effMin'], ['原始期限', 'origMin'], ['處置階段', 'stage'], ['其中逾期', 'od']];
+        ['原始期限', 'origMin'], ['到期日', 'effMin'], ['處置階段', 'stage'], ['其中逾期', 'od']];
       var htr = U.el('tr', {});
       if (writable) htr.appendChild(U.el('th', { text: '選' }));
       HEADS.forEach(function (h) {
@@ -509,7 +555,7 @@
       table.appendChild(U.el('thead', {}, [htr]));
       var pColspan = HEADS.length + (writable ? 1 : 0);
       var tb = U.el('tbody');
-      var icols = [['host', '主機'], ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['overdue_days', '逾期天數'],
+      var icols = [['host', '主機'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
       aggs.forEach(function (a) {
@@ -520,7 +566,7 @@
         pcells = pcells.concat([nameTd,
           U.el('td', { text: a.plugin }), U.el('td', { text: r0.severity || '' }),
           U.el('td', { text: String(a.count), style: 'font-weight:700' }),
-          U.el('td', { text: a.effTxt }), U.el('td', { text: a.origTxt }), U.el('td', { text: a.stage }),
+          U.el('td', { text: a.origTxt }), U.el('td', { text: a.effTxt }), U.el('td', { text: a.stage }),
           U.el('td', { text: a.od ? String(a.od) : '—', style: a.od ? 'color:#c0392b;font-weight:600' : '' })]);
         var head = U.el('tr', { style: 'cursor:pointer' }, pcells);
         // 展開：這個弱點影響的主機
@@ -545,7 +591,7 @@
       batchHost.innerHTML = '';
       curRows = rows;   // 匯出＝眼前這份（有搜尋就是搜尋結果）
       var st = dispoStats(rows);
-      sumEl.textContent = (rows.length < allRows.length ? '搜尋結果 ' + rows.length + ' / ' : '共 ') +
+      sumEl.textContent = (rows.length < allRows.length ? '篩選結果 ' + rows.length + ' / ' : '共 ') +
         allRows.length + ' 筆、' + nPluginOf(rows) + ' 種弱點';
       statsEl.innerHTML = '';
       [['總筆數', st.total, ''], ['其中逾期', st.overdue, '#c0392b'], ['展延', st.ext, ''], ['例外', st.exc, ''],
@@ -827,6 +873,7 @@
   // ---- 登入 ----
   async function refreshMe() {
     try { me = await jget('/api/me'); } catch (e) { me = { authenticated: false }; }
+    if (me.authenticated && me.department && _lsGet('wx_dept') === null && !_deptPick) { _deptPick = me.department; }
     _headInfo();
     var who = document.getElementById('webext-whoami');
     var span = document.getElementById('webext-user');   // 原生 header 的使用者區(保留，隱藏)
@@ -1646,6 +1693,79 @@
   }
 
   // ---- Email／SMTP 設定（Super Admin）：伺服器端寄信設定，存 DB、免重部署 ----
+  // ---- 承辦狀態備份／還原（Super Admin）：把一台機器上標過的狀態帶到另一台 ----
+  function openCaseBackup() {
+    var box = U.el('div', { style: 'text-align:left;line-height:1.7' });
+    box.appendChild(U.el('p', { text: '只帶「有人動過」的承辦資料：處理進度、預計完成日、追蹤備註、改過的負責人／部門。不含 Excel 內容與附件檔。', style: 'margin:0 0 10px' }));
+    box.appendChild(U.el('p', { text: '⚠ 備份檔含負責人姓名與備註，屬公司內部資料，請依公司規定保管與傳遞。', style: 'margin:0 0 14px;color:#b9770e' }));
+    // 1) 下載
+    var bDl = U.el('button', { class: 'btn btn-primary', text: '下載備份檔' });
+    bDl.addEventListener('click', async function () {
+      bDl.disabled = true; bDl.textContent = '產生中…';
+      try {
+        var r = await fetch('/api/cases/backup');
+        if (!r.ok) throw new Error(r.status);
+        var blob = await r.blob();
+        var cd = r.headers.get('Content-Disposition') || '';
+        var m = cd.match(/filename\*=UTF-8''([^;]+)/);
+        var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+        a.download = m ? decodeURIComponent(m[1]) : '承辦狀態備份.json'; a.click();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+        UI.toast('已下載備份檔', 'success');
+      } catch (e) { UI.toast('下載失敗（需 Super Admin）', 'error'); }
+      bDl.disabled = false; bDl.textContent = '下載備份檔';
+    });
+    box.appendChild(U.el('div', { style: 'margin-bottom:18px' }, [U.el('b', { text: '① 備份：' }), bDl]));
+    // 2) 還原：選檔 → 預覽 → 確認
+    var fi = U.el('input', { type: 'file', accept: '.json,application/json' });
+    var ow = U.el('input', { type: 'checkbox' });
+    var res = U.el('div', { style: 'margin-top:10px' });
+    var bApply = U.el('button', { class: 'btn btn-primary', text: '確認匯入' }); bApply.disabled = true;
+    var data = null;
+    async function run(apply) {
+      var r = await fetch('/api/cases/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: data, overwrite: ow.checked, apply: apply }) });
+      var j = await r.json().catch(function () { return {}; });
+      if (!r.ok) { res.innerHTML = ''; res.appendChild(U.el('p', { text: '✗ ' + (j.detail || ('失敗 ' + r.status)), style: 'color:#c0392b' })); bApply.disabled = true; return; }
+      res.innerHTML = '';
+      if (j.backup_source_file !== j.here_source_file) {
+        res.appendChild(U.el('p', { style: 'color:#b9770e', text: '⚠ 兩台的資料檔不同（備份檔：' + (j.backup_source_file || '?') + '；這台：' + (j.here_source_file || '?') + '），對不到的會比較多。' }));
+      }
+      var lines = [['備份檔內筆數', j.total], ['會新增（這台還沒標過）', j.new], ['兩邊一樣（不動）', j.same],
+        ['跟這台現有資料衝突', j.conflict], [ow.checked ? '其中會覆蓋' : '其中保留這台現有的', ow.checked ? j.overwritten : j.skipped_conflict],
+        ['這台對不到這一列（不匯入）', j.unmatched]];
+      var t = U.el('table', { class: 'tracking-table', style: 'max-width:520px' });
+      var tb = U.el('tbody');
+      lines.forEach(function (l) { tb.appendChild(U.el('tr', {}, [U.el('td', { text: l[0], style: 'text-align:left' }), U.el('td', { text: String(l[1] || 0), style: 'font-weight:700' })])); });
+      t.appendChild(tb); res.appendChild(t);
+      if (j.unmatched_samples && j.unmatched_samples.length) res.appendChild(U.el('p', { style: 'font-size:13px;color:#6b7a73', text: '對不到的例子：' + j.unmatched_samples.slice(0, 8).join('、') }));
+      if (j.applied) {
+        res.appendChild(U.el('p', { style: 'color:#1a7f4b;font-weight:600', text: '✅ 已匯入。匯入前的資料庫已備份：' + (j.db_backup || '（非 SQLite，未備份）') }));
+        bApply.disabled = true;
+      } else {
+        res.appendChild(U.el('p', { style: 'font-size:13px;color:#6b7a73', text: '以上是預覽，尚未寫入。確認無誤再按「確認匯入」。' }));
+        bApply.disabled = !(j.new || (ow.checked && j.overwritten));
+      }
+    }
+    fi.addEventListener('change', async function () {
+      data = null; bApply.disabled = true; res.innerHTML = '';
+      var f = fi.files && fi.files[0]; if (!f) return;
+      try { data = JSON.parse(await f.text()); } catch (e) { res.appendChild(U.el('p', { text: '✗ 不是有效的備份檔', style: 'color:#c0392b' })); return; }
+      run(false);
+    });
+    ow.addEventListener('change', function () { if (data) run(false); });
+    bApply.addEventListener('click', function () {
+      if (!data) return;
+      if (!confirm('確定要把備份檔的承辦狀態匯入這台？（匯入前會自動備份資料庫）')) return;
+      bApply.disabled = true; run(true);
+    });
+    box.appendChild(U.el('div', {}, [U.el('b', { text: '② 還原：' }), fi]));
+    box.appendChild(U.el('label', { style: 'display:inline-flex;gap:6px;align-items:center;margin-top:8px;cursor:pointer' },
+      [ow, U.el('span', { text: '跟這台現有資料衝突時，用備份檔覆蓋（預設保留這台的）' })]));
+    box.appendChild(res);
+    UI.openModal('承辦狀態備份／還原（Super Admin）', box, { footer: bApply, sticky: true, wide: true });
+  }
+
   async function openEmailSettings() {
     var cfg;
     try { cfg = await jget('/api/email-settings'); }
@@ -1977,6 +2097,7 @@
     item(cData, '上傳新的彙總表', '重新選擇弱點彙總 Excel', trigger('reload-btn'));
     item(cData, '清除暫存資料', '清掉本機暫存', trigger('clear-btn'));
     item(cData, '功能開關', '前端功能的開關', trigger('features-btn'));
+    item(cData, '承辦狀態備份／還原', '處理進度／預計完成日／備註 匯出成檔，或從檔案匯回', openCaseBackup);
 
     // ④ 通知（Super Admin）
     var cMail = card('通知 Email（Super Admin）');
@@ -1990,6 +2111,29 @@
     item(cSys, '系統設定', '登入時數／每週排程試跑', openGeneralSettings);
   }
 
+  // 週報範圍：部門＋工作表兩個下拉（選了就整份週報、各頁籤、下鑽都只算這個範圍）
+  function reportFilterBar(onChange) {
+    var bar = U.el('div', { style: 'display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin:4px 0 12px;padding:8px 12px;background:#f0f6f3;border:1px solid #cfe3d8;border-radius:8px' });
+    var dSel = U.el('select', { style: 'padding:5px 8px;font-size:14.5px;border:1px solid #cfd8d3;border-radius:6px;min-width:160px' });
+    var sSel = U.el('select', { style: 'padding:5px 8px;font-size:14.5px;border:1px solid #cfd8d3;border-radius:6px;min-width:220px' });
+    dSel.appendChild(U.el('option', { value: '__all__', text: '全部門' }));
+    sSel.appendChild(U.el('option', { value: '', text: '全部工作表（一起算）' }));
+    bar.appendChild(U.el('b', { text: '範圍：' }));
+    bar.appendChild(U.el('label', { style: 'display:inline-flex;gap:6px;align-items:center' }, [U.el('span', { text: '部門' }), dSel]));
+    bar.appendChild(U.el('label', { style: 'display:inline-flex;gap:6px;align-items:center' }, [U.el('span', { text: '工作表' }), sSel]));
+    bar.appendChild(U.el('span', { style: 'color:#6b7a73;font-size:13px', text: '（記在這台瀏覽器；下次開啟沿用）' }));
+    Promise.all([jget('/api/departments').catch(function () { return []; }), jget('/api/sheets').catch(function () { return []; })]).then(function (r) {
+      (r[0] || []).forEach(function (d) { dSel.appendChild(U.el('option', { value: d, text: d })); });
+      (r[1] || []).forEach(function (x) { sSel.appendChild(U.el('option', { value: x.sheet_key, text: x.sheet_key + '（未結 ' + x.open + '）' })); });
+      dSel.value = curDept() || '__all__';
+      sSel.value = curSheet() || '';
+      if (sSel.value !== (curSheet() || '')) { _sheetPick = null; _lsSet('wx_sheet', null); }   // 選過的表已不在這份報告
+    });
+    dSel.addEventListener('change', function () { _deptPick = dSel.value; _lsSet('wx_dept', dSel.value); onChange(); });
+    sSel.addEventListener('change', function () { _sheetPick = sSel.value || null; _lsSet('wx_sheet', sSel.value || null); onChange(); });
+    return bar;
+  }
+
   // ---- 主管週報（應申請未申請／已申請／預計完成彙總／落後；可列印存 PDF） ----
   var _lastReport = null;
   async function renderReportInto(host) {
@@ -1999,7 +2143,7 @@
     try { s = await jget('/api/report?' + qd()); }
     catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
     _lastReport = s;
-    var scope = (s.department && s.department !== '全部') ? s.department : '全部門';
+    var scope = ((s.department && s.department !== '全部') ? s.department : '全部門') + (curSheet() ? '・' + curSheet() : '');
 
     // 標題列＋列印鈕
     var headRow = U.el('div', { class: 'panel-head', style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap' }, [
@@ -2020,6 +2164,7 @@
     }
     headRow.appendChild(btnWrap);
     host.appendChild(headRow);
+    host.appendChild(reportFilterBar(function () { renderReportInto(host); }));
 
     var fresh = (s.freshness.days_ago == null) ? '尚無匯入' : ('資料距今 ' + s.freshness.days_ago + ' 天');
     host.appendChild(U.el('p', { class: 'empty-hint', text: '產生時間 ' + (s.generated_at || '').replace('T', ' ') + '　·　' + fresh }));
