@@ -191,6 +191,23 @@
     return v == null ? '' : String(v);
   }
 
+  // 一組弱點的處置統計（下鑽頂端與「依負責人」共用，同一套定義）：
+  //   展延＝Excel 已在首次展延中；例外＝Excel 已在例外管理中（兩者是資安 Excel 的官方階段）
+  //   修補中＝承辦標「處理中」；已送審＝承辦標「要申請展延／例外」但 Excel 還沒反映成那個階段；待複掃＝承辦標「等複掃」
+  function dispoStats(rs) {
+    var st = { total: rs.length, overdue: 0, ext: 0, exc: 0, wip: 0, sub: 0, rescan: 0 };
+    rs.forEach(function (r) {
+      if (r.overdue_days != null && r.overdue_days > 0) st.overdue++;
+      if (r.stage === '首次展延中') st.ext++;
+      else if (r.stage === '例外管理中') st.exc++;
+      if (r.progress === '處理中') st.wip++;
+      else if (r.progress === '等複掃') st.rescan++;
+      else if ((r.progress === '要申請展延' && r.stage !== '首次展延中' && r.stage !== '例外管理中') ||
+               (r.progress === '要申請例外' && r.stage !== '例外管理中')) st.sub++;
+    });
+    return st;
+  }
+
   // 承辦有沒有回報過(跟後端 _is_reported 同義)：處理進度、預計完成日、追蹤備註任一有填
   function isReported(r) { return !!(r && (r.progress || r.target_date || String(r.track_note || '').trim())); }
 
@@ -282,6 +299,9 @@
     tgl.appendChild(bO); tgl.appendChild(bP); tgl.appendChild(bH);
     var sumEl = U.el('span', { style: 'color:#6b7a73;font-size:14.5px;margin-left:auto' });
     stickyTop.appendChild(U.el('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap' }, [tgl, sumEl]));
+    // 處置統計：總筆數／逾期／展延／例外／修補中／已送審／待複掃（跟著搜尋結果變）
+    var statsEl = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' });
+    stickyTop.appendChild(statsEl);
 
     // 搜尋：可一次貼一整欄 IP（從 Excel 複製，換行／空白／逗號分隔都行）
     //   IP → 跟主機欄「完全相同」才算（避免 .2 誤中 .22）；其他字 → 主機／負責人／弱點／Plugin／部門／處理進度／追蹤備註／預計完成日 包含即中
@@ -387,7 +407,7 @@
       rows.forEach(function (r) { var k = ((r.owner || '').trim()) || '— 未指派'; (groups[k] = groups[k] || []).push(r); });
       var keys = Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; });
       var table = U.el('table', { class: 'tracking-table' });
-      var oheads = (writable ? ['選'] : []).concat(['負責人', '部門', '筆數', '其中逾期', '已回報', '附件']);
+      var oheads = (writable ? ['選'] : []).concat(['負責人', '部門', '總筆數', '其中逾期', '展延', '例外', '修補中', '已送審', '待複掃', '已回報', '附件']);
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, oheads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
       var icols = [['host', '主機'], ['severity', '嚴重度'], ['name', '弱點'], ['plugin_id', 'Plugin'],
@@ -399,6 +419,8 @@
         var od = grp.filter(function (x) { return x.overdue_days != null && x.overdue_days > 0; }).length;
         var att = grp.reduce(function (s, x) { return s + (x.att_count || 0); }, 0);
         var rep = grp.filter(isReported).length;   // 他回報過幾筆(處理進度／預計完成日／追蹤備註任一)
+        var ds = dispoStats(grp);
+        function numTd(n) { return U.el('td', { text: n ? String(n) : '—', style: n ? 'font-weight:600' : 'color:#9aa5a0' }); }
         var nameTd = U.el('td', { text: '▸ ' + k, style: 'font-weight:600;color:#1a7f4b;cursor:pointer;text-align:left;min-width:120px' });
         var cells = [];
         if (writable) cells.push(U.el('td', {}, [groupCb(grp.map(function (x) { return x.id; }))]));
@@ -406,6 +428,7 @@
           U.el('td', { text: r0.department || '' }),
           U.el('td', { text: String(grp.length), style: 'font-weight:700' }),
           U.el('td', { text: od ? String(od) : '—', style: od ? 'color:#c0392b;font-weight:600' : '' }),
+          numTd(ds.ext), numTd(ds.exc), numTd(ds.wip), numTd(ds.sub), numTd(ds.rescan),
           U.el('td', { text: rep ? (rep + ' / ' + grp.length) : '—', style: rep ? 'color:#1a7f4b;font-weight:600' : '' }),
           U.el('td', { text: att ? ('📎' + att) : '' })]);
         var head = U.el('tr', { style: 'cursor:pointer' }, cells);
@@ -522,8 +545,16 @@
       listBox.innerHTML = '';
       batchHost.innerHTML = '';
       curRows = rows;   // 匯出＝眼前這份（有搜尋就是搜尋結果）
+      var st = dispoStats(rows);
       sumEl.textContent = (rows.length < allRows.length ? '搜尋結果 ' + rows.length + ' / ' : '共 ') +
-        allRows.length + ' 筆、' + nPluginOf(rows) + ' 種弱點（修補以弱點為單位）';
+        allRows.length + ' 筆、' + nPluginOf(rows) + ' 種弱點';
+      statsEl.innerHTML = '';
+      [['總筆數', st.total, ''], ['其中逾期', st.overdue, '#c0392b'], ['展延', st.ext, ''], ['例外', st.exc, ''],
+       ['修補中', st.wip, '#1a7f4b'], ['已送審', st.sub, '#1a7f4b'], ['待複掃', st.rescan, '#1a7f4b']].forEach(function (k) {
+        statsEl.appendChild(U.el('span', { style: 'display:inline-flex;gap:4px;align-items:baseline;padding:3px 10px;border:1px solid #dfe8e3;border-radius:999px;background:#f7faf8' }, [
+          U.el('span', { text: k[0], style: 'color:#6b7a73;font-size:13.5px' }),
+          U.el('b', { text: String(k[1]), style: 'font-size:15px' + (k[1] && k[2] ? ';color:' + k[2] : '') })]));
+      });
       if (writable) batchHost.appendChild(batchBar());
       if (!rows.length) listBox.appendChild(U.el('p', { class: 'empty-hint', text: '沒有符合搜尋的項目' }));
       else (mode === 'byowner' ? drawOwner : mode === 'byplugin' ? drawPlugin : drawHost)();
