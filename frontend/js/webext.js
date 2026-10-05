@@ -500,9 +500,9 @@
       var bSelNone = U.el('button', { class: 'btn btn-secondary btn-sm', text: '全不選' });
       bSelAll.addEventListener('click', function () { shown.forEach(function (r) { selected[r.id] = true; }); draw(); });
       bSelNone.addEventListener('click', function () { selected = {}; draw(); });
-      return U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 12px;background:#f0f6f3;border:1px solid #cfe3d8;border-radius:8px' }, [
+      return U.el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:nowrap;overflow-x:auto;padding:6px 12px;background:#f0f6f3;border:1px solid #cfe3d8;border-radius:8px', title: '三種檢視都能勾（勾「弱點」或「負責人」＝選到其底下全部）→ 一次改狀態或掛同一份佐證' }, [
         bSelAll, bSelNone, cntEl, bStatus, bAttach,
-        U.el('span', { class: 'empty-hint', style: 'margin:0', text: '三種檢視都能勾（勾「弱點」或「負責人」＝選到其底下全部）→ 一次改狀態或掛同一份佐證' }),
+        U.el('span', { class: 'empty-hint', style: 'margin:0;white-space:nowrap', text: '勾負責人／弱點＝選其底下全部' }),
       ]);
     }
 
