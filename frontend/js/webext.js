@@ -350,7 +350,7 @@
 
     // ── 頂端固定區（往下捲也留在上面）：頁籤＋筆數、搜尋、批次列 ──
     // .modal-body 有 20px 內距，top 用 -20px 才會貼齊視窗頂邊
-    var stickyTop = U.el('div', { style: 'position:sticky;top:-20px;z-index:5;background:#fff;margin:-20px -22px 10px;padding:12px 22px 8px;border-bottom:1px solid #e3ebe7;box-shadow:0 4px 8px -6px rgba(0,0,0,.18)' });
+    var stickyTop = U.el('div', { style: 'position:sticky;top:-20px;z-index:5;background:#fff;margin:-20px -22px 8px;padding:8px 22px 6px;border-bottom:1px solid #e3ebe7;box-shadow:0 4px 8px -6px rgba(0,0,0,.18)' });
     box.appendChild(stickyTop);
     // 切換：依負責人(預設，追人) / 依弱點彙總 / 依主機明細；筆數放同一列右側，不再獨佔一大塊空白
     var tgl = U.el('nav', { class: 'subtabs', style: 'margin:0' });
@@ -359,16 +359,19 @@
     var bH = U.el('button', { class: 'subtab-btn', text: '依主機（明細）' });
     tgl.appendChild(bO); tgl.appendChild(bP); tgl.appendChild(bH);
     var sumEl = U.el('span', { style: 'color:#6b7a73;font-size:14.5px;margin-left:auto' });
-    stickyTop.appendChild(U.el('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap' }, [tgl, sumEl]));
+    // 收合統計／到期，騰出空間給清單勾選（記在本機，下次沿用）
+    var collapsed = false; try { collapsed = localStorage.getItem('wx.drillCollapse') === '1'; } catch (e) {}
+    var tgBtn = U.el('button', { class: 'btn btn-secondary btn-sm', title: '收合／展開 統計與到期篩選，騰出空間勾選' });
+    stickyTop.appendChild(U.el('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap' }, [tgl, sumEl, tgBtn]));
     // 處置統計：總筆數／逾期／展延／例外／修補中／已送審／待複掃（跟著搜尋結果變）
-    var statsEl = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' });
+    var statsEl = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:5px' });
     stickyTop.appendChild(statsEl);
     // 到期篩選（依真正到期日、今天起算），可複選。每顆是一段，互不重疊：
     //   已逾期(<0)｜14 天內(0–14)｜30 天內(15–30)｜60 天內(31–60)
     //   各段獨立：點哪段＝只選那段，再點＝取消；要累加就多點幾段；「全部」＝清掉所有選擇
     var DUE_SEG = [['overdue', '已逾期', null, -1], [14, '14 天內', 0, 14], [30, '30 天內', 15, 30], [60, '60 天內', 31, 60]];
     var dueOn = {};          // 段 key → true
-    var dueBar = U.el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px' },
+    var dueBar = U.el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:5px' },
       [U.el('span', { text: '到期（可複選）：', style: 'color:#6b7a73;font-size:14px' })]);
     var bAll = U.el('button', { class: 'subtab-btn', text: '全部', style: 'padding:3px 12px;font-size:14px' });
     bAll.addEventListener('click', function () { dueOn = {}; paintDue(); applyFilter(); draw(); });
@@ -390,6 +393,16 @@
     }
     paintDue();
     stickyTop.appendChild(dueBar);
+    function applyCollapse() {
+      statsEl.style.display = collapsed ? 'none' : 'flex';
+      dueBar.style.display = collapsed ? 'none' : 'flex';
+      tgBtn.textContent = collapsed ? '展開統計／到期 ▾' : '收合統計／到期 ▴';
+    }
+    tgBtn.addEventListener('click', function () {
+      collapsed = !collapsed; try { localStorage.setItem('wx.drillCollapse', collapsed ? '1' : '0'); } catch (e) {}
+      applyCollapse();
+    });
+    applyCollapse();
     var _today = (function () { var d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
     function daysToDue(r) {
       if (!r.effective_due) return null;
@@ -558,11 +571,12 @@
           U.el('td', { text: att ? ('📎' + att) : '' })]);
         var head = U.el('tr', { style: 'cursor:pointer' }, cells);
         var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
-        var ih = icols.map(function (c) { return c[1]; }); ih.push('操作');
+        var ih = (writable ? ['選'] : []).concat(icols.map(function (c) { return c[1]; })); ih.push('操作');
         inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
         var itb = U.el('tbody');
         grp.forEach(function (r) {
-          var tds = icols.map(function (c) { var td = cellTd(r, c[0]); if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; } return td; });
+          var tds = writable ? [U.el('td', {}, [rowCb(r.id)])] : [];
+          icols.forEach(function (c) { var td = cellTd(r, c[0]); if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; } tds.push(td); });
           tds.push(opsCell(r, self));
           itb.appendChild(U.el('tr', {}, tds));
         });
@@ -666,11 +680,12 @@
         var head = U.el('tr', { style: 'cursor:pointer' }, pcells);
         // 展開：這個弱點影響的主機
         var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
-        var ih = icols.map(function (c) { return c[1]; }); ih.push('操作');
+        var ih = (writable ? ['選'] : []).concat(icols.map(function (c) { return c[1]; })); ih.push('操作');
         inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
         var itb = U.el('tbody');
         grp.forEach(function (r) {
-          var tds = icols.map(function (c) { return cellTd(r, c[0]); });
+          var tds = writable ? [U.el('td', {}, [rowCb(r.id)])] : [];
+          icols.forEach(function (c) { tds.push(cellTd(r, c[0])); });
           tds.push(opsCell(r, self));
           itb.appendChild(U.el('tr', {}, tds));
         });
