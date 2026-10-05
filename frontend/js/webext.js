@@ -679,6 +679,17 @@
         head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + a.name; });
         tb.appendChild(head); tb.appendChild(detail);
       });
+      // 總計列：台數＝目前顯示總筆數、其中逾期＝逾期總數（與頂端統計一致）
+      var pOd = shown.filter(function (x) { return x.overdue_days != null && x.overdue_days > 0; }).length;
+      var ptc = [];
+      if (writable) ptc.push(U.el('td', {}));
+      ptc = ptc.concat([
+        U.el('td', { text: '總計', style: 'font-weight:700' }),
+        U.el('td', {}), U.el('td', {}),
+        U.el('td', { text: String(shown.length), style: 'font-weight:700' }),
+        U.el('td', {}), U.el('td', {}), U.el('td', {}),
+        U.el('td', { text: pOd ? String(pOd) : '—', style: 'font-weight:700' + (pOd ? ';color:#c0392b' : '') })]);
+      tb.appendChild(U.el('tr', { style: 'background:#f0f6f3;border-top:2px solid #1a7f4b' }, ptc));
       table.appendChild(tb); listBox.appendChild(table);
     }
     // 統計分組顯示（時間旗標／處置階段互斥／承辦進度互斥），每個數字可點＝下鑽只看那類
@@ -2322,22 +2333,21 @@
       { label: '總覽', render: function (c) {
           var notApply = Math.max(s.unresolved - s.apply_universe, 0);   // 暫無需申請：未結、尚未達申請時機
           var pg = s.progress || {};
-          // ① 一句白話總結（粗體數字，重點可點下鑽）
-          function hot(v, danger, drill) {
-            var e = U.el('b', { class: 'wx-hot' + (danger ? ' danger' : '') + (drill ? ' clk' : ''), text: String(v) });
-            if (drill) { e.title = '點看明細'; e.addEventListener('click', drill); }
-            return e;
-          }
-          var sp = U.el('div', { class: 'wx-summary' });
-          [U.el('span', { text: scope + '未結 ' }), hot(s.unresolved, false, function () { openFindings('未結案', {}); }),
-           U.el('span', { text: ' 筆：逾期 ' }), hot(s.overdue, true, function () { openFindings('已逾期', { band: '已逾期' }); }),
-           U.el('span', { text: '、高風險 ' }), hot(s.high_risk, true, function () { openFindings('高風險（Critical/High）', { risk: 'high' }); }),
-           U.el('span', { text: '（其中逾期 ' }), hot(s.high_risk_overdue, true, function () { openFindings('高風險且逾期', { risk: 'high', band: '已逾期' }); }),
-           U.el('span', { text: '）。需申請展延／例外 ' }), hot(s.apply_universe, false, function () { openFindings('需申請母體', { apply_universe: 'true' }); }),
-           U.el('span', { text: ' 筆，其中未申請 ' }), hot(s.need_apply_count, true, function () { openFindings('應申請未申請', { should_apply: 'true' }); }),
-           U.el('span', { text: '、未回報預計完成日 ' }), hot(s.target.no_target, true, function () { openFindings('未回報預計完成日', { no_target: 'true' }); }),
-           U.el('span', { text: ' 筆。' })].forEach(function (n) { sp.appendChild(n); });
-          c.appendChild(sp);
+          // ① 概況／申請面 KPI 卡（取代長句；每個數字可點下鑽）
+          c.appendChild(U.el('p', { class: 'empty-hint', style: 'margin:0 0 4px', text: scope + '　·　' + s.today + '（數字可點看明細）' }));
+          kpiCards(c, '概況', [
+            { label: '未結', value: s.unresolved, drill: function () { openFindings('未結案', {}); } },
+            { label: '逾期', value: s.overdue, danger: true, drill: function () { openFindings('已逾期', { band: '已逾期' }); } },
+            { label: '高風險', value: s.high_risk, danger: true, drill: function () { openFindings('高風險（Critical/High）', { risk: 'high' }); } },
+            { label: '高風險且逾期', value: s.high_risk_overdue, danger: true, drill: function () { openFindings('高風險且逾期', { risk: 'high', band: '已逾期' }); } },
+          ]);
+          kpiCards(c, '申請面（需申請＝未申請＋已申請）', [
+            { label: '需申請', value: s.apply_universe, drill: function () { openFindings('需申請母體', { apply_universe: 'true' }); } },
+            { label: '應申請未申請', value: s.need_apply_count, danger: true, drill: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
+            { label: '已申請處置中', value: s.applied_count, drill: function () { openFindings('已申請處置中', { applied: 'true' }); } },
+            { label: '未回報預計完成日', value: s.target.no_target, danger: true, drill: function () { openFindings('未回報預計完成日', { no_target: 'true' }); } },
+            { label: '待追查', value: pg.flagged || 0, danger: true, drill: function () { openFindings('待追查（聲稱申請或完成，來源未反映）', { flagged: 'true' }); } },
+          ]);
 
           // ② 分解條：母體＝子項相加，以視覺呈現避免誤加
           stackedBar(c, '未結 ' + s.unresolved + '　＝　需申請 ＋ 暫無需申請', s.unresolved, [
@@ -2349,16 +2359,7 @@
             { label: '已申請處置中', value: s.applied_count, color: '#1a7f4b', onClick: function () { openFindings('已申請處置中', { applied: 'true' }); } },
           ]);
 
-          // ③ 須優先處理的關鍵數字
-          kpiCards(c, '須優先處理', [
-            { label: '已逾期', value: s.overdue, danger: true, drill: function () { openFindings('已逾期', { band: '已逾期' }); } },
-            { label: '高風險且逾期', value: s.high_risk_overdue, danger: true, drill: function () { openFindings('高風險且逾期', { risk: 'high', band: '已逾期' }); } },
-            { label: '應申請未申請', value: s.need_apply_count, danger: true, drill: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
-            { label: '未回報預計完成日', value: s.target.no_target, danger: true, drill: function () { openFindings('未回報預計完成日', { no_target: 'true' }); } },
-            { label: '待追查', value: pg.flagged || 0, danger: true, drill: function () { openFindings('待追查（聲稱申請或完成，來源未反映）', { flagged: 'true' }); } },
-          ]);
-
-          // ④ 視覺：嚴重度圓餅 + 到期倒數長條（皆可點下鑽）
+          // ③ 視覺：嚴重度圓餅 + 到期倒數長條（皆可點下鑽）
           var vis = U.el('div', { style: 'display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;margin:10px 0' });
           var pie = U.el('div', { style: 'flex:1 1 300px;min-width:280px' });
           pie.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '嚴重度分佈（未結案）' })]));
