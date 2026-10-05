@@ -213,9 +213,11 @@
   //   ② 承辦處理進度（四類加起來＝總筆數）：尚未修補＝沒回報（維持原來狀態）；修補中＝處理中；
   //      已送審＝要申請展延／例外；待複掃＝等複掃
   function dispoStats(rs) {
-    var st = { total: rs.length, overdue: 0, orig: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, rescan: 0 };
+    var st = { total: rs.length, overdue: 0, notdue: 0, orig: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, rescan: 0 };
     rs.forEach(function (r) {
+      // 時間（互斥，相加＝總）：逾期＝已過真正到期日；未逾期＝其餘（還在期限內／無到期日）
       if (r.overdue_days != null && r.overdue_days > 0) st.overdue++;
+      else st.notdue++;
       // 處置階段（互斥，相加＝總）：展延＝首次展延中；例外＝例外管理中；其餘＝原始修補（目前狀態）
       if (r.stage === '首次展延中') st.ext++;
       else if (r.stage === '例外管理中') st.exc++;
@@ -230,9 +232,10 @@
   }
 
   // 統計分組定義：key→{label, 所屬組, 判定函式}；供「數字可點下鑽」與各處共用，與 dispoStats 同一套。
-  // 組別：time（時間旗標，可跨階段）/ stage（處置階段，互斥）/ prog（承辦進度，互斥）
+  // 三組各自互斥、各自相加＝總（同一批從三個角度看，不要跨組相加）：time／stage／prog
   var STAT_DEFS = {
     overdue: { label: '逾期', grp: 'time', test: function (r) { return r.overdue_days != null && r.overdue_days > 0; } },
+    notdue: { label: '未逾期', grp: 'time', test: function (r) { return !(r.overdue_days != null && r.overdue_days > 0); } },
     orig: { label: '原始修補', grp: 'stage', test: function (r) { return r.stage !== '首次展延中' && r.stage !== '例外管理中'; } },
     ext: { label: '展延', grp: 'stage', test: function (r) { return r.stage === '首次展延中'; } },
     exc: { label: '例外', grp: 'stage', test: function (r) { return r.stage === '例外管理中'; } },
@@ -515,7 +518,7 @@
       // 第一列：分組標題（時間／處置階段／承辦進度）
       var ghr = U.el('tr', { style: 'font-size:12px' }, [
         U.el('th', { colspan: String(lead) }),
-        U.el('th', { text: '時間（旗標）', colspan: '1', style: 'color:#a3342d' + BLH }),
+        U.el('th', { text: '時間（互斥）', colspan: '2', style: 'color:#a3342d' + BLH }),
         U.el('th', { text: '處置階段（互斥）', colspan: '3', style: 'color:#1f6f8b' + BLH }),
         U.el('th', { text: '承辦進度（互斥）', colspan: '4', style: 'color:#1a7f4b' + BLH }),
         U.el('th', {}),
@@ -524,7 +527,7 @@
       function th(t, bl) { return U.el('th', { text: t, style: bl || '' }); }
       var hr = U.el('tr', {}, (writable ? [th('選')] : []).concat([
         th('負責人'), th('部門'), th('總筆數'),
-        th('逾期', BLH.slice(1)),
+        th('逾期', BLH.slice(1)), th('未逾期'),
         th('原始修補', BLH.slice(1)), th('展延'), th('例外'),
         th('尚未修補', BLH.slice(1)), th('修補中'), th('送審中'), th('待複掃'),
         th('附件')]));
@@ -534,7 +537,7 @@
         ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['remark', '備註(Excel)'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
-      var colspanAll = lead + 4 + 1 + 4;   // 全表欄數（給明細展開列用）
+      var colspanAll = lead + 2 + 3 + 4 + 1;   // 全表欄數（給明細展開列用）：時間2＋處置3＋承辦4＋附件1
       function numTd(n, extra) { return U.el('td', { text: n ? String(n) : '—', style: (n ? 'font-weight:600' : 'color:#9aa5a0') + (extra || '') }); }
       keys.forEach(function (k) {
         var grp = groups[k], r0 = grp[0];
@@ -548,6 +551,7 @@
           U.el('td', { text: r0.department || '' }),
           U.el('td', { text: String(grp.length), style: 'font-weight:700' }),
           U.el('td', { text: od ? String(od) : '—', style: (od ? 'color:#c0392b;font-weight:600' : 'color:#9aa5a0') + BLB }),
+          numTd(ds.notdue),
           numTd(ds.orig, BLB), numTd(ds.ext), numTd(ds.exc),
           U.el('td', { text: ds.todo ? String(ds.todo) : '—', style: (ds.todo ? 'font-weight:600;color:#b9770e' : 'color:#9aa5a0') + BLB }),
           numTd(ds.wip), numTd(ds.sub), numTd(ds.rescan),
@@ -577,7 +581,7 @@
         U.el('td', { text: '總計', style: 'font-weight:700' }),
         U.el('td', {}),
         U.el('td', { text: String(T.total), style: 'font-weight:700' }),
-        totTd(T.overdue, BLT, true),
+        totTd(T.overdue, BLT, true), totTd(T.notdue),
         totTd(T.orig, BLT), totTd(T.ext), totTd(T.exc),
         totTd(T.todo, BLT), totTd(T.wip), totTd(T.sub), totTd(T.rescan),
         U.el('td', { text: attT ? ('📎' + attT) : '', style: 'font-weight:700' })]);
@@ -679,7 +683,7 @@
     }
     // 統計分組顯示（時間旗標／處置階段互斥／承辦進度互斥），每個數字可點＝下鑽只看那類
     var STAT_GROUPS = [
-      { title: '時間（旗標）', color: '#a3342d', keys: ['overdue'] },
+      { title: '時間（互斥）', color: '#a3342d', keys: ['overdue', 'notdue'] },
       { title: '處置階段（互斥）', color: '#1f6f8b', keys: ['orig', 'ext', 'exc'] },
       { title: '承辦進度（互斥）', color: '#1a7f4b', keys: ['todo', 'wip', 'sub', 'rescan'] },
     ];
