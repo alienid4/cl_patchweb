@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from . import config, query
 from .logic import CLOSE_OPEN, overdue_days
+from .query import display_host
 from .models import Finding, MailLog, User
 
 
@@ -99,7 +100,7 @@ def _item(f: Finding, today: dt.date) -> dict:
     else:
         due_text = "剩 %d 天" % (-od) if od is not None else ""
     return {
-        "host": f.host, "name": f.name, "severity": f.severity,
+        "host": display_host(f), "name": f.name, "severity": f.severity,
         "sheet_key": f.sheet_key,
         "effective_due": f.effective_due.isoformat() if f.effective_due else None,
         "due_text": due_text,

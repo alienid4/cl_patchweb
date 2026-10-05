@@ -12,6 +12,7 @@ window.SHEET_PROFILES = {
     unit:       ['負責單位', '部門'],
     owner:      ['負責人', '負責人員'],
     host:       ['Host', '內部Host IP', '標的IP', 'IP', '網址'],
+    assetName:  ['資產名稱'],   // [CL_WebVuln 加] 沒主機的列顯示用
     name:       ['Name', '風險項目', '發現', '標的', 'Audit Name', '外部情資'],
     pluginId:   ['Plugin ID'],
     // 嚴重度：發現嚴重性(E1) 優先，其次英文 Risk Severity，再風險等級，最後單一「風險」

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from typing import Optional
 
 from sqlalchemy import select
@@ -214,6 +215,16 @@ def summary(session: Session, department: Optional[str] = None,
     }
 
 
+def display_host(f) -> Optional[str]:
+    """畫面顯示用的主機：Excel 沒有主機/IP 的列（如 10-外部威脅情資）退回顯示「資產名稱」。
+    只影響顯示；DB 的 host 與承辦疊加層的鍵(sheet|plugin|host)不動，避免重匯後承辦進度對不上。"""
+    if f.host:
+        return f.host
+    raw = f.raw or {}
+    a = raw.get("資產名稱")
+    return str(a).strip() if a not in (None, "") and str(a).strip() else f.host
+
+
 def _is_reported(c) -> bool:
     """承辦有沒有回報過：處理進度、預計完成日、追蹤備註任一有填（不看 Excel，只看系統內疊加欄）。"""
     if c is None:
@@ -331,9 +342,11 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
                                    (c.status_changed_at if c else None), _imp)
         return {
             "id": f.id, "sheet_key": f.sheet_key, "plugin_id": f.plugin_id, "name": f.name,
-            "host": f.host, "severity": f.severity, "department": f.department, "owner": f.owner,
+            "host": display_host(f), "severity": f.severity, "department": f.department, "owner": f.owner,
             "effective_due": f.effective_due.isoformat() if f.effective_due else None,
             "remediation_due": f.remediation_due.isoformat() if f.remediation_due else None,  # 原始/應計修補期限(展延前)
+            "first_extension_due": f.first_extension_due.isoformat() if f.first_extension_due else None,  # Excel 首次展延上限(原值)
+            "exception_due": f.exception_due.isoformat() if f.exception_due else None,  # Excel 例外核准期限(原值)
             "overdue_days": overdue_days(f.effective_due, today),
             "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
             "should_apply": should_apply(f, today),
@@ -349,9 +362,63 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
     return [row(f) for f in fs]
 
 
+# 單機版解析器(sheets.js parseCounts)的「計數字串」，如「中*4 低*2」：一列會展開成 4+2 筆紀錄。
+_COUNT_RE = re.compile(r"(嚴重|critical|高|high|中|medium|低|low|info)\s*[\*xX×]\s*(\d+)", re.I)
+
+
+def _count_total(raw: dict) -> Optional[int]:
+    """這列是「計數字串」列的話，回傳它會展開成幾筆；不是就回 None。"""
+    for v in raw.values():
+        if isinstance(v, str):
+            ms = _COUNT_RE.findall(v)
+            if ms:
+                return sum(int(n) for _, n in ms)
+    return None
+
+
+def _collapse_counted(rows: list) -> list:
+    """把「計數字串」展開出來的重複列收回原本那一列。
+
+    為什麼：匯入時「中*4 低*2」這種列被(刻意)展開成 6 筆、每筆都帶同一份原始列。
+    快照若照存回前端，前端重組 Excel 再解析時每一列又會再展開一次（6 列 × 6 = 36），
+    2026-10-05 實測第 9 表：Excel 28 列 → DB 136 筆 → 畫面 1042 筆。
+    規則：連續且內容完全相同的 L 列，若該列計數總和為 n(>1) 且 L 是 n 的倍數，收成 L/n 列
+    （Excel 本來就有兩列一模一樣時也保得住）；對不上就原樣不動，寧可不收也不要收錯。"""
+    out: list = []
+    i = 0
+    while i < len(rows):
+        j = i
+        while j + 1 < len(rows) and rows[j + 1] == rows[i]:
+            j += 1
+        run = j - i + 1
+        n = _count_total(rows[i]) if isinstance(rows[i], dict) else None
+        keep = run // n if (n and n > 1 and run % n == 0) else run
+        out.extend(rows[i] for _ in range(keep))
+        i = j + 1
+    return out
+
+
+def _drop_blank_columns(columns: list, rows: list) -> tuple[list, list]:
+    """去掉「沒有欄名、而且整欄都沒值」的欄。原始 Excel 的使用範圍常被拉到最後一欄(XFD)，
+    2026-10-05 實測第 3 表 16,377 欄只有 33 欄有值，前端重組 Excel 光這張就多花 1 秒以上。
+    有欄名的欄一律保留（就算整欄空白），不改原封匯出(export 用 sheet_columns，不經這裡)。"""
+    def blank(v):
+        return v is None or (isinstance(v, str) and v.strip() == "")
+    used = set()
+    for r in rows:
+        for k, v in r.items():
+            if not blank(v):
+                used.add(k)
+    keep = [c for c in columns if str(c).strip() or c in used]
+    keep_set = set(keep)
+    slim = [{k: v for k, v in r.items() if k in keep_set or not blank(v)} for r in rows]
+    return keep, slim
+
+
 def snapshot(session: Session) -> dict:
     """回傳最新快照的『原封』內容（各表欄序＋每列 raw），供網頁前端重建 workbook、
-    餵回單機版原本的解析/render pipeline，畫面與單機版一模一樣。"""
+    餵回單機版原本的解析/render pipeline，畫面與單機版一模一樣。
+    送出前做兩件事（都不改 DB）：收回計數字串展開的重複列、去掉沒名字的空白欄。"""
     b = latest_batch(session)
     if not b:
         return {"source_file": None, "imported_at": None, "sheets": []}
@@ -367,11 +434,12 @@ def snapshot(session: Session) -> dict:
             by[k] = []
             order.append(k)
         by[k].append(f.raw or {})
-    sheets = [{
-        "name": k,
-        "columns": scs.get(k) or (list(by[k][0].keys()) if by[k] else []),
-        "rows": by[k],
-    } for k in order]
+    sheets = []
+    for k in order:
+        rows = _collapse_counted(by[k])
+        cols = scs.get(k) or (list(rows[0].keys()) if rows else [])
+        cols, rows = _drop_blank_columns(cols, rows)
+        sheets.append({"name": k, "columns": cols, "rows": rows})
     return {"source_file": b.source_file,
             "imported_at": b.imported_at.isoformat() if b.imported_at else None,
             "sheets": sheets}
@@ -667,7 +735,7 @@ def weekly_report(session: Session, department: Optional[str] = None,
         pstate = classify_progress(prog, f.close_status == CLOSE_DONE, f.stage,
                                    (c.status_changed_at if c else None), imported)
         return {
-            "id": f.id, "host": f.host, "owner": f.owner, "department": f.department,
+            "id": f.id, "host": display_host(f), "owner": f.owner, "department": f.department,
             "severity": f.severity, "name": f.name, "plugin_id": f.plugin_id,
             "stage": f.stage, "progress": prog, "progress_state": pstate,
             "effective_due": f.effective_due.isoformat() if f.effective_due else None,

@@ -122,7 +122,10 @@
 
     var base = {
       sheet: sheetName,
-      host: U.normStr(pick(row, map.host)),
+      // [CL_WebVuln 加] 沒主機/IP 的列(如 10-外部威脅情資)顯示資產名稱；hostRaw 留真實值給存回伺服器(承辦鍵不變)
+      host: U.normStr(pick(row, map.host)) || U.normStr(pick(row, map.assetName)),
+      hostRaw: U.normStr(pick(row, map.host)),
+      assetName: U.normStr(pick(row, map.assetName)),
       name: U.normStr(pick(row, map.name)),
       pluginId: U.normStr(pick(row, map.pluginId)),
       unit: unit,

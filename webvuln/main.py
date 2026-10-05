@@ -11,6 +11,7 @@ import datetime as dt
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -30,6 +31,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CL_WebVuln 弱點彙總（網頁版）", version="0.1.0", lifespan=lifespan)
+# 回應壓縮：開頁快照 ~5MB 的長文字(Description/Plugin Output)壓縮後約剩兩成，下載最花時間的就是它
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 def get_db():

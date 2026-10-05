@@ -31,7 +31,8 @@
   }
   function recToFinding(r) {
     return {
-      sheet_key: r.sheet, plugin_id: r.pluginId || null, name: r.name || null, host: r.host || null,
+      sheet_key: r.sheet, plugin_id: r.pluginId || null, name: r.name || null,
+      host: (r.hostRaw !== undefined ? r.hostRaw : r.host) || null,   // 存真實主機；畫面顯示的資產名稱不存進 host
       severity: (r.severity && r.severity !== 'Unknown') ? r.severity : null,
       severity_raw: r.severityRaw || null,
       department: r.unit || null,
@@ -269,7 +270,7 @@
   async function openFindings(title, params) {
     var box = U.el('div');
     var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
-      ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['overdue_days', '逾期天數'],
+      ['plugin_id', 'Plugin'], ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['overdue_days', '逾期天數'],
       ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
       ['department', '部門'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
     var curRows = [];   // 載入後填入,供「匯出」用(匯的是眼前這份子集)
@@ -409,7 +410,7 @@
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, oheads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
       var icols = [['host', '主機'], ['severity', '嚴重度'], ['name', '弱點'], ['plugin_id', 'Plugin'],
-        ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['overdue_days', '逾期天數'],
+        ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
       keys.forEach(function (k) {
@@ -508,7 +509,7 @@
       table.appendChild(U.el('thead', {}, [htr]));
       var pColspan = HEADS.length + (writable ? 1 : 0);
       var tb = U.el('tbody');
-      var icols = [['host', '主機'], ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['overdue_days', '逾期天數'],
+      var icols = [['host', '主機'], ['effective_due', '到期日'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
       aggs.forEach(function (a) {
