@@ -891,7 +891,7 @@
   // ---- 到期倒數（依倒數天數分桶：已逾期／30天內／31–60／61–90／90天以上）----
   // 可切「含申請提前量」：行動期限＝到期日 − 提前量(14天)，因為申請本身要時間，到期才動就來不及。
   var DUE_LEAD_DAYS = 14;
-  var _dueLeadOn = true;   // 預設含提前量(主管要的追查角度)
+  var _dueLeadOn = false;  // 預設不含提前量：「30 天內」就是字面上實際到期日 30 天內（2026-10-05 使用者要求）；要追申請時機再勾
   function leadToggle(onChange) {
     var wrap = U.el('label', { style: 'display:inline-flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;margin:0 0 8px' });
     var chk = U.el('input', { type: 'checkbox' }); chk.checked = _dueLeadOn;
@@ -912,6 +912,19 @@
     host.appendChild(U.el('p', { class: 'empty-hint', text: '依「' + basis + '」倒數分桶（未結案）；無到期日者不列。' }));
     host.appendChild(leadToggle(function () { renderDueSoonInto(host); }));
     var pm = function (extra) { var p = Object.assign({}, extra); if (lead) p.lead = lead; return p; };
+    // 累計三顆：30／60／90 天內（從今天起算，不含已逾期）。下面的分段頁籤是互斥的(31–60 不含 30 內)，這三顆才是「N 天內全部」
+    var cum = [[30, d.d30 || 0], [60, (d.d30 || 0) + (d.d31_60 || 0)], [90, (d.d30 || 0) + (d.d31_60 || 0) + (d.d61_90 || 0)]];
+    var cumRow = U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0 14px' },
+      [U.el('span', { style: 'font-weight:600', text: '累計（今天起，不含已逾期）：' })]);
+    cum.forEach(function (c) {
+      var b = U.el('button', { class: 'btn btn-primary', text: c[0] + ' 天內（' + c[1] + '）', style: 'min-width:130px' });
+      if (!c[1]) b.disabled = true;
+      b.addEventListener('click', function () {
+        openFindings(c[0] + ' 天內到期（' + (_dueLeadOn ? '依行動期限' : '依實際到期日') + '，累計）', pm({ due_min: '0', due_max: String(c[0]) }));
+      });
+      cumRow.appendChild(b);
+    });
+    host.appendChild(cumRow);
     // 長條圖：各到期桶數量一眼看出近期壓力（紅＝已逾期），點長條下鑽該桶明細。
     var bparam = { overdue: { due_max: '-1' }, d30: { due_min: '0', due_max: '30' },
       d31_60: { due_min: '31', due_max: '60' }, d61_90: { due_min: '61', due_max: '90' }, d90plus: { due_min: '91' } };
