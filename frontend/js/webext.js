@@ -213,11 +213,14 @@
   //   ② 承辦處理進度（四類加起來＝總筆數）：尚未修補＝沒回報（維持原來狀態）；修補中＝處理中；
   //      已送審＝要申請展延／例外；待複掃＝等複掃
   function dispoStats(rs) {
-    var st = { total: rs.length, overdue: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, rescan: 0 };
+    var st = { total: rs.length, overdue: 0, orig: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, rescan: 0 };
     rs.forEach(function (r) {
       if (r.overdue_days != null && r.overdue_days > 0) st.overdue++;
+      // 處置階段（互斥，相加＝總）：展延＝首次展延中；例外＝例外管理中；其餘＝原始修補（目前狀態）
       if (r.stage === '首次展延中') st.ext++;
       else if (r.stage === '例外管理中') st.exc++;
+      else st.orig++;
+      // 承辦進度（互斥，相加＝總）
       if (r.progress === '處理中') st.wip++;
       else if (r.progress === '等複掃') st.rescan++;
       else if (r.progress === '要申請展延' || r.progress === '要申請例外') st.sub++;
@@ -225,6 +228,19 @@
     });
     return st;
   }
+
+  // 統計分組定義：key→{label, 所屬組, 判定函式}；供「數字可點下鑽」與各處共用，與 dispoStats 同一套。
+  // 組別：time（時間旗標，可跨階段）/ stage（處置階段，互斥）/ prog（承辦進度，互斥）
+  var STAT_DEFS = {
+    overdue: { label: '逾期', grp: 'time', test: function (r) { return r.overdue_days != null && r.overdue_days > 0; } },
+    orig: { label: '原始修補', grp: 'stage', test: function (r) { return r.stage !== '首次展延中' && r.stage !== '例外管理中'; } },
+    ext: { label: '展延', grp: 'stage', test: function (r) { return r.stage === '首次展延中'; } },
+    exc: { label: '例外', grp: 'stage', test: function (r) { return r.stage === '例外管理中'; } },
+    todo: { label: '尚未修補', grp: 'prog', test: function (r) { return r.progress !== '處理中' && r.progress !== '等複掃' && r.progress !== '要申請展延' && r.progress !== '要申請例外'; } },
+    wip: { label: '修補中', grp: 'prog', test: function (r) { return r.progress === '處理中'; } },
+    sub: { label: '送審中', grp: 'prog', test: function (r) { return r.progress === '要申請展延' || r.progress === '要申請例外'; } },
+    rescan: { label: '待複掃', grp: 'prog', test: function (r) { return r.progress === '等複掃'; } },
+  };
 
   // 表格儲存格：Excel 有填但備註沒有申請紀錄的展延上限／例外核准期限＝不算數，標灰並說明
   // （使用者 2026-10-05：看得出是原始資料的問題，不會誤以為已經展延）
@@ -296,6 +312,15 @@
     select(initial);
   }
 
+  // 下鑽視窗放到接近滿版（不改原檔 CSS，注入一次；只作用在掛了 .wx-drillmax 的下鑽視窗）
+  function ensureDrillMaxStyle() {
+    if (document.getElementById('wx-drillmax-style')) return;
+    var s = document.createElement('style'); s.id = 'wx-drillmax-style';
+    s.textContent = '.modal.wx-drillmax{max-width:100%;width:100%;max-height:97vh}' +
+      '#modal-overlay.show:has(.wx-drillmax){padding:8px}';
+    document.head.appendChild(s);
+  }
+
   // 下鑽：開視窗顯示 /api/findings 篩出的明細（可排序、可匯出此清單）
   async function openFindings(title, params) {
     var box = U.el('div');
@@ -315,6 +340,10 @@
     curRows = rows;
     var self = function () { openFindings(title, params); };
     function nPluginOf(rs) { var s = {}; rs.forEach(function (r) { s[(r.plugin_id || '') + '|' + (r.name || '')] = 1; }); return Object.keys(s).length; }
+    ensureDrillMaxStyle();
+    var _mEl = document.querySelector('#modal-overlay .modal'); if (_mEl) _mEl.classList.add('wx-drillmax');   // 下鑽放到接近滿版
+    var statKey = null;        // 點統計數字下鑽：只顯示該類（null＝全部）
+    var shown = rows;          // 眼前真正顯示的列（rows 再套 statKey）
 
     // ── 頂端固定區（往下捲也留在上面）：頁籤＋筆數、搜尋、批次列 ──
     // .modal-body 有 20px 內距，top 用 -20px 才會貼齊視窗頂邊
@@ -333,8 +362,7 @@
     stickyTop.appendChild(statsEl);
     // 到期篩選（依真正到期日、今天起算），可複選。每顆是一段，互不重疊：
     //   已逾期(<0)｜14 天內(0–14)｜30 天內(15–30)｜60 天內(31–60)
-    //   點一顆沒亮的天數 → 它和更短的各段、連同已逾期一起亮（例：點 30＝已逾期＋14＋30）
-    //   點已亮的 → 只取消那一段，可以手動挑掉不要的；「全部」＝清掉所有選擇
+    //   各段獨立：點哪段＝只選那段，再點＝取消；要累加就多點幾段；「全部」＝清掉所有選擇
     var DUE_SEG = [['overdue', '已逾期', null, -1], [14, '14 天內', 0, 14], [30, '30 天內', 15, 30], [60, '60 天內', 31, 60]];
     var dueOn = {};          // 段 key → true
     var dueBar = U.el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px' },
@@ -346,9 +374,8 @@
       var b = U.el('button', { class: 'subtab-btn', text: sg[1], style: 'padding:3px 12px;font-size:14px',
         title: sg[0] === 'overdue' ? '已過真正到期日' : ('距到期 ' + sg[2] + '–' + sg[3] + ' 天') });
       b.addEventListener('click', function () {
-        if (dueOn[sg[0]]) { delete dueOn[sg[0]]; }                                   // 已亮 → 只取消這段
-        else if (sg[0] === 'overdue') { dueOn.overdue = true; }
-        else { for (var j = 0; j <= i; j++) dueOn[DUE_SEG[j][0]] = true; }         // 沒亮 → 連同更短的與已逾期
+        if (dueOn[sg[0]]) delete dueOn[sg[0]];   // 已亮→取消；沒亮→加選（各段獨立，可複選累加）
+        else dueOn[sg[0]] = true;
         paintDue(); applyFilter(); draw();
       });
       dueBar.appendChild(b); return b;
@@ -438,7 +465,7 @@
     function updCount() {
       var ids = selIds(), n = ids.length;
       // 搜尋換了範圍，先前勾的不會自動取消；不在眼前的要講出來，免得批次動作改到看不到的那幾筆
-      var vis = {}; rows.forEach(function (r) { vis[r.id] = 1; });
+      var vis = {}; shown.forEach(function (r) { vis[r.id] = 1; });
       var hidden = ids.filter(function (id) { return !vis[id]; }).length;
       if (cntEl) {
         cntEl.textContent = '已選 ' + n + ' 筆' + (hidden ? '（其中 ' + hidden + ' 筆不在目前篩選結果中）' : '');
@@ -466,9 +493,9 @@
       var bAttach = U.el('button', { class: 'btn btn-secondary btn-sm', text: '批次上傳佐證' });
       bStatus.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchStatus(ids, onDone); });
       bAttach.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchAttach(ids, onDone); });
-      var bSelAll = U.el('button', { class: 'btn btn-secondary btn-sm', text: rows.length < allRows.length ? '全選篩選結果' : '全選' });
+      var bSelAll = U.el('button', { class: 'btn btn-secondary btn-sm', text: shown.length < allRows.length ? '全選篩選結果' : '全選' });
       var bSelNone = U.el('button', { class: 'btn btn-secondary btn-sm', text: '全不選' });
-      bSelAll.addEventListener('click', function () { rows.forEach(function (r) { selected[r.id] = true; }); draw(); });
+      bSelAll.addEventListener('click', function () { shown.forEach(function (r) { selected[r.id] = true; }); draw(); });
       bSelNone.addEventListener('click', function () { selected = {}; draw(); });
       return U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 12px;background:#f0f6f3;border:1px solid #cfe3d8;border-radius:8px' }, [
         bSelAll, bSelNone, cntEl, bStatus, bAttach,
@@ -477,33 +504,52 @@
     }
 
     // 依負責人：誰還有幾支＋其中逾期(主角度，追人不追 IP)；點名字展開他的明細
+    // 欄位分三段（直線＋表頭標題）：時間(旗標逾期)｜處置階段 原始修補/展延/例外(互斥)｜承辦進度 尚未修補/修補中/送審中/待複掃(互斥)
     function drawOwner() {
       var groups = {};
-      rows.forEach(function (r) { var k = ((r.owner || '').trim()) || '— 未指派'; (groups[k] = groups[k] || []).push(r); });
+      shown.forEach(function (r) { var k = ((r.owner || '').trim()) || '— 未指派'; (groups[k] = groups[k] || []).push(r); });
       var keys = Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; });
+      var BLH = ';border-left:2px solid #1a7f4b', BLB = ';border-left:2px solid #e3ebe7', BLT = ';border-left:2px solid #ccd9d1';
+      var lead = (writable ? 1 : 0) + 3;   // 選?＋負責人＋部門＋總筆數
       var table = U.el('table', { class: 'tracking-table' });
-      var oheads = (writable ? ['選'] : []).concat(['負責人', '部門', '總筆數', '其中逾期', '展延', '例外', '尚未修補', '修補中', '已送審', '待複掃', '附件']);
-      table.appendChild(U.el('thead', {}, [U.el('tr', {}, oheads.map(function (h) { return U.el('th', { text: h }); }))]));
+      // 第一列：分組標題（時間／處置階段／承辦進度）
+      var ghr = U.el('tr', { style: 'font-size:12px' }, [
+        U.el('th', { colspan: String(lead) }),
+        U.el('th', { text: '時間（旗標）', colspan: '1', style: 'color:#a3342d' + BLH }),
+        U.el('th', { text: '處置階段（互斥）', colspan: '3', style: 'color:#1f6f8b' + BLH }),
+        U.el('th', { text: '承辦進度（互斥）', colspan: '4', style: 'color:#1a7f4b' + BLH }),
+        U.el('th', {}),
+      ]);
+      // 第二列：欄名
+      function th(t, bl) { return U.el('th', { text: t, style: bl || '' }); }
+      var hr = U.el('tr', {}, (writable ? [th('選')] : []).concat([
+        th('負責人'), th('部門'), th('總筆數'),
+        th('逾期', BLH.slice(1)),
+        th('原始修補', BLH.slice(1)), th('展延'), th('例外'),
+        th('尚未修補', BLH.slice(1)), th('修補中'), th('送審中'), th('待複掃'),
+        th('附件')]));
+      table.appendChild(U.el('thead', {}, [ghr, hr]));
       var tb = U.el('tbody');
       var icols = [['host', '主機'], ['severity', '嚴重度'], ['name', '弱點'], ['plugin_id', 'Plugin'],
         ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['remark', '備註(Excel)'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
+      var colspanAll = lead + 4 + 1 + 4;   // 全表欄數（給明細展開列用）
+      function numTd(n, extra) { return U.el('td', { text: n ? String(n) : '—', style: (n ? 'font-weight:600' : 'color:#9aa5a0') + (extra || '') }); }
       keys.forEach(function (k) {
         var grp = groups[k], r0 = grp[0];
         var od = grp.filter(function (x) { return x.overdue_days != null && x.overdue_days > 0; }).length;
         var att = grp.reduce(function (s, x) { return s + (x.att_count || 0); }, 0);
         var ds = dispoStats(grp);
-        function numTd(n) { return U.el('td', { text: n ? String(n) : '—', style: n ? 'font-weight:600' : 'color:#9aa5a0' }); }
         var nameTd = U.el('td', { text: '▸ ' + k, style: 'font-weight:600;color:#1a7f4b;cursor:pointer;text-align:left;min-width:120px' });
         var cells = [];
         if (writable) cells.push(U.el('td', {}, [groupCb(grp.map(function (x) { return x.id; }))]));
         cells = cells.concat([nameTd,
           U.el('td', { text: r0.department || '' }),
           U.el('td', { text: String(grp.length), style: 'font-weight:700' }),
-          U.el('td', { text: od ? String(od) : '—', style: od ? 'color:#c0392b;font-weight:600' : '' }),
-          numTd(ds.ext), numTd(ds.exc),
-          U.el('td', { text: ds.todo ? String(ds.todo) : '—', style: ds.todo ? 'font-weight:600;color:#b9770e' : 'color:#9aa5a0' }),
+          U.el('td', { text: od ? String(od) : '—', style: (od ? 'color:#c0392b;font-weight:600' : 'color:#9aa5a0') + BLB }),
+          numTd(ds.orig, BLB), numTd(ds.ext), numTd(ds.exc),
+          U.el('td', { text: ds.todo ? String(ds.todo) : '—', style: (ds.todo ? 'font-weight:600;color:#b9770e' : 'color:#9aa5a0') + BLB }),
           numTd(ds.wip), numTd(ds.sub), numTd(ds.rescan),
           U.el('td', { text: att ? ('📎' + att) : '' })]);
         var head = U.el('tr', { style: 'cursor:pointer' }, cells);
@@ -517,10 +563,25 @@
           itb.appendChild(U.el('tr', {}, tds));
         });
         inner.appendChild(itb); makeSortable(inner);
-        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(oheads.length), style: 'background:#f6f8f7;padding:6px' }, [inner])]);
+        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(colspanAll), style: 'background:#f6f8f7;padding:6px' }, [inner])]);
         head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + k; });
         tb.appendChild(head); tb.appendChild(detail);
       });
+      // 總計列（表尾；每欄加總＝目前顯示的全部）
+      var T = dispoStats(shown);
+      var attT = shown.reduce(function (s, x) { return s + (x.att_count || 0); }, 0);
+      function totTd(n, extra, danger) { return U.el('td', { text: String(n), style: 'font-weight:700' + (danger && n ? ';color:#c0392b' : '') + (extra || '') }); }
+      var totCells = [];
+      if (writable) totCells.push(U.el('td', {}));
+      totCells = totCells.concat([
+        U.el('td', { text: '總計', style: 'font-weight:700' }),
+        U.el('td', {}),
+        U.el('td', { text: String(T.total), style: 'font-weight:700' }),
+        totTd(T.overdue, BLT, true),
+        totTd(T.orig, BLT), totTd(T.ext), totTd(T.exc),
+        totTd(T.todo, BLT), totTd(T.wip), totTd(T.sub), totTd(T.rescan),
+        U.el('td', { text: attT ? ('📎' + attT) : '', style: 'font-weight:700' })]);
+      tb.appendChild(U.el('tr', { style: 'background:#f0f6f3;border-top:2px solid #1a7f4b' }, totCells));
       table.appendChild(tb); listBox.appendChild(table);
     }
 
@@ -529,7 +590,7 @@
       var table = U.el('table', { class: 'tracking-table' });
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, heads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
-      rows.forEach(function (r) {
+      shown.forEach(function (r) {
         var tds = [];
         if (writable) tds.push(U.el('td', {}, [rowCb(r.id)]));
         cols.forEach(function (c) {
@@ -547,7 +608,7 @@
     var _pSort = { key: 'count', dir: -1 };
     function drawPlugin() {
       var groups = {};
-      rows.forEach(function (r) { var k = (r.plugin_id || '') + '|' + (r.name || ''); (groups[k] = groups[k] || []).push(r); });
+      shown.forEach(function (r) { var k = (r.plugin_id || '') + '|' + (r.name || ''); (groups[k] = groups[k] || []).push(r); });
       // 每個弱點彙總成一列的聚合值（供排序與顯示）
       var aggs = Object.keys(groups).map(function (k) {
         var grp = groups[k], r0 = grp[0];
@@ -616,22 +677,48 @@
       });
       table.appendChild(tb); listBox.appendChild(table);
     }
+    // 統計分組顯示（時間旗標／處置階段互斥／承辦進度互斥），每個數字可點＝下鑽只看那類
+    var STAT_GROUPS = [
+      { title: '時間（旗標）', color: '#a3342d', keys: ['overdue'] },
+      { title: '處置階段（互斥）', color: '#1f6f8b', keys: ['orig', 'ext', 'exc'] },
+      { title: '承辦進度（互斥）', color: '#1a7f4b', keys: ['todo', 'wip', 'sub', 'rescan'] },
+    ];
+    function renderStats(st) {
+      statsEl.innerHTML = '';
+      // 總筆數
+      statsEl.appendChild(U.el('span', { style: 'display:inline-flex;gap:5px;align-items:baseline;margin-right:4px' }, [
+        U.el('span', { text: '總筆數', style: 'color:#6b7a73;font-size:13.5px' }),
+        U.el('b', { text: String(st.total), style: 'font-size:17px;color:#1a7f4b' })]));
+      STAT_GROUPS.forEach(function (g) {
+        statsEl.appendChild(U.el('span', { style: 'width:1px;height:22px;background:#cfd8d3;margin:0 2px' }));
+        statsEl.appendChild(U.el('span', { text: g.title, style: 'color:' + g.color + ';font-size:12px;font-weight:600;align-self:center' }));
+        g.keys.forEach(function (key) {
+          var active = statKey === key;
+          var chip = U.el('span', { title: '點我只看「' + STAT_DEFS[key].label + '」（再點取消）',
+            style: 'display:inline-flex;gap:4px;align-items:baseline;padding:3px 10px;border:1px solid ' + (active ? g.color : '#dfe8e3') + ';border-radius:999px;cursor:pointer;background:' + (active ? g.color : '#f7faf8') }, [
+            U.el('span', { text: STAT_DEFS[key].label, style: 'font-size:13.5px;color:' + (active ? '#fff' : '#6b7a73') }),
+            U.el('b', { text: String(st[key]), style: 'font-size:15px;color:' + (active ? '#fff' : (key === 'overdue' ? '#c0392b' : '#2a3430')) })]);
+          chip.addEventListener('click', function () { statKey = (statKey === key) ? null : key; draw(); });
+          statsEl.appendChild(chip);
+        });
+      });
+      if (statKey) {
+        statsEl.appendChild(U.el('button', { class: 'btn btn-secondary btn-sm', style: 'margin-left:6px', text: '清除下鑽（' + STAT_DEFS[statKey].label + '）',
+          onclick: function () { statKey = null; draw(); } }));
+      }
+    }
     function draw() {
       listBox.innerHTML = '';
       batchHost.innerHTML = '';
-      curRows = rows;   // 匯出＝眼前這份（有搜尋就是搜尋結果）
-      var st = dispoStats(rows);
+      var st = dispoStats(rows);                 // 統計一律以「搜尋/到期篩選後」為母數，數字穩定不跳
+      shown = statKey ? rows.filter(STAT_DEFS[statKey].test) : rows;   // 點了統計數字就只顯示那類
+      curRows = shown;                            // 匯出＝眼前這份
+      var extra = statKey ? ('　·　下鑽：' + STAT_DEFS[statKey].label + ' ' + shown.length + ' 筆') : '';
       sumEl.textContent = (rows.length < allRows.length ? '篩選結果 ' + rows.length + ' / ' : '共 ') +
-        allRows.length + ' 筆、' + nPluginOf(rows) + ' 種弱點';
-      statsEl.innerHTML = '';
-      [['總筆數', st.total, ''], ['其中逾期', st.overdue, '#c0392b'], ['展延', st.ext, ''], ['例外', st.exc, ''],
-       ['尚未修補', st.todo, '#b9770e'], ['修補中', st.wip, '#1a7f4b'], ['已送審', st.sub, '#1a7f4b'], ['待複掃', st.rescan, '#1a7f4b']].forEach(function (k) {
-        statsEl.appendChild(U.el('span', { style: 'display:inline-flex;gap:4px;align-items:baseline;padding:3px 10px;border:1px solid #dfe8e3;border-radius:999px;background:#f7faf8' }, [
-          U.el('span', { text: k[0], style: 'color:#6b7a73;font-size:13.5px' }),
-          U.el('b', { text: String(k[1]), style: 'font-size:15px' + (k[1] && k[2] ? ';color:' + k[2] : '') })]));
-      });
+        allRows.length + ' 筆、' + nPluginOf(rows) + ' 種弱點' + extra;
+      renderStats(st);
       if (writable) batchHost.appendChild(batchBar());
-      if (!rows.length) listBox.appendChild(U.el('p', { class: 'empty-hint', text: '沒有符合搜尋的項目' }));
+      if (!shown.length) listBox.appendChild(U.el('p', { class: 'empty-hint', text: statKey ? '這一類目前沒有項目' : '沒有符合搜尋的項目' }));
       else (mode === 'byowner' ? drawOwner : mode === 'byplugin' ? drawPlugin : drawHost)();
       updCount();
     }
