@@ -150,5 +150,10 @@ def restore(session: Session, data: dict, overwrite: bool = False, apply: bool =
         # 沿用來源機的推進時間（可疑聲稱判定要比對它跟匯入時間）；沒有才用現在
         c.status_changed_at = datetime.fromisoformat(sca) if sca else now
     session.commit()
+    # 改過的負責人／部門要同時套到目前這批弱點資料，畫面與統計才會照新的算
+    # （2026-10-05 漏了這步：還原後 221 的資訊架構部仍算進已改到別部門的 6 筆）
+    if b:
+        from . import cases as _cases
+        rep["overrides_applied"] = _cases.apply_owner_overrides(session, b)
     rep["applied"] = True
     return rep

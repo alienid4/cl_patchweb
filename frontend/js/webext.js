@@ -226,6 +226,20 @@
     return st;
   }
 
+  // 表格儲存格：Excel 有填但備註沒有申請紀錄的展延上限／例外核准期限＝不算數，標灰並說明
+  // （使用者 2026-10-05：看得出是原始資料的問題，不會誤以為已經展延）
+  function cellTd(r, key) {
+    var td = U.el('td', { text: cellVal(r, key) });
+    var off = (key === 'first_extension_due' && r.first_extension_due && r.ext_applied === false) ||
+              (key === 'exception_due' && r.exception_due && r.exc_applied === false);
+    if (off) {
+      td.style.color = '#b0b8b4'; td.style.textDecoration = 'line-through';
+      td.title = 'Excel 有填，但備註沒有' + (key === 'exception_due' ? '例外' : '展延') + '的申請紀錄，系統不採用這個日期（請確認原始資料）';
+    }
+    if (key === 'remark') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; td.style.minWidth = '140px'; td.style.fontSize = '13.5px'; }
+    return td;
+  }
+
   // 讓表格可點欄位排序（數字欄按數值、其餘按字串；再點反向）。點了會在欄名顯示 ▲/▼,讓排序看得見。
   function makeSortable(table) {
     var ths = table.tHead ? table.tHead.rows[0].cells : [];
@@ -286,7 +300,7 @@
   async function openFindings(title, params) {
     var box = U.el('div');
     var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
-      ['plugin_id', 'Plugin'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
+      ['plugin_id', 'Plugin'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['remark', '備註(Excel)'], ['overdue_days', '逾期天數'],
       ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
       ['department', '部門'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
     var curRows = [];   // 載入後填入,供「匯出」用(匯的是眼前這份子集)
@@ -472,7 +486,7 @@
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, oheads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
       var icols = [['host', '主機'], ['severity', '嚴重度'], ['name', '弱點'], ['plugin_id', 'Plugin'],
-        ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
+        ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['remark', '備註(Excel)'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
       keys.forEach(function (k) {
@@ -498,7 +512,7 @@
         inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
         var itb = U.el('tbody');
         grp.forEach(function (r) {
-          var tds = icols.map(function (c) { var td = U.el('td', { text: cellVal(r, c[0]) }); if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; } return td; });
+          var tds = icols.map(function (c) { var td = cellTd(r, c[0]); if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; } return td; });
           tds.push(opsCell(r, self));
           itb.appendChild(U.el('tr', {}, tds));
         });
@@ -519,7 +533,7 @@
         var tds = [];
         if (writable) tds.push(U.el('td', {}, [rowCb(r.id)]));
         cols.forEach(function (c) {
-          var td = U.el('td', { text: cellVal(r, c[0]) });
+          var td = cellTd(r, c[0]);
           if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; }
           tds.push(td);
         });
@@ -571,7 +585,7 @@
       table.appendChild(U.el('thead', {}, [htr]));
       var pColspan = HEADS.length + (writable ? 1 : 0);
       var tb = U.el('tbody');
-      var icols = [['host', '主機'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['overdue_days', '逾期天數'],
+      var icols = [['host', '主機'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['remark', '備註(Excel)'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
       aggs.forEach(function (a) {
@@ -591,7 +605,7 @@
         inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
         var itb = U.el('tbody');
         grp.forEach(function (r) {
-          var tds = icols.map(function (c) { return U.el('td', { text: cellVal(r, c[0]) }); });
+          var tds = icols.map(function (c) { return cellTd(r, c[0]); });
           tds.push(opsCell(r, self));
           itb.appendChild(U.el('tr', {}, tds));
         });

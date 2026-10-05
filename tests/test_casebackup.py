@@ -64,3 +64,12 @@ def test_api_requires_super(client):
         assert client.post("/api/cases/restore", json={"data": {}}).status_code == 401
     finally:
         config.NO_AUTH = True
+
+
+def test_restore_applies_owner_and_department_to_findings(tmp_path):
+    """還原後，改過的負責人／部門要反映在弱點資料上（統計依部門篩選才對）。"""
+    a, b = _db(tmp_path, "a.db"), _db(tmp_path, "b.db")
+    ca = _case(a, "A"); ca.owner_override, ca.department_override = "王小明", "證券資訊部"; a.commit()
+    casebackup.restore(b, casebackup.export(a), apply=True)
+    f = b.query(Finding).filter(Finding.name == "A").one()
+    assert (f.owner, f.department) == ("王小明", "證券資訊部")

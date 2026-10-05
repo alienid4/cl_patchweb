@@ -18,7 +18,7 @@ from collections import defaultdict
 
 from .config import SLA_POLICY_DAYS, lead_days
 from .logic import (CLOSE_DONE, CLOSE_OPEN, SEVERITIES, STAGE_EXCEPTION,
-                    STAGE_EXTENSION, STAGE_ORIGINAL, overdue_days)
+                    STAGE_EXTENSION, STAGE_ORIGINAL, _applied_exc, _applied_ext, overdue_days)
 from .models import Finding, ImportBatch, SheetColumns
 
 BANDS = ("已逾期", "30天內", "31–90天", "91–180天", "180天以上", "無到期日")
@@ -374,6 +374,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             "remediation_due": f.remediation_due.isoformat() if f.remediation_due else None,  # 原始/應計修補期限(展延前)
             "first_extension_due": f.first_extension_due.isoformat() if f.first_extension_due else None,  # Excel 首次展延上限(原值)
             "exception_due": f.exception_due.isoformat() if f.exception_due else None,  # Excel 例外核准期限(原值)
+            # 日期有填但備註沒有對應申請紀錄＝不算數（compute_effective_due 的規則）；畫面用來把那格標灰
+            "ext_applied": _applied_ext(f.remark), "exc_applied": _applied_exc(f.remark),
             "overdue_days": overdue_days(f.effective_due, today),
             "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
             "should_apply": should_apply(f, today),
