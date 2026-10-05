@@ -183,6 +183,14 @@
     return wrap;
   }
 
+  // 表格／匯出的欄位顯示值。逾期天數＝今天−真正到期日，後端對「還沒到期」回負數（例如例外核准到年底＝-87），
+  // 直接顯示會被看成「逾期 -87 天」甚至以為算錯。只有 > 0 才是逾期，其餘一律顯示「—」（與單機版一致：未逾期不列天數）。
+  function cellVal(r, key) {
+    var v = r ? r[key] : null;
+    if (key === 'overdue_days') return (v != null && v > 0) ? String(v) : '—';
+    return v == null ? '' : String(v);
+  }
+
   // 讓表格可點欄位排序（數字欄按數值、其餘按字串；再點反向）。點了會在欄名顯示 ▲/▼,讓排序看得見。
   function makeSortable(table) {
     var ths = table.tHead ? table.tHead.rows[0].cells : [];
@@ -254,17 +262,70 @@
     try { rows = await jget('/api/findings?' + qd(Object.assign({ status: '未結案' }, params || {}))); }
     catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
     if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '無資料' })); return; }
+    var allRows = rows;   // 這個視窗的完整清單；rows 是套用搜尋後「眼前這份」，三種檢視、全選、匯出都吃 rows
     curRows = rows;
     var self = function () { openFindings(title, params); };
-    var nPlugin = (function () { var s = {}; rows.forEach(function (r) { s[(r.plugin_id || '') + '|' + (r.name || '')] = 1; }); return Object.keys(s).length; })();
-    box.appendChild(U.el('p', { class: 'empty-hint', text: '共 ' + rows.length + ' 筆、' + nPlugin + ' 種弱點（修補以弱點為單位）。' }));
-    // 切換：依負責人(預設，追人) / 依弱點彙總 / 依主機明細
-    var tgl = U.el('nav', { class: 'subtabs', style: 'margin:4px 0 10px' });
+    function nPluginOf(rs) { var s = {}; rs.forEach(function (r) { s[(r.plugin_id || '') + '|' + (r.name || '')] = 1; }); return Object.keys(s).length; }
+
+    // ── 頂端固定區（往下捲也留在上面）：頁籤＋筆數、搜尋、批次列 ──
+    // .modal-body 有 20px 內距，top 用 -20px 才會貼齊視窗頂邊
+    var stickyTop = U.el('div', { style: 'position:sticky;top:-20px;z-index:5;background:#fff;margin:-20px -22px 10px;padding:12px 22px 8px;border-bottom:1px solid #e3ebe7;box-shadow:0 4px 8px -6px rgba(0,0,0,.18)' });
+    box.appendChild(stickyTop);
+    // 切換：依負責人(預設，追人) / 依弱點彙總 / 依主機明細；筆數放同一列右側，不再獨佔一大塊空白
+    var tgl = U.el('nav', { class: 'subtabs', style: 'margin:0' });
     var bO = U.el('button', { class: 'subtab-btn active', text: '依負責人' });
     var bP = U.el('button', { class: 'subtab-btn', text: '依弱點彙總' });
     var bH = U.el('button', { class: 'subtab-btn', text: '依主機（明細）' });
-    tgl.appendChild(bO); tgl.appendChild(bP); tgl.appendChild(bH); box.appendChild(tgl);
+    tgl.appendChild(bO); tgl.appendChild(bP); tgl.appendChild(bH);
+    var sumEl = U.el('span', { style: 'color:#6b7a73;font-size:14.5px;margin-left:auto' });
+    stickyTop.appendChild(U.el('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap' }, [tgl, sumEl]));
+
+    // 搜尋：可一次貼一整欄 IP（從 Excel 複製，換行／空白／逗號分隔都行）
+    //   IP → 跟主機欄「完全相同」才算（避免 .2 誤中 .22）；其他字 → 主機／負責人／弱點／Plugin／部門 包含即中
+    // 用 textarea 不用 input：單行 input 貼上時會把換行直接吃掉，Excel 一欄 IP 會黏成一串
+    var qInput = U.el('textarea', { rows: '1', placeholder: '搜尋：可直接貼上 Excel 一整欄 IP（多筆）；或輸入負責人、弱點、Plugin、部門',
+      style: 'flex:1;min-width:280px;padding:7px 10px;border:1px solid #cfd8d3;border-radius:6px;font-size:15px;resize:vertical;max-height:120px;line-height:1.4;font-family:inherit' });
+    function fitQ() { qInput.style.height = 'auto'; qInput.style.height = Math.min(qInput.scrollHeight + 2, 120) + 'px'; }
+    var qClear = U.el('button', { class: 'btn btn-secondary btn-sm', text: '清除' });
+    var qInfo = U.el('div', { style: 'font-size:14px;margin-top:4px;color:#6b7a73' });
+    stickyTop.appendChild(U.el('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:10px' }, [qInput, qClear]));
+    stickyTop.appendChild(qInfo);
+    var batchHost = U.el('div', { style: 'margin-top:8px' }); stickyTop.appendChild(batchHost);
     var listBox = U.el('div'); box.appendChild(listBox);
+
+    var IP_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
+    function hostIps(h) { return String(h || '').match(/\d{1,3}(?:\.\d{1,3}){3}/g) || []; }
+    function applyFilter() {
+      var toks = qInput.value.split(/[\s,;，；、]+/).map(function (t) { return t.trim(); }).filter(Boolean);
+      var uniq = {}; toks = toks.filter(function (t) { var k = t.toLowerCase(); if (uniq[k]) return false; uniq[k] = 1; return true; });
+      if (!toks.length) { rows = allRows; qInfo.textContent = ''; return; }
+      var ips = toks.filter(function (t) { return IP_RE.test(t); });
+      var words = toks.filter(function (t) { return !IP_RE.test(t); }).map(function (t) { return t.toLowerCase(); });
+      var ipSet = {}; ips.forEach(function (ip) { ipSet[ip] = 1; });
+      var hitTok = {};
+      rows = allRows.filter(function (r) {
+        var ok = false;
+        hostIps(r.host).forEach(function (ip) { if (ipSet[ip]) { ok = true; hitTok[ip] = 1; } });
+        if (words.length) {
+          var hay = [r.host, r.owner, r.name, r.plugin_id, r.department].map(function (v) { return String(v == null ? '' : v).toLowerCase(); }).join('\n');
+          words.forEach(function (w) { if (hay.indexOf(w) >= 0) { ok = true; hitTok[w] = 1; } });
+        }
+        return ok;
+      });
+      // 查無的要講出來：「沒找到」跟「沒查」看起來一樣是 0，必須分得出來
+      var miss = ips.filter(function (ip) { return !hitTok[ip]; }).concat(words.filter(function (w) { return !hitTok[w]; }));
+      qInfo.innerHTML = '';
+      qInfo.appendChild(U.el('span', { text: '查了 ' + toks.length + ' 個條件，符合 ' + rows.length + ' 筆。' }));
+      if (miss.length) {
+        qInfo.appendChild(U.el('span', { style: 'color:#c0392b;margin-left:8px',
+          text: '查無 ' + miss.length + ' 個：' + miss.slice(0, 30).join('、') + (miss.length > 30 ? ' …' : '') +
+            '（這個視窗只含目前的篩選範圍，例如未結案、所選部門）' }));
+      }
+    }
+    var _qTimer = null;
+    qInput.addEventListener('input', function () { fitQ(); clearTimeout(_qTimer); _qTimer = setTimeout(function () { applyFilter(); draw(); }, 200); });
+    qInput.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) e.preventDefault(); });   // Enter 不換行（貼上的換行照收）
+    qClear.addEventListener('click', function () { qInput.value = ''; fitQ(); applyFilter(); draw(); qInput.focus(); });
     var mode = 'byowner';
     function setMode(m, btn) { mode = m; [bO, bP, bH].forEach(function (b) { b.classList.remove('active'); }); btn.classList.add('active'); draw(); }
     bO.addEventListener('click', function () { setMode('byowner', bO); });
@@ -276,7 +337,16 @@
     var selected = {};          // finding id -> true
     var cntEl = null;           // 每次 draw 重建的「已選 N 筆」標籤
     function selIds() { return Object.keys(selected).filter(function (k) { return selected[k]; }).map(Number); }
-    function updCount() { var n = selIds().length; if (cntEl) cntEl.textContent = '已選 ' + n + ' 筆'; }
+    function updCount() {
+      var ids = selIds(), n = ids.length;
+      // 搜尋換了範圍，先前勾的不會自動取消；不在眼前的要講出來，免得批次動作改到看不到的那幾筆
+      var vis = {}; rows.forEach(function (r) { vis[r.id] = 1; });
+      var hidden = ids.filter(function (id) { return !vis[id]; }).length;
+      if (cntEl) {
+        cntEl.textContent = '已選 ' + n + ' 筆' + (hidden ? '（其中 ' + hidden + ' 筆不在目前搜尋結果中）' : '');
+        cntEl.style.color = hidden ? '#c0392b' : '';
+      }
+    }
     function rowCb(id) {
       var cb = U.el('input', { type: 'checkbox', class: 'wx-rowcb' });
       cb.checked = !!selected[id];
@@ -298,11 +368,11 @@
       var bAttach = U.el('button', { class: 'btn btn-secondary btn-sm', text: '批次上傳佐證' });
       bStatus.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchStatus(ids, onDone); });
       bAttach.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchAttach(ids, onDone); });
-      var bSelAll = U.el('button', { class: 'btn btn-secondary btn-sm', text: '全選' });
+      var bSelAll = U.el('button', { class: 'btn btn-secondary btn-sm', text: rows.length < allRows.length ? '全選搜尋結果' : '全選' });
       var bSelNone = U.el('button', { class: 'btn btn-secondary btn-sm', text: '全不選' });
       bSelAll.addEventListener('click', function () { rows.forEach(function (r) { selected[r.id] = true; }); draw(); });
       bSelNone.addEventListener('click', function () { selected = {}; draw(); });
-      return U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px;padding:8px 12px;background:#f0f6f3;border:1px solid #cfe3d8;border-radius:8px' }, [
+      return U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 12px;background:#f0f6f3;border:1px solid #cfe3d8;border-radius:8px' }, [
         bSelAll, bSelNone, cntEl, bStatus, bAttach,
         U.el('span', { class: 'empty-hint', style: 'margin:0', text: '三種檢視都能勾（勾「弱點」或「負責人」＝選到其底下全部）→ 一次改狀態或掛同一份佐證' }),
       ]);
@@ -339,7 +409,7 @@
         inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
         var itb = U.el('tbody');
         grp.forEach(function (r) {
-          var tds = icols.map(function (c) { var td = U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; } return td; });
+          var tds = icols.map(function (c) { var td = U.el('td', { text: cellVal(r, c[0]) }); if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; } return td; });
           tds.push(opsCell(r, self));
           itb.appendChild(U.el('tr', {}, tds));
         });
@@ -360,7 +430,7 @@
         var tds = [];
         if (writable) tds.push(U.el('td', {}, [rowCb(r.id)]));
         cols.forEach(function (c) {
-          var td = U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) });
+          var td = U.el('td', { text: cellVal(r, c[0]) });
           if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; }
           tds.push(td);
         });
@@ -432,7 +502,7 @@
         inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
         var itb = U.el('tbody');
         grp.forEach(function (r) {
-          var tds = icols.map(function (c) { return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); });
+          var tds = icols.map(function (c) { return U.el('td', { text: cellVal(r, c[0]) }); });
           tds.push(opsCell(r, self));
           itb.appendChild(U.el('tr', {}, tds));
         });
@@ -445,8 +515,13 @@
     }
     function draw() {
       listBox.innerHTML = '';
-      if (writable) listBox.appendChild(batchBar());
-      (mode === 'byowner' ? drawOwner : mode === 'byplugin' ? drawPlugin : drawHost)();
+      batchHost.innerHTML = '';
+      curRows = rows;   // 匯出＝眼前這份（有搜尋就是搜尋結果）
+      sumEl.textContent = (rows.length < allRows.length ? '搜尋結果 ' + rows.length + ' / ' : '共 ') +
+        allRows.length + ' 筆、' + nPluginOf(rows) + ' 種弱點（修補以弱點為單位）';
+      if (writable) batchHost.appendChild(batchBar());
+      if (!rows.length) listBox.appendChild(U.el('p', { class: 'empty-hint', text: '沒有符合搜尋的項目' }));
+      else (mode === 'byowner' ? drawOwner : mode === 'byplugin' ? drawPlugin : drawHost)();
       updCount();
     }
     draw();
@@ -1162,7 +1237,7 @@
     var box = U.el('div'); container.appendChild(box);
     function matchRow(r, terms) {
       var hay = [r.owner, r.host, r.name, r.plugin_id, r.severity, r.effective_due,
-        r.target_date, (r.overdue_days != null ? r.overdue_days : ''), r.track_note, r.department].join(' ').toLowerCase();
+        r.target_date, cellVal(r, 'overdue_days'), r.track_note, r.department].join(' ').toLowerCase();
       return terms.every(function (t) { return hay.indexOf(t) >= 0; });
     }
     var refresh = function () { renderActionListInto(container, title, params); };
@@ -1195,7 +1270,7 @@
         inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
         var itb = U.el('tbody');
         grp.forEach(function (r) {
-          var tds = _TODO_COLS.map(function (c) { return U.el('td', { text: r[c[0]] == null ? '' : String(r[c[0]]) }); });
+          var tds = _TODO_COLS.map(function (c) { return U.el('td', { text: cellVal(r, c[0]) }); });
           tds.push(opsCell(r, refresh));
           itb.appendChild(U.el('tr', {}, tds));
         });
@@ -1906,7 +1981,7 @@
 
     function matchRow(r, terms) {
       var hay = [r.owner, r.host, r.name, r.plugin_id, r.severity, r.effective_due,
-        r.target_date, (r.overdue_days != null ? r.overdue_days : ''), r.track_note,
+        r.target_date, cellVal(r, 'overdue_days'), r.track_note,
         r.department].join(' ').toLowerCase();
       return terms.every(function (t) { return hay.indexOf(t) >= 0; });
     }
@@ -2065,7 +2140,7 @@
   function exportRowsCSV(cols, rows, title) {
     var headers = cols.map(function (c) { return c[1]; });
     var lines = [headers].concat(rows.map(function (r) {
-      return cols.map(function (c) { return r[c[0]] == null ? '' : r[c[0]]; });
+      return cols.map(function (c) { return cellVal(r, c[0]); });
     }));
     var csv = lines.map(function (arr) {
       return arr.map(function (v) {
