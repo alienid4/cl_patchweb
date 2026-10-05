@@ -191,25 +191,23 @@
     return v == null ? '' : String(v);
   }
 
-  // 一組弱點的處置統計（下鑽頂端與「依負責人」共用，同一套定義）：
-  //   展延＝Excel 已在首次展延中；例外＝Excel 已在例外管理中（兩者是資安 Excel 的官方階段）
-  //   修補中＝承辦標「處理中」；已送審＝承辦標「要申請展延／例外」但 Excel 還沒反映成那個階段；待複掃＝承辦標「等複掃」
+  // 一組弱點的處置統計（下鑽頂端與「依負責人」共用，同一套定義）。兩個維度分開看：
+  //   ① Excel 官方階段：展延＝首次展延中；例外＝例外管理中（其餘是原始修補期限）
+  //   ② 承辦處理進度（四類加起來＝總筆數）：尚未修補＝沒回報（維持原來狀態）；修補中＝處理中；
+  //      已送審＝要申請展延／例外；待複掃＝等複掃
   function dispoStats(rs) {
-    var st = { total: rs.length, overdue: 0, ext: 0, exc: 0, wip: 0, sub: 0, rescan: 0 };
+    var st = { total: rs.length, overdue: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, rescan: 0 };
     rs.forEach(function (r) {
       if (r.overdue_days != null && r.overdue_days > 0) st.overdue++;
       if (r.stage === '首次展延中') st.ext++;
       else if (r.stage === '例外管理中') st.exc++;
       if (r.progress === '處理中') st.wip++;
       else if (r.progress === '等複掃') st.rescan++;
-      else if ((r.progress === '要申請展延' && r.stage !== '首次展延中' && r.stage !== '例外管理中') ||
-               (r.progress === '要申請例外' && r.stage !== '例外管理中')) st.sub++;
+      else if (r.progress === '要申請展延' || r.progress === '要申請例外') st.sub++;
+      else st.todo++;
     });
     return st;
   }
-
-  // 承辦有沒有回報過(跟後端 _is_reported 同義)：處理進度、預計完成日、追蹤備註任一有填
-  function isReported(r) { return !!(r && (r.progress || r.target_date || String(r.track_note || '').trim())); }
 
   // 讓表格可點欄位排序（數字欄按數值、其餘按字串；再點反向）。點了會在欄名顯示 ▲/▼,讓排序看得見。
   function makeSortable(table) {
@@ -407,7 +405,7 @@
       rows.forEach(function (r) { var k = ((r.owner || '').trim()) || '— 未指派'; (groups[k] = groups[k] || []).push(r); });
       var keys = Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; });
       var table = U.el('table', { class: 'tracking-table' });
-      var oheads = (writable ? ['選'] : []).concat(['負責人', '部門', '總筆數', '其中逾期', '展延', '例外', '修補中', '已送審', '待複掃', '已回報', '附件']);
+      var oheads = (writable ? ['選'] : []).concat(['負責人', '部門', '總筆數', '其中逾期', '展延', '例外', '尚未修補', '修補中', '已送審', '待複掃', '附件']);
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, oheads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
       var icols = [['host', '主機'], ['severity', '嚴重度'], ['name', '弱點'], ['plugin_id', 'Plugin'],
@@ -418,7 +416,6 @@
         var grp = groups[k], r0 = grp[0];
         var od = grp.filter(function (x) { return x.overdue_days != null && x.overdue_days > 0; }).length;
         var att = grp.reduce(function (s, x) { return s + (x.att_count || 0); }, 0);
-        var rep = grp.filter(isReported).length;   // 他回報過幾筆(處理進度／預計完成日／追蹤備註任一)
         var ds = dispoStats(grp);
         function numTd(n) { return U.el('td', { text: n ? String(n) : '—', style: n ? 'font-weight:600' : 'color:#9aa5a0' }); }
         var nameTd = U.el('td', { text: '▸ ' + k, style: 'font-weight:600;color:#1a7f4b;cursor:pointer;text-align:left;min-width:120px' });
@@ -428,8 +425,9 @@
           U.el('td', { text: r0.department || '' }),
           U.el('td', { text: String(grp.length), style: 'font-weight:700' }),
           U.el('td', { text: od ? String(od) : '—', style: od ? 'color:#c0392b;font-weight:600' : '' }),
-          numTd(ds.ext), numTd(ds.exc), numTd(ds.wip), numTd(ds.sub), numTd(ds.rescan),
-          U.el('td', { text: rep ? (rep + ' / ' + grp.length) : '—', style: rep ? 'color:#1a7f4b;font-weight:600' : '' }),
+          numTd(ds.ext), numTd(ds.exc),
+          U.el('td', { text: ds.todo ? String(ds.todo) : '—', style: ds.todo ? 'font-weight:600;color:#b9770e' : 'color:#9aa5a0' }),
+          numTd(ds.wip), numTd(ds.sub), numTd(ds.rescan),
           U.el('td', { text: att ? ('📎' + att) : '' })]);
         var head = U.el('tr', { style: 'cursor:pointer' }, cells);
         var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
@@ -550,7 +548,7 @@
         allRows.length + ' 筆、' + nPluginOf(rows) + ' 種弱點';
       statsEl.innerHTML = '';
       [['總筆數', st.total, ''], ['其中逾期', st.overdue, '#c0392b'], ['展延', st.ext, ''], ['例外', st.exc, ''],
-       ['修補中', st.wip, '#1a7f4b'], ['已送審', st.sub, '#1a7f4b'], ['待複掃', st.rescan, '#1a7f4b']].forEach(function (k) {
+       ['尚未修補', st.todo, '#b9770e'], ['修補中', st.wip, '#1a7f4b'], ['已送審', st.sub, '#1a7f4b'], ['待複掃', st.rescan, '#1a7f4b']].forEach(function (k) {
         statsEl.appendChild(U.el('span', { style: 'display:inline-flex;gap:4px;align-items:baseline;padding:3px 10px;border:1px solid #dfe8e3;border-radius:999px;background:#f7faf8' }, [
           U.el('span', { text: k[0], style: 'color:#6b7a73;font-size:13.5px' }),
           U.el('b', { text: String(k[1]), style: 'font-size:15px' + (k[1] && k[2] ? ';color:' + k[2] : '') })]));
