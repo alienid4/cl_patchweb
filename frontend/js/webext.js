@@ -317,20 +317,34 @@
     // 處置統計：總筆數／逾期／展延／例外／修補中／已送審／待複掃（跟著搜尋結果變）
     var statsEl = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' });
     stickyTop.appendChild(statsEl);
-    // 到期篩選（依真正到期日、今天起算）：14／30／60 天內不含已逾期，已逾期另一顆；跟搜尋可疊加
-    var dueMode = 'all';
-    var DUE_OPTS = [['all', '全部'], ['overdue', '已逾期'], ['14', '14 天內'], ['30', '30 天內'], ['60', '60 天內']];
+    // 到期篩選（依真正到期日、今天起算），可複選。每顆是一段，互不重疊：
+    //   已逾期(<0)｜14 天內(0–14)｜30 天內(15–30)｜60 天內(31–60)
+    //   點一顆沒亮的天數 → 它和更短的各段、連同已逾期一起亮（例：點 30＝已逾期＋14＋30）
+    //   點已亮的 → 只取消那一段，可以手動挑掉不要的；「全部」＝清掉所有選擇
+    var DUE_SEG = [['overdue', '已逾期', null, -1], [14, '14 天內', 0, 14], [30, '30 天內', 15, 30], [60, '60 天內', 31, 60]];
+    var dueOn = {};          // 段 key → true
     var dueBar = U.el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px' },
-      [U.el('span', { text: '到期：', style: 'color:#6b7a73;font-size:14px' })]);
-    var dueBtns = DUE_OPTS.map(function (o) {
-      var b = U.el('button', { class: 'subtab-btn' + (o[0] === 'all' ? ' active' : ''), text: o[1], style: 'padding:3px 12px;font-size:14px' });
+      [U.el('span', { text: '到期（可複選）：', style: 'color:#6b7a73;font-size:14px' })]);
+    var bAll = U.el('button', { class: 'subtab-btn', text: '全部', style: 'padding:3px 12px;font-size:14px' });
+    bAll.addEventListener('click', function () { dueOn = {}; paintDue(); applyFilter(); draw(); });
+    dueBar.appendChild(bAll);
+    var dueBtns = DUE_SEG.map(function (sg, i) {
+      var b = U.el('button', { class: 'subtab-btn', text: sg[1], style: 'padding:3px 12px;font-size:14px',
+        title: sg[0] === 'overdue' ? '已過真正到期日' : ('距到期 ' + sg[2] + '–' + sg[3] + ' 天') });
       b.addEventListener('click', function () {
-        dueMode = o[0];
-        dueBtns.forEach(function (x) { x.classList.toggle('active', x === b); });
-        applyFilter(); draw();
+        if (dueOn[sg[0]]) { delete dueOn[sg[0]]; }                                   // 已亮 → 只取消這段
+        else if (sg[0] === 'overdue') { dueOn.overdue = true; }
+        else { for (var j = 0; j <= i; j++) dueOn[DUE_SEG[j][0]] = true; }         // 沒亮 → 連同更短的與已逾期
+        paintDue(); applyFilter(); draw();
       });
       dueBar.appendChild(b); return b;
     });
+    function paintDue() {
+      var any = Object.keys(dueOn).length > 0;
+      bAll.classList.toggle('active', !any);
+      dueBtns.forEach(function (b, i) { b.classList.toggle('active', !!dueOn[DUE_SEG[i][0]]); });
+    }
+    paintDue();
     stickyTop.appendChild(dueBar);
     var _today = (function () { var d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
     function daysToDue(r) {
@@ -340,11 +354,13 @@
       return Math.round((d - _today) / 86400000);
     }
     function passDue(r) {
-      if (dueMode === 'all') return true;
+      if (!Object.keys(dueOn).length) return true;
       var n = daysToDue(r);
       if (n == null) return false;
-      if (dueMode === 'overdue') return n < 0;
-      return n >= 0 && n <= +dueMode;
+      return DUE_SEG.some(function (sg) {
+        if (!dueOn[sg[0]]) return false;
+        return sg[0] === 'overdue' ? n < 0 : (n >= sg[2] && n <= sg[3]);
+      });
     }
 
     // 搜尋：可一次貼一整欄 IP（從 Excel 複製，換行／空白／逗號分隔都行）
