@@ -214,6 +214,14 @@ def summary(session: Session, department: Optional[str] = None,
     }
 
 
+def _is_reported(c) -> bool:
+    """承辦有沒有回報過：處理進度、預計完成日、追蹤備註任一有填（不看 Excel，只看系統內疊加欄）。"""
+    if c is None:
+        return False
+    from .logic import PROGRESS_VALUES
+    return (c.status in PROGRESS_VALUES) or bool((c.track_note or "").strip()) or (c.target_date is not None)
+
+
 def find(session: Session, department: Optional[str] = None, status: str = CLOSE_OPEN,
          owner: Optional[str] = None, severity: Optional[str] = None,
          band: Optional[str] = None, keyword: Optional[str] = None,
@@ -222,7 +230,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
          progress: Optional[str] = None,
          no_owner: bool = False, no_due: bool = False,
          risk: Optional[str] = None, apply_universe: bool = False, not_apply: bool = False,
-         no_target: bool = False, flagged: bool = False,
+         no_target: bool = False, flagged: bool = False, reported: bool = False,
          due_min: Optional[int] = None, due_max: Optional[int] = None, lead: int = 0,
          today: Optional[dt.date] = None) -> list[dict]:
     """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
@@ -286,6 +294,10 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             return classify_progress(p, f.close_status == _CD, f.stage,
                                      (c.status_changed_at if c else None), _imp2) in FLAGGED_STATES
         fs = [f for f in fs if _flag(f)]
+    if reported:         # 已回報：處理進度／預計完成日／追蹤備註任一有填
+        from .models import Case as _Cr
+        _rk = {c.vuln_key for c in session.execute(select(_Cr)).scalars().all() if _is_reported(c)}
+        fs = [f for f in fs if "|".join(vuln_key(f)) in _rk]
     if due_min is not None or due_max is not None:  # 距到期天數範圍(到期倒數)；lead=申請提前量(行動期限=到期−lead)
         def _dd(f):
             return (f.effective_due - today).days - lead if f.effective_due else None
@@ -763,6 +775,7 @@ def weekly_report(session: Session, department: Optional[str] = None,
             "apply_exc": pcount[PROGRESS_APPLY_EXC],
             "rescan": pcount[PROGRESS_RESCAN],
             "flagged": flagged,
+            "reported": sum(1 for f in open_ if _is_reported(_c(f))),   # 已回報(進度/預計完成日/備註任一)
         },
         # 預計完成彙總(僅母體)
         "target": {

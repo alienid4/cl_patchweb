@@ -254,6 +254,7 @@ def api_findings(
     not_apply: bool = False,
     no_target: bool = False,
     flagged: bool = False,
+    reported: bool = False,
     due_min: int | None = None,
     due_max: int | None = None,
     lead: int = 0,
@@ -264,7 +265,7 @@ def api_findings(
                       stage=stage, only_should_apply=should_apply, applied=applied,
                       apply_intent=apply_intent, progress=progress, no_owner=no_owner, no_due=no_due,
                       risk=risk, apply_universe=apply_universe, not_apply=not_apply,
-                      no_target=no_target, flagged=flagged,
+                      no_target=no_target, flagged=flagged, reported=reported,
                       due_min=due_min, due_max=due_max, lead=lead)
 
 

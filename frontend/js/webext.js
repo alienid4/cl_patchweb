@@ -191,6 +191,9 @@
     return v == null ? '' : String(v);
   }
 
+  // 承辦有沒有回報過(跟後端 _is_reported 同義)：處理進度、預計完成日、追蹤備註任一有填
+  function isReported(r) { return !!(r && (r.progress || r.target_date || String(r.track_note || '').trim())); }
+
   // 讓表格可點欄位排序（數字欄按數值、其餘按字串；再點反向）。點了會在欄名顯示 ▲/▼,讓排序看得見。
   function makeSortable(table) {
     var ths = table.tHead ? table.tHead.rows[0].cells : [];
@@ -281,9 +284,9 @@
     stickyTop.appendChild(U.el('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap' }, [tgl, sumEl]));
 
     // 搜尋：可一次貼一整欄 IP（從 Excel 複製，換行／空白／逗號分隔都行）
-    //   IP → 跟主機欄「完全相同」才算（避免 .2 誤中 .22）；其他字 → 主機／負責人／弱點／Plugin／部門 包含即中
+    //   IP → 跟主機欄「完全相同」才算（避免 .2 誤中 .22）；其他字 → 主機／負責人／弱點／Plugin／部門／處理進度／追蹤備註／預計完成日 包含即中
     // 用 textarea 不用 input：單行 input 貼上時會把換行直接吃掉，Excel 一欄 IP 會黏成一串
-    var qInput = U.el('textarea', { rows: '1', placeholder: '搜尋：可直接貼上 Excel 一整欄 IP（多筆）；或輸入負責人、弱點、Plugin、部門',
+    var qInput = U.el('textarea', { rows: '1', placeholder: '搜尋：可直接貼上 Excel 一整欄 IP（多筆）；或輸入負責人、弱點、Plugin、部門、處理進度（如 處理中）、追蹤備註',
       style: 'flex:1;min-width:280px;padding:7px 10px;border:1px solid #cfd8d3;border-radius:6px;font-size:15px;resize:vertical;max-height:120px;line-height:1.4;font-family:inherit' });
     function fitQ() { qInput.style.height = 'auto'; qInput.style.height = Math.min(qInput.scrollHeight + 2, 120) + 'px'; }
     var qClear = U.el('button', { class: 'btn btn-secondary btn-sm', text: '清除' });
@@ -307,7 +310,7 @@
         var ok = false;
         hostIps(r.host).forEach(function (ip) { if (ipSet[ip]) { ok = true; hitTok[ip] = 1; } });
         if (words.length) {
-          var hay = [r.host, r.owner, r.name, r.plugin_id, r.department].map(function (v) { return String(v == null ? '' : v).toLowerCase(); }).join('\n');
+          var hay = [r.host, r.owner, r.name, r.plugin_id, r.department, r.progress, r.progress_state, r.track_note, r.target_date].map(function (v) { return String(v == null ? '' : v).toLowerCase(); }).join('\n');
           words.forEach(function (w) { if (hay.indexOf(w) >= 0) { ok = true; hitTok[w] = 1; } });
         }
         return ok;
@@ -384,7 +387,7 @@
       rows.forEach(function (r) { var k = ((r.owner || '').trim()) || '— 未指派'; (groups[k] = groups[k] || []).push(r); });
       var keys = Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; });
       var table = U.el('table', { class: 'tracking-table' });
-      var oheads = (writable ? ['選'] : []).concat(['負責人', '部門', '筆數', '其中逾期', '附件']);
+      var oheads = (writable ? ['選'] : []).concat(['負責人', '部門', '筆數', '其中逾期', '已回報', '附件']);
       table.appendChild(U.el('thead', {}, [U.el('tr', {}, oheads.map(function (h) { return U.el('th', { text: h }); }))]));
       var tb = U.el('tbody');
       var icols = [['host', '主機'], ['severity', '嚴重度'], ['name', '弱點'], ['plugin_id', 'Plugin'],
@@ -395,6 +398,7 @@
         var grp = groups[k], r0 = grp[0];
         var od = grp.filter(function (x) { return x.overdue_days != null && x.overdue_days > 0; }).length;
         var att = grp.reduce(function (s, x) { return s + (x.att_count || 0); }, 0);
+        var rep = grp.filter(isReported).length;   // 他回報過幾筆(處理進度／預計完成日／追蹤備註任一)
         var nameTd = U.el('td', { text: '▸ ' + k, style: 'font-weight:600;color:#1a7f4b;cursor:pointer;text-align:left;min-width:120px' });
         var cells = [];
         if (writable) cells.push(U.el('td', {}, [groupCb(grp.map(function (x) { return x.id; }))]));
@@ -402,6 +406,7 @@
           U.el('td', { text: r0.department || '' }),
           U.el('td', { text: String(grp.length), style: 'font-weight:700' }),
           U.el('td', { text: od ? String(od) : '—', style: od ? 'color:#c0392b;font-weight:600' : '' }),
+          U.el('td', { text: rep ? (rep + ' / ' + grp.length) : '—', style: rep ? 'color:#1a7f4b;font-weight:600' : '' }),
           U.el('td', { text: att ? ('📎' + att) : '' })]);
         var head = U.el('tr', { style: 'cursor:pointer' }, cells);
         var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
@@ -2076,6 +2081,7 @@
 
           // ⑥ 處理進度（管理人標註，次要資訊）
           kpiCards(c, '處理進度（管理人標註；結論以資安 Excel 為準）', [
+            { label: '已回報（進度／預計完成／備註任一）', value: pg.reported || 0, drill: function () { openFindings('已回報的弱點（處理進度／預計完成日／追蹤備註）', { reported: 'true' }); } },
             { label: '要申請展延', value: pg.apply_ext || 0, drill: function () { openFindings('要申請展延', { progress: '要申請展延' }); } },
             { label: '要申請例外', value: pg.apply_exc || 0, drill: function () { openFindings('要申請例外', { progress: '要申請例外' }); } },
             { label: '處理中', value: pg.wip || 0, drill: function () { openFindings('處理中', { progress: '處理中' }); } },
