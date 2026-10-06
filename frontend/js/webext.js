@@ -266,7 +266,7 @@
   //   ② 承辦處理進度（四類加起來＝總筆數）：尚未修補＝沒回報（維持原來狀態）；修補中＝處理中；
   //      已送審＝要申請展延／例外；待複掃＝等複掃
   function dispoStats(rs) {
-    var st = { total: rs.length, overdue: 0, notdue: 0, orig: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, rescan: 0, notewarn: 0 };
+    var st = { total: rs.length, overdue: 0, notdue: 0, orig: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, subext: 0, subexc: 0, rescan: 0, notewarn: 0 };
     rs.forEach(function (r) {
       if (noteNoProgress(r)) st.notewarn++;   // 提醒用旗標，不屬於三組互斥
       // 時間（互斥，相加＝總）：逾期＝已過真正到期日；未逾期＝其餘（還在期限內／無到期日）
@@ -279,7 +279,10 @@
       // 承辦進度（互斥，相加＝總）
       if (r.progress === '處理中') st.wip++;
       else if (r.progress === '等複掃') st.rescan++;
-      else if (r.progress === '要申請展延' || r.progress === '要申請例外') st.sub++;
+      else if (r.progress === '要申請展延' || r.progress === '要申請例外') {
+        st.sub++;
+        if (r.progress === '要申請展延') st.subext++; else st.subexc++;
+      }
       else st.todo++;
     });
     return st;
@@ -297,6 +300,8 @@
     wip: { label: '修補中', grp: 'prog', test: function (r) { return r.progress === '處理中'; } },
     sub: { label: '送審中', grp: 'prog', test: function (r) { return r.progress === '要申請展延' || r.progress === '要申請例外'; } },
     rescan: { label: '待複掃', grp: 'prog', test: function (r) { return r.progress === '等複掃'; } },
+    subext: { label: '展延送審', grp: 'prog', test: function (r) { return r.progress === '要申請展延'; } },
+    subexc: { label: '例外送審', grp: 'prog', test: function (r) { return r.progress === '要申請例外'; } },
     notewarn: { label: '⚠ 待補進度', grp: 'warn', test: noteNoProgress },
   };
 
@@ -310,7 +315,13 @@
       td.style.color = '#b0b8b4'; td.style.textDecoration = 'line-through';
       td.title = 'Excel 有填，但備註沒有' + (key === 'exception_due' ? '例外' : '展延') + '的申請紀錄，系統不採用這個日期（請確認原始資料）';
     }
-    if (key === 'remark') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; td.style.minWidth = '140px'; td.style.fontSize = '13.5px'; }
+    // 一列固定一行（使用者 2026-10-06）：長文字截斷成「…」，滑鼠移上去看完整；日期、階段等短欄不折行
+    var CLIP = { name: 280, remark: 170, track_note: 170, progress_state: 110 };
+    td.style.whiteSpace = 'nowrap';
+    if (CLIP[key]) {
+      td.style.maxWidth = CLIP[key] + 'px'; td.style.overflow = 'hidden'; td.style.textOverflow = 'ellipsis'; td.style.textAlign = 'left';
+      if (!td.title) td.title = td.textContent;
+    }
     if (key === 'progress' && noteNoProgress(r)) {
       td.textContent = '⚠ 未設'; td.style.color = '#b9770e'; td.style.fontWeight = '600';
       td.title = '追蹤備註有寫（' + String(r.track_note).slice(0, 40) + '），但處理進度沒設——狀態還是「尚未修補」。點 ✏️ 補上（做完了就設「等複掃」）';
@@ -555,7 +566,7 @@
         var ok = false;
         hostIps(r.host).forEach(function (ip) { if (ipSet[ip]) { ok = true; hitTok[ip] = 1; } });
         if (words.length) {
-          var hay = [r.host, r.owner, r.name, r.plugin_id, r.department, r.progress, r.progress_state, r.track_note, r.target_date].map(function (v) { return String(v == null ? '' : v).toLowerCase(); }).join('\n');
+          var hay = [r.host, r.owner, r.name, r.plugin_id, r.department, r.progress, r.progress_state, r.track_note, r.target_date, r.stage].map(function (v) { return String(v == null ? '' : v).toLowerCase(); }).join('\n');
           words.forEach(function (w) { if (hay.indexOf(w) >= 0) { ok = true; hitTok[w] = 1; } });
         }
         return ok;
@@ -669,20 +680,19 @@
       var lead = (writable ? 1 : 0) + 3;   // 選?＋負責人＋部門＋總筆數
       var table = U.el('table', { class: 'tracking-table' });
       // 第一列：分組標題（時間／處置階段／承辦進度）
-      var ghr = U.el('tr', { style: 'font-size:12px' }, [
-        U.el('th', { colspan: String(lead) }),
-        U.el('th', { text: '時間（互斥）', colspan: '2', style: 'color:#a3342d' + BLH }),
-        U.el('th', { text: '處置階段（互斥）', colspan: '3', style: 'color:#1f6f8b' + BLH }),
-        U.el('th', { text: '承辦進度（互斥）', colspan: '4', style: 'color:#1a7f4b' + BLH }),
-        U.el('th', {}),
+      var GH = ';color:#fff;font-weight:700;font-size:13px;background:#0f5f35';   // 分組標題：白字＋深綠底（彩字在綠底上看不到）
+      var ghr = U.el('tr', {}, [
+        U.el('th', { colspan: String(lead), style: GH.slice(1) }),
+        U.el('th', { text: '時間（互斥）', colspan: '2', style: GH.slice(1) + ';border-left:2px solid #fff' }),
+        U.el('th', { text: '承辦進度（互斥）', colspan: '5', style: GH.slice(1) + ';border-left:2px solid #fff' }),
+        U.el('th', { style: GH.slice(1) }),
       ]);
       // 第二列：欄名
       function th(t, bl) { return U.el('th', { text: t, style: bl || '' }); }
       var hr = U.el('tr', {}, (writable ? [th('選')] : []).concat([
         th('負責人'), th('部門'), th('總筆數'),
         th('逾期', BLH.slice(1)), th('未逾期'),
-        th('原始修補', BLH.slice(1)), th('展延'), th('例外'),
-        th('尚未修補', BLH.slice(1)), th('修補中'), th('送審中'), th('待複掃'),
+        th('尚未修補', BLH.slice(1)), th('修補中'), th('展延送審'), th('例外送審'), th('待複掃'),
         th('附件')]));
       table.appendChild(U.el('thead', {}, [ghr, hr]));
       var tb = U.el('tbody');
@@ -690,7 +700,7 @@
         ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['remark', '備註(Excel)'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
-      var colspanAll = lead + 2 + 3 + 4 + 1;   // 全表欄數（給明細展開列用）：時間2＋處置3＋承辦4＋附件1
+      var colspanAll = lead + 2 + 5 + 1;   // 全表欄數（給明細展開列用）：時間2＋承辦5＋附件1
       function numTd(n, extra) { return U.el('td', { text: n ? String(n) : '—', style: (n ? 'font-weight:600' : 'color:#9aa5a0') + (extra || '') }); }
       keys.forEach(function (k) {
         var grp = groups[k], r0 = grp[0];
@@ -705,9 +715,8 @@
           U.el('td', { text: String(grp.length), style: 'font-weight:700' }),
           U.el('td', { text: od ? String(od) : '—', style: (od ? 'color:#c0392b;font-weight:600' : 'color:#9aa5a0') + BLB }),
           numTd(ds.notdue),
-          numTd(ds.orig, BLB), numTd(ds.ext), numTd(ds.exc),
           U.el('td', { text: ds.todo ? String(ds.todo) : '—', style: (ds.todo ? 'font-weight:600;color:#b9770e' : 'color:#9aa5a0') + BLB }),
-          numTd(ds.wip), numTd(ds.sub), numTd(ds.rescan),
+          numTd(ds.wip), numTd(ds.subext), numTd(ds.subexc), numTd(ds.rescan),
           U.el('td', { text: att ? ('📎' + att) : '' })]);
         var head = U.el('tr', { style: 'cursor:pointer' }, cells);
         var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
@@ -715,7 +724,7 @@
         var itb = U.el('tbody');
         grp.forEach(function (r) {
           var tds = writable ? [U.el('td', {}, [rowCb(r.id)])] : [];
-          icols.forEach(function (c) { var td = cellTd(r, c[0]); if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; } tds.push(td); });
+          icols.forEach(function (c) { tds.push(cellTd(r, c[0])); });
           tds.push(opsCell(r, self));
           itb.appendChild(U.el('tr', {}, tds));
         });
@@ -739,8 +748,7 @@
         U.el('td', {}),
         U.el('td', { text: String(T.total), style: 'font-weight:700' }),
         totTd(T.overdue, BLT, true), totTd(T.notdue),
-        totTd(T.orig, BLT), totTd(T.ext), totTd(T.exc),
-        totTd(T.todo, BLT), totTd(T.wip), totTd(T.sub), totTd(T.rescan),
+        totTd(T.todo, BLT), totTd(T.wip), totTd(T.subext), totTd(T.subexc), totTd(T.rescan),
         U.el('td', { text: attT ? ('📎' + attT) : '', style: 'font-weight:700' })]);
       tb.appendChild(U.el('tr', { style: 'background:#f0f6f3;border-top:2px solid #1a7f4b' }, totCells));
       table.appendChild(tb); listBox.appendChild(table); listBox.appendChild(pager(table));
@@ -756,7 +764,6 @@
         if (writable) tds.push(U.el('td', {}, [rowCb(r.id)]));
         cols.forEach(function (c) {
           var td = cellTd(r, c[0]);
-          if (c[0] === 'name') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; }
           tds.push(td);
         });
         tds.push(opsCell(r, self));
@@ -856,8 +863,7 @@
     // 統計分組顯示（時間旗標／處置階段互斥／承辦進度互斥），每個數字可點＝下鑽只看那類
     var STAT_GROUPS = [
       { title: '時間（互斥）', color: '#a3342d', keys: ['overdue', 'notdue'] },
-      { title: '處置階段（互斥）', color: '#1f6f8b', keys: ['orig', 'ext', 'exc'] },
-      { title: '承辦進度（互斥）', color: '#1a7f4b', keys: ['todo', 'wip', 'sub', 'rescan'] },
+      { title: '承辦進度（互斥）', color: '#1a7f4b', keys: ['todo', 'wip', 'subext', 'subexc', 'rescan'] },
       { title: '提醒', color: '#b9770e', keys: ['notewarn'], hideZero: true },   // 備註有寫、進度沒設（另一把尺，不跟上面相加）
     ];
     function renderStats(st) {
@@ -1104,6 +1110,29 @@
     var attHint = U.el('p', { class: 'empty-hint', style: 'color:#c0392b;margin:0 0 4px' });
     function updAttHint() { attHint.textContent = (progress.value === '要申請展延' || progress.value === '要申請例外') ? '⚠ 要申請展延／例外：請附上 WBS 或展延理由說明等佐證文件。' : ''; }
     progress.addEventListener('change', updAttHint); updAttHint();
+    // 防呆：這筆已在首次展延中又選「要申請展延」→ 展延只能一次，下一步應申請例外（使用者 2026-10-06）
+    var stageHint = U.el('div', { style: 'display:none;margin:-6px 0 12px;padding:8px 10px;border:1px solid #f0c27b;background:#fff8ec;border-radius:6px;font-size:13.5px;text-align:left' });
+    function stageConflict() {
+      if (progress.value === '要申請展延' && row.stage === '首次展延中') return 'ext';
+      if ((progress.value === '要申請展延' || progress.value === '要申請例外') && row.stage === '例外管理中') return 'exc';
+      return '';
+    }
+    function updStageHint() {
+      var c = stageConflict(); stageHint.innerHTML = '';
+      if (!c) { stageHint.style.display = 'none'; return; }
+      stageHint.style.display = 'block';
+      if (c === 'ext') {
+        stageHint.appendChild(U.el('span', { text: '⚠ 這筆已在「首次展延中」（Excel 已有展延紀錄）。展延只能一次，下一步應申請例外。 ', style: 'color:#9a5b00;font-weight:600' }));
+        var fix = U.el('button', { class: 'btn btn-primary btn-sm', text: '改成「要申請例外」' });
+        fix.addEventListener('click', function () { progress.value = '要申請例外'; updAttHint(); updStageHint(); });
+        stageHint.appendChild(fix);
+      } else {
+        stageHint.appendChild(U.el('span', { text: '⚠ 這筆已在「例外管理中」（Excel 已有例外紀錄），通常不需要再申請。確定的話照常存檔即可。', style: 'color:#9a5b00;font-weight:600' }));
+      }
+    }
+    progress.addEventListener('change', updStageHint);
+    body.insertBefore(stageHint, progress.nextSibling); updStageHint();
+    var _stageAck = false;   // 已提醒過一次；再按存檔就照使用者的選擇存
     body.appendChild(U.el('label', { text: '申請佐證文件（展延／例外的 WBS、理由說明等；掛在此弱點、重匯不洗；下載需登入）' }));
     body.appendChild(attHint);
     body.appendChild(attachPanel(row));
@@ -1133,6 +1162,11 @@
       if (dv && (_deptList || []).indexOf(dv) < 0) {
         UI.toast('部門「' + dv + '」不在清單中。請從既有部門選擇（避免打錯新增部門）；留空＝回到 Excel 值。', 'error');
         dept.focus(); return;
+      }
+      if (stageConflict() === 'ext' && !_stageAck) {
+        _stageAck = true; updStageHint(); stageHint.scrollIntoView({ block: 'nearest' });
+        UI.toast('這筆已在展延中，建議改成「要申請例外」；確定要照原樣存，再按一次存檔', 'error');
+        return;
       }
       if (String(note.value || '').trim() && !progress.value) { showWarn(); return; }
       doSave();
@@ -1174,7 +1208,7 @@
   }
   // 一列「操作」欄：固定有 🔍(看原始)，可寫入時再加 ✏️(編輯)
   function opsCell(row, onEditDone) {
-    var ops = U.el('td');
+    var ops = U.el('td', { style: 'white-space:nowrap' });   // 🔍 ✏️ 並排，不疊兩行
     if (row && row.att_count) {   // 有申請佐證文件：顯示 📎N（點 ✏️ 進編輯看/下載）
       ops.appendChild(U.el('span', { text: '📎' + row.att_count, title: row.att_count + ' 份申請佐證文件（點 ✏️ 查看／下載）', style: 'margin-right:4px;font-size:13px;color:#1a7f4b;font-weight:700' }));
     }
