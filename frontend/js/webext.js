@@ -318,6 +318,41 @@
     return td;
   }
 
+  // 分頁：tbody 裡標 wx-pgu 的列，每頁 size 筆（群組列的展開明細 _detail 跟著它顯示/隱藏）。
+  // 用顯示/隱藏而不是只畫一頁：排序照全部資料排、勾選跨頁保留；總計列不標 wx-pgu＝永遠顯示。
+  var PAGE_SIZE = 20;
+  function pager(table, size) {
+    size = size || PAGE_SIZE;
+    var tb = table.tBodies[0], page = 0;
+    var bar = U.el('div', { style: 'display:none;gap:10px;align-items:center;justify-content:center;margin:6px 0;font-size:14px' });
+    function units() { return Array.prototype.filter.call(tb.rows, function (r) { return r.classList.contains('wx-pgu'); }); }
+    function render() {
+      var us = units(), n = us.length, pages = Math.max(1, Math.ceil(n / size));
+      if (page >= pages) page = pages - 1;
+      us.forEach(function (r, i) {
+        var on = i >= page * size && i < (page + 1) * size;
+        r.style.display = on ? '' : 'none';
+        if (r._detail) r._detail.style.display = on ? '' : 'none';
+      });
+      bar.innerHTML = '';
+      if (n <= size) { bar.style.display = 'none'; return; }
+      bar.style.display = 'flex';
+      function btn(t, to, dis) {
+        var b = U.el('button', { class: 'btn btn-secondary btn-sm', text: t });
+        b.disabled = dis; b.addEventListener('click', function (e) { e.stopPropagation(); page = to; render(); });
+        return b;
+      }
+      bar.appendChild(btn('« 第一頁', 0, page === 0));
+      bar.appendChild(btn('‹ 上一頁', page - 1, page === 0));
+      bar.appendChild(U.el('span', { text: '第 ' + (page + 1) + ' / ' + pages + ' 頁（共 ' + n + ' 筆，每頁 ' + size + '）' }));
+      bar.appendChild(btn('下一頁 ›', page + 1, page >= pages - 1));
+      bar.appendChild(btn('最後一頁 »', pages - 1, page >= pages - 1));
+    }
+    table._afterSort = function () { page = 0; render(); };
+    render();
+    return bar;
+  }
+
   // 讓表格可點欄位排序（數字欄按數值、其餘按字串；再點反向）。點了會在欄名顯示 ▲/▼,讓排序看得見。
   function makeSortable(table) {
     var ths = table.tHead ? table.tHead.rows[0].cells : [];
@@ -346,6 +381,7 @@
         var ind = th.querySelector('.webext-sortind'); if (ind) ind.textContent = asc ? ' ▲' : ' ▼';
         asc = !asc;
         rows.forEach(function (r) { tb.appendChild(r); });
+        if (table._afterSort) table._afterSort();   // 有分頁就回到第一頁重新分
       });
     })(i, ths[i]);
   }
@@ -391,8 +427,16 @@
       ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
       ['department', '部門'], ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
     var curRows = [];   // 載入後填入,供「匯出」用(匯的是眼前這份子集)
-    var footer = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' },
-      listExportButtons(function () { return curRows; }, title));   // 完整/簡易 兩顆
+    // 匯出：有勾選＝只匯出勾的那幾筆；沒勾＝匯出眼前這份（2026-10-06 使用者勾了 16 筆要匯出，卻匯出整個視窗）
+    var expBtns = listExportButtons(function () {
+      var ids = (typeof selIds === 'function') ? selIds() : [];
+      if (ids.length) {
+        var set = {}; ids.forEach(function (id) { set[id] = 1; });
+        return (allRows || []).filter(function (r) { return set[r.id]; });
+      }
+      return curRows;
+    }, title);
+    var footer = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, expBtns);   // 完整/簡易 兩顆
     UI.openModal(title, box, { footer: footer, wide: true, noBackdropClose: true });   // 寬版＋點外面不關(只 ✕／Esc)
     var rows;
     try { rows = await jget('/api/findings?' + qd(Object.assign({ status: '未結案' }, params || {}))); }
@@ -546,6 +590,12 @@
         cntEl.textContent = '已選 ' + n + ' 筆' + (hidden ? '（其中 ' + hidden + ' 筆不在目前篩選結果中）' : '');
         cntEl.style.color = hidden ? '#c0392b' : '';
       }
+      // 匯出鈕跟著勾選改字：看得出這次會匯出什麼
+      if (expBtns) {
+        expBtns[0].textContent = n ? ('完整匯出已選 ' + n + ' 筆 (CSV)') : '完整匯出 (CSV)';
+        expBtns[1].textContent = n ? ('簡易匯出已選 ' + n + ' 筆 (CSV)') : '簡易匯出 (CSV)';
+        expBtns.forEach(function (b) { b.classList.toggle('btn-primary', !!n); b.classList.toggle('btn-secondary', !n); });
+      }
     }
     function rowCb(id) {
       var cb = U.el('input', { type: 'checkbox', class: 'wx-rowcb' });
@@ -565,7 +615,7 @@
       var tr = U.el('tr', {});
       if (writable) {
         var ids = grp.map(function (x) { return x.id; });
-        var hcb = U.el('input', { type: 'checkbox', title: '只選這一組的 ' + ids.length + ' 筆（不會選到其他負責人）' });
+        var hcb = U.el('input', { type: 'checkbox', title: '只選這一組的 ' + ids.length + ' 筆（含其他頁；不會選到其他負責人）' });
         hcb.checked = ids.length > 0 && ids.every(function (id) { return selected[id]; });
         hcb.addEventListener('click', function (e) { e.stopPropagation(); });
         hcb.addEventListener('change', function () {
@@ -658,9 +708,12 @@
           tds.push(opsCell(r, self));
           itb.appendChild(U.el('tr', {}, tds));
         });
+        Array.prototype.forEach.call(itb.rows, function (tr) { tr.classList.add('wx-pgu'); });
         inner.appendChild(itb); makeSortable(inner);
-        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(colspanAll), style: 'background:#f6f8f7;padding:6px' }, [inner])]);
+        var ipg = pager(inner);
+        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(colspanAll), style: 'background:#f6f8f7;padding:6px' }, [inner, ipg])]);
         head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + k; });
+        head.classList.add('wx-pgu'); head._detail = detail;
         tb.appendChild(head); tb.appendChild(detail);
       });
       // 總計列（表尾；每欄加總＝目前顯示的全部）
@@ -678,7 +731,7 @@
         totTd(T.todo, BLT), totTd(T.wip), totTd(T.sub), totTd(T.rescan),
         U.el('td', { text: attT ? ('📎' + attT) : '', style: 'font-weight:700' })]);
       tb.appendChild(U.el('tr', { style: 'background:#f0f6f3;border-top:2px solid #1a7f4b' }, totCells));
-      table.appendChild(tb); listBox.appendChild(table);
+      table.appendChild(tb); listBox.appendChild(table); listBox.appendChild(pager(table));
     }
 
     function drawHost() {
@@ -695,9 +748,9 @@
           tds.push(td);
         });
         tds.push(opsCell(r, self));
-        tb.appendChild(U.el('tr', {}, tds));
+        tb.appendChild(U.el('tr', { class: 'wx-pgu' }, tds));
       });
-      table.appendChild(tb); listBox.appendChild(table);
+      table.appendChild(tb); listBox.appendChild(table); listBox.appendChild(pager(table));
     }
     // 依弱點彙總的排序狀態（點表頭切換；預設台數多→少）
     var SEV_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };
@@ -766,9 +819,12 @@
           tds.push(opsCell(r, self));
           itb.appendChild(U.el('tr', {}, tds));
         });
+        Array.prototype.forEach.call(itb.rows, function (tr) { tr.classList.add('wx-pgu'); });
         inner.appendChild(itb); makeSortable(inner);
-        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(pColspan), style: 'background:#f6f8f7;padding:6px' }, [inner])]);
+        var ipg = pager(inner);
+        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(pColspan), style: 'background:#f6f8f7;padding:6px' }, [inner, ipg])]);
         head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + a.name; });
+        head.classList.add('wx-pgu'); head._detail = detail;
         tb.appendChild(head); tb.appendChild(detail);
       });
       // 總計列：台數＝目前顯示總筆數、其中逾期＝逾期總數（與頂端統計一致）
@@ -782,7 +838,7 @@
         U.el('td', {}), U.el('td', {}), U.el('td', {}),
         U.el('td', { text: pOd ? String(pOd) : '—', style: 'font-weight:700' + (pOd ? ';color:#c0392b' : '') })]);
       tb.appendChild(U.el('tr', { style: 'background:#f0f6f3;border-top:2px solid #1a7f4b' }, ptc));
-      table.appendChild(tb); listBox.appendChild(table);
+      table.appendChild(tb); listBox.appendChild(table); listBox.appendChild(pager(table));
     }
     // 統計分組顯示（時間旗標／處置階段互斥／承辦進度互斥），每個數字可點＝下鑽只看那類
     var STAT_GROUPS = [
@@ -2622,6 +2678,8 @@
     full.addEventListener('click', guard(function (rows) { exportRawCSV(rows, title + '_完整'); }));
     var simple = U.el('button', { class: 'btn btn-secondary btn-sm', text: '簡易匯出 (CSV)', title: '只匯常用幾欄' });
     simple.addEventListener('click', guard(function (rows) { exportRowsCSV(SIMPLE_FINDING_COLS, rows, title + '_簡易'); }));
+    // 標記成「清單匯出」：全站統一匯出(wireUnifiedExport)看到這個標記就放行，不改成下載整份原封 Excel
+    full.setAttribute('data-wx-list-export', '1'); simple.setAttribute('data-wx-list-export', '1');
     return [full, simple];
   }
 
@@ -2853,6 +2911,9 @@
       // 「匯出此清單」是下鑽視窗的『只匯出眼前這份子集』(原生 exportCSV，client 端)——
       // 不可攔；攔了會變成匯出原封全量(幾千筆)。只統一其餘『整表/總覽匯出』→ 原封 xlsx。
       if (/此清單/.test(t)) return;
+      // 下鑽／清單自己的匯出鈕（匯眼前或已勾選的子集）一律放行。2026-10-06 修：按鈕改名成「完整匯出 (CSV)」後
+      // 被這裡誤攔，使用者勾 16 筆匯出卻拿到整份 400 多筆
+      if (b.getAttribute && b.getAttribute('data-wx-list-export')) return;
       if (/匯出/.test(t) && /(CSV|清單|Excel|匯出$)/.test(t) && b.id.indexOf('webext') !== 0) {
         e.preventDefault(); e.stopImmediatePropagation();
         window.location = '/api/export?' + qd();   // 原封 1:1 xlsx（帶目前部門）
