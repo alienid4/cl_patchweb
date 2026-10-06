@@ -321,6 +321,13 @@
     if (CLIP[key]) {
       td.style.maxWidth = CLIP[key] + 'px'; td.style.overflow = 'hidden'; td.style.textOverflow = 'ellipsis'; td.style.textAlign = 'left';
       if (!td.title) td.title = td.textContent;
+      // 點一下切換「整段顯示／截斷」（tooltip 要停住才出現，點的比較直覺）
+      td.style.cursor = 'pointer';
+      td.addEventListener('click', function () {
+        var full = td.style.whiteSpace === 'nowrap';
+        td.style.whiteSpace = full ? 'normal' : 'nowrap';
+        td.style.overflow = full ? 'visible' : 'hidden';
+      });
     }
     if (key === 'progress' && noteNoProgress(r)) {
       td.textContent = '⚠ 未設'; td.style.color = '#b9770e'; td.style.fontWeight = '600';
@@ -787,8 +794,11 @@
           name: r0.name || r0.plugin_id || '', sev: SEV_RANK[r0.severity] || 0,
           effMin: minDate('effective_due'), origMin: minDate('remediation_due'),
           effTxt: dueTxt('effective_due'), origTxt: dueTxt('remediation_due'),
-          stage: r0.stage || '', plugin: r0.plugin_id || '' };
+          stage: r0.stage || '', plugin: r0.plugin_id || '', ds: dispoStats(grp) };
       });
+      // 承辦進度各類筆數攤平到聚合值上，表頭可直接點來排序
+      var PROG_KEYS = ['todo', 'wip', 'subext', 'subexc', 'rescan'];
+      aggs.forEach(function (a) { PROG_KEYS.forEach(function (k) { a[k] = a.ds[k]; }); });
       aggs.sort(function (a, b) {
         var kf = _pSort.key, va = a[kf], vb = b[kf];
         if (va < vb) return -1 * _pSort.dir; if (va > vb) return 1 * _pSort.dir;
@@ -797,21 +807,34 @@
       var table = U.el('table', { class: 'tracking-table' });
       // 可排序表頭：[顯示字, 排序鍵]；點擊切換升降序
       var HEADS = [['弱點', 'name'], ['Plugin', 'plugin'], ['嚴重度', 'sev'], ['台數', 'count'],
-        ['原始期限', 'origMin'], ['到期日', 'effMin'], ['處置階段', 'stage'], ['其中逾期', 'od']];
+        ['原始期限', 'origMin'], ['到期日', 'effMin'], ['處置階段', 'stage'], ['其中逾期', 'od'],
+        ['尚未修補', 'todo'], ['修補中', 'wip'], ['展延送審', 'subext'], ['例外送審', 'subexc'], ['待複掃', 'rescan']];
+      var NUM_SORT = ['count', 'sev', 'od'].concat(PROG_KEYS);   // 數字欄預設多→少
+      var BLH = 'border-left:2px solid #1a7f4b', BLB = ';border-left:2px solid #e3ebe7';
+      // 第一列分組標題（跟「依負責人」同一套：承辦進度互斥，五欄相加＝台數）
+      var GH = 'color:#fff;font-weight:700;font-size:13px;background:#0f5f35';
+      var ghr = U.el('tr', {}, [
+        U.el('th', { colspan: String(HEADS.length - PROG_KEYS.length + (writable ? 1 : 0)), style: GH }),
+        U.el('th', { text: '承辦進度（互斥）', colspan: String(PROG_KEYS.length), style: GH + ';border-left:2px solid #fff' })]);
       var htr = U.el('tr', {});
       if (writable) htr.appendChild(U.el('th', { text: '選' }));
       HEADS.forEach(function (h) {
         var arrow = _pSort.key === h[1] ? (_pSort.dir === 1 ? ' ▲' : ' ▼') : '';
-        var th = U.el('th', { text: h[0] + arrow, style: 'cursor:pointer;user-select:none' });
+        var th = U.el('th', { text: h[0] + arrow, style: 'cursor:pointer;user-select:none' + (h[1] === 'todo' ? ';' + BLH : '') });
         th.title = '點擊依此欄排序';
         th.addEventListener('click', function () {
           if (_pSort.key === h[1]) _pSort.dir *= -1;
-          else { _pSort.key = h[1]; _pSort.dir = (h[1] === 'count' || h[1] === 'sev' || h[1] === 'od') ? -1 : 1; }
+          else { _pSort.key = h[1]; _pSort.dir = NUM_SORT.indexOf(h[1]) >= 0 ? -1 : 1; }
           draw();
         });
         htr.appendChild(th);
       });
-      table.appendChild(U.el('thead', {}, [htr]));
+      table.appendChild(U.el('thead', {}, [ghr, htr]));
+      function numTd(n, extra) { return U.el('td', { text: n ? String(n) : '—', style: (n ? 'font-weight:600' : 'color:#9aa5a0') + (extra || '') }); }
+      function progTds(ds) {
+        return [U.el('td', { text: ds.todo ? String(ds.todo) : '—', style: (ds.todo ? 'font-weight:600;color:#b9770e' : 'color:#9aa5a0') + BLB }),
+          numTd(ds.wip), numTd(ds.subext), numTd(ds.subexc), numTd(ds.rescan)];
+      }
       var pColspan = HEADS.length + (writable ? 1 : 0);
       var tb = U.el('tbody');
       var icols = [['host', '主機'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['remark', '備註(Excel)'], ['overdue_days', '逾期天數'],
@@ -819,14 +842,16 @@
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
       aggs.forEach(function (a) {
         var grp = a.grp, r0 = a.r0;
-        var nameTd = U.el('td', { text: '▸ ' + a.name, style: 'white-space:normal;font-weight:600;color:#1a7f4b;cursor:pointer;min-width:240px;text-align:left' });
+        // 一列一行：弱點名稱太長截斷，滑鼠移上去看完整
+        var nameTd = U.el('td', { text: '▸ ' + a.name, title: a.name, style: 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px;font-weight:600;color:#1a7f4b;cursor:pointer;min-width:240px;text-align:left' });
         var pcells = [];
         if (writable) pcells.push(U.el('td', {}, [groupCb(grp.map(function (x) { return x.id; }))]));
         pcells = pcells.concat([nameTd,
           U.el('td', { text: a.plugin }), U.el('td', { text: r0.severity || '' }),
           U.el('td', { text: String(a.count), style: 'font-weight:700' }),
           U.el('td', { text: a.origTxt }), U.el('td', { text: a.effTxt }), U.el('td', { text: a.stage }),
-          U.el('td', { text: a.od ? String(a.od) : '—', style: a.od ? 'color:#c0392b;font-weight:600' : '' })]);
+          U.el('td', { text: a.od ? String(a.od) : '—', style: a.od ? 'color:#c0392b;font-weight:600' : '' })].concat(progTds(a.ds)));
+        pcells.forEach(function (td) { td.style.whiteSpace = 'nowrap'; });   // 日期、階段不折行
         var head = U.el('tr', { style: 'cursor:pointer' }, pcells);
         // 展開：這個弱點影響的主機
         var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
@@ -842,8 +867,10 @@
         inner.appendChild(itb); makeSortable(inner);
         var ipg = pager(inner);
         var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(pColspan), style: 'background:#f6f8f7;padding:6px' }, [inner, ipg])]);
-        head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + a.name; });
-        if (autoExpand()) { detail.classList.remove('hidden'); nameTd.textContent = '▾ ' + a.name; }
+        // 展開時名稱整段顯示（折行），收合回一行截斷（使用者 2026-10-06：點了要看得到全名）
+        function nameState(open) { nameTd.textContent = (open ? '▾ ' : '▸ ') + a.name; nameTd.style.whiteSpace = open ? 'normal' : 'nowrap'; }
+        head.addEventListener('click', function () { nameState(!detail.classList.toggle('hidden')); });
+        if (autoExpand()) { detail.classList.remove('hidden'); nameState(true); }
         head.classList.add('wx-pgu'); head._detail = detail;
         tb.appendChild(head); tb.appendChild(detail);
       });
@@ -857,6 +884,8 @@
         U.el('td', { text: String(shown.length), style: 'font-weight:700' }),
         U.el('td', {}), U.el('td', {}), U.el('td', {}),
         U.el('td', { text: pOd ? String(pOd) : '—', style: 'font-weight:700' + (pOd ? ';color:#c0392b' : '') })]);
+      var PT = dispoStats(shown);
+      PROG_KEYS.forEach(function (k, i) { ptc.push(U.el('td', { text: String(PT[k]), style: 'font-weight:700' + (i === 0 ? BLB : '') })); });
       tb.appendChild(U.el('tr', { style: 'background:#f0f6f3;border-top:2px solid #1a7f4b' }, ptc));
       table.appendChild(tb); listBox.appendChild(table); listBox.appendChild(pager(table));
     }
