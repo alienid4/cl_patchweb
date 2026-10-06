@@ -48,14 +48,18 @@
   }
 
   /* 把伺服器快照重建成 workbook（沿用原欄序、原值），再包成 File */
-  function snapshotToFile(snap) {
+  // 由 snapshot 組出「workbook 物件」(不寫成二進位)；伺服器版直接餵這個進解析，省掉 XLSX.write+read
+  function snapshotToWb(snap) {
     var wb = XLSX.utils.book_new();
     snap.sheets.forEach(function (s) {
       var ws = XLSX.utils.json_to_sheet(s.rows, { header: s.columns });
-      var name = String(s.name || 'sheet').slice(0, 31);
-      XLSX.utils.book_append_sheet(wb, ws, name);
+      XLSX.utils.book_append_sheet(wb, ws, String(s.name || 'sheet').slice(0, 31));
     });
-    var out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+    return wb;
+  }
+  // 舊路徑(相容備援)：組成 .xlsx File 走 file-input→XLSX.read
+  function snapshotToFile(snap) {
+    var out = XLSX.write(snapshotToWb(snap), { type: 'array', bookType: 'xlsx' });
     return new File([out], snap.source_file || 'server.xlsx',
       { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   }
@@ -97,14 +101,59 @@
     return role === 'super_admin' ? '最高管理員' : role === 'dept_admin' ? '部門窗口' : role === 'user' ? '一般使用者' : '使用者';
   }
 
+  // ── snapshot 快取（IndexedDB，依匯入批次為鍵；資料沒換就不重抓 5MB）──
+  var _IDB_NAME = 'wxsnap', _IDB_STORE = 'snap';
+  function idbOpen() {
+    return new Promise(function (res, rej) {
+      if (!global.indexedDB) return rej(new Error('no idb'));
+      var r = indexedDB.open(_IDB_NAME, 1);
+      r.onupgradeneeded = function () { try { r.result.createObjectStore(_IDB_STORE); } catch (e) {} };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+  }
+  function idbGet(key) {
+    return idbOpen().then(function (db) {
+      return new Promise(function (res) {
+        try { var q = db.transaction(_IDB_STORE, 'readonly').objectStore(_IDB_STORE).get(key);
+          q.onsuccess = function () { res(q.result || null); }; q.onerror = function () { res(null); };
+        } catch (e) { res(null); }
+      });
+    }).catch(function () { return null; });
+  }
+  function idbPutOnly(key, val) {   // 只留最新一份：先清空再寫，自動汰舊
+    return idbOpen().then(function (db) {
+      return new Promise(function (res) {
+        try { var os = db.transaction(_IDB_STORE, 'readwrite').objectStore(_IDB_STORE);
+          os.clear(); var p = os.put(val, key);
+          p.onsuccess = function () { res(true); }; p.onerror = function () { res(false); };
+        } catch (e) { res(false); }
+      });
+    }).catch(function () { return false; });
+  }
+
   async function loadFromServer() {
     try {
-      var r = await fetch('/api/snapshot');
-      if (!r.ok) return false;
-      var snap = await r.json();
+      // 先問輕量 meta：資料換了沒（免下載整包）
+      var meta = null;
+      try { var mr = await fetch('/api/snapshot-meta'); if (mr.ok) meta = await mr.json(); } catch (e) {}
+      var key = (meta && meta.batch_id != null) ? ('b' + meta.batch_id + '|' + (meta.imported_at || '')) : null;
+      var snap = null;
+      if (key) { try { snap = await idbGet(key); } catch (e) {} }   // 命中快取＝秒開，不下載
+      if (!snap) {
+        var r = await fetch('/api/snapshot');
+        if (!r.ok) return false;
+        snap = await r.json();
+        if (key && snap && snap.sheets && snap.sheets.length) { idbPutOnly(key, snap); }   // 背景存，不 await
+      }
       if (!snap || !snap.sheets || !snap.sheets.length) return false;
       showDataFile(snap.source_file);
-      feedToApp(snapshotToFile(snap), true);
+      // 快路徑：直接把伺服器資料組成 workbook 物件餵進解析，跳過 XLSX.write+read（大量列省近 1 秒）
+      if (global.App && global.App.importWorkbookObj) {
+        global.App.importWorkbookObj(snapshotToWb(snap), snap.source_file);
+      } else {
+        feedToApp(snapshotToFile(snap), true);   // 相容備援：舊 main.js 沒有新入口時走原路
+      }
       return true;
     } catch (e) { return false; }
   }

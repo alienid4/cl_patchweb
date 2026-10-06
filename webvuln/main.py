@@ -320,6 +320,17 @@ def api_snapshot(db: Session = Depends(get_db)):
     return query.snapshot(db)
 
 
+@app.get("/api/snapshot-meta")
+def api_snapshot_meta(db: Session = Depends(get_db)):
+    """輕量：最新批次識別（匯入時間/檔名/列數），供前端快取判斷『資料換了沒』，免下載整包 snapshot。"""
+    b = query.latest_batch(db)
+    if not b:
+        return {"batch_id": None, "imported_at": None, "source_file": None, "row_count": 0}
+    return {"batch_id": b.id,
+            "imported_at": b.imported_at.isoformat() if b.imported_at else None,
+            "source_file": b.source_file, "row_count": b.row_count}
+
+
 @app.get("/api/matrix")
 def api_matrix(department: str | None = None, db: Session = Depends(get_db)):
     """交叉分析：嚴重度 × 到期時間帶（未結案）。"""

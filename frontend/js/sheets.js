@@ -206,7 +206,11 @@
 
   /* ---- 主入口：ArrayBuffer → 各數字表結果（依表號排序） ---- */
   function parseWorkbook(buf) {
-    var wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    return parseWorkbookWb(XLSX.read(buf, { type: 'array', cellDates: true }));
+  }
+  /* 直接吃「已建好的 workbook 物件」，跳過 ArrayBuffer→XLSX.read 的反序列化。
+     伺服器版用這條：server 送原始列 → json_to_sheet 組 wb → 直接進解析，省掉 write+read 兩段（大量列省近 1 秒）。*/
+  function parseWorkbookWb(wb) {
     var pat = new RegExp(P.numberedSheetPattern);
     var names = (wb.SheetNames || []).filter(function (n) { return pat.test(n); });
     names.sort(function (a, b) { return leadNum(a) - leadNum(b); });
@@ -221,5 +225,5 @@
     return m ? parseInt(m[0], 10) : 9999;
   }
 
-  global.MultiSheet = { parseWorkbook: parseWorkbook, resolveProfile: resolveProfile, mapSeverity: mapSeverity, classifyClose: classifyClose };
+  global.MultiSheet = { parseWorkbook: parseWorkbook, parseWorkbookWb: parseWorkbookWb, resolveProfile: resolveProfile, mapSeverity: mapSeverity, classifyClose: classifyClose };
 })(window);

@@ -35,9 +35,7 @@
     return result;
   }
 
-  /* ArrayBuffer → [{ name, index, rawCount, records, profile, caps, result }] */
-  function buildAll(buf) {
-    var sheets = global.MultiSheet.parseWorkbook(buf);
+  function finishSheets(sheets) {
     return sheets.map(function (s) {
       s.caps = computeCaps(s.profile, s.records);
       s.result = buildSheetResult(s);
@@ -45,5 +43,14 @@
     });
   }
 
-  global.Multi = { buildAll: buildAll, buildSheetResult: buildSheetResult };
+  /* ArrayBuffer → [{ name, index, rawCount, records, profile, caps, result }] */
+  function buildAll(buf) {
+    return finishSheets(global.MultiSheet.parseWorkbook(buf));
+  }
+  /* 同上，但吃已建好的 workbook 物件（伺服器版：跳過 XLSX.read） */
+  function buildAllWb(wb) {
+    return finishSheets(global.MultiSheet.parseWorkbookWb(wb));
+  }
+
+  global.Multi = { buildAll: buildAll, buildAllWb: buildAllWb, buildSheetResult: buildSheetResult };
 })(window);

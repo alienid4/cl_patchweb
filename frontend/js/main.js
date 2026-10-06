@@ -255,9 +255,8 @@
     });
   }
 
-  /* buf → 建各表 result、渲染左側導覽、預設落在「總覽」首頁 */
-  function loadWorkbook(buf, fileName) {
-    var sheets = global.Multi.buildAll(buf);
+  /* 已建好的各表 → 渲染左側導覽、預設落在「總覽」首頁 */
+  function applySheets(sheets, fileName) {
     // 訊息寫在例外裡：原本先 showError 再 throw，外層 catch 會用「解析失敗：無數字工作表」
     // 蓋掉這句能直接指出命名規則的提示
     if (!sheets.length) throw new Error('找不到「數字-」開頭的工作表（例如「1-系統弱點掃描弱點」）。請確認檔案或工作表命名。');
@@ -268,6 +267,16 @@
     renderSheetNav();
     showDashboard();
     showSummary();                                   // 主管首頁：預設看總覽
+  }
+  /* buf → 建各表 result（手動/自動匯入用，走 XLSX.read） */
+  function loadWorkbook(buf, fileName) {
+    applySheets(global.Multi.buildAll(buf), fileName);
+  }
+  /* 已建好的 workbook 物件 → 建各表（伺服器版：跳過 XLSX.read） */
+  function loadWorkbookObj(wb, fileName) {
+    state.fileName = fileName;
+    try { applySheets(global.Multi.buildAllWb(wb), fileName); return true; }
+    catch (err) { showError('解析失敗：' + U.esc(err && err.message || err)); return false; }
   }
 
   /* -------- 左側導覽：總覽 + 各項目 -------- */
@@ -725,5 +734,5 @@
     init();
   }
 
-  global.App = { getState: function () { return state; }, setSubtabVisible: setSubtabVisible, importArrayBuffer: importArrayBuffer };
+  global.App = { getState: function () { return state; }, setSubtabVisible: setSubtabVisible, importArrayBuffer: importArrayBuffer, importWorkbookObj: loadWorkbookObj };
 })(window);
