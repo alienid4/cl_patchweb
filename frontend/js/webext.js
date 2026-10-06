@@ -474,6 +474,10 @@
     //   各段獨立：點哪段＝只選那段，再點＝取消；要累加就多點幾段；「全部」＝清掉所有選擇
     var DUE_SEG = [['overdue', '已逾期', null, -1], [14, '14 天內', 0, 14], [30, '30 天內', 15, 30], [60, '60 天內', 31, 60]];
     var dueOn = {};          // 段 key → true
+    // 預設看 30 天內（含已逾期）——使用者 2026-10-06：主要目的是抓快到期的。
+    // 但下鑽本身已帶到期範圍（到期倒數分桶、30/60/90 累計、逾期等）就不再疊預設，否則那一桶會被藏掉。
+    var _pp = params || {};
+    if (_pp.due_min == null && _pp.due_max == null && !_pp.band) { dueOn = { overdue: true, 14: true, 30: true }; }
     var dueBar = U.el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:5px' },
       [U.el('span', { text: '到期（可複選）：', style: 'color:#6b7a73;font-size:14px' })]);
     var bAll = U.el('button', { class: 'subtab-btn', text: '全部', style: 'padding:3px 12px;font-size:14px' });
@@ -610,6 +614,13 @@
       cb.addEventListener('change', function () { ids.forEach(function (id) { selected[id] = cb.checked; }); updCount(); });
       return cb;
     }
+    // 有搜尋（合計 300 筆內）或只剩一組時自動展開，搜到的那幾筆直接看得到（2026-10-06 使用者：搜尋後下方沒出現）
+    function autoExpand() {
+      var searching = !!String(qInput.value || '').trim();
+      var nGroups = 0, seen = {};
+      shown.forEach(function (r) { var g = mode === 'byplugin' ? ((r.plugin_id || '') + '|' + (r.name || '')) : (((r.owner || '').trim()) || '— 未指派'); if (!seen[g]) { seen[g] = 1; nGroups++; } });
+      return (searching && shown.length <= 300) || nGroups === 1;
+    }
     // 展開明細的表頭：「選」欄是勾選框＝只選這一組（這個負責人／這個弱點底下）的列，不會選到別人
     function innerHead(icols, grp, inner) {
       var tr = U.el('tr', {});
@@ -713,6 +724,7 @@
         var ipg = pager(inner);
         var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(colspanAll), style: 'background:#f6f8f7;padding:6px' }, [inner, ipg])]);
         head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + k; });
+        if (autoExpand()) { detail.classList.remove('hidden'); nameTd.textContent = '▾ ' + k; }
         head.classList.add('wx-pgu'); head._detail = detail;
         tb.appendChild(head); tb.appendChild(detail);
       });
@@ -824,6 +836,7 @@
         var ipg = pager(inner);
         var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(pColspan), style: 'background:#f6f8f7;padding:6px' }, [inner, ipg])]);
         head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + a.name; });
+        if (autoExpand()) { detail.classList.remove('hidden'); nameTd.textContent = '▾ ' + a.name; }
         head.classList.add('wx-pgu'); head._detail = detail;
         tb.appendChild(head); tb.appendChild(detail);
       });
@@ -887,6 +900,7 @@
       else (mode === 'byowner' ? drawOwner : mode === 'byplugin' ? drawPlugin : drawHost)();
       updCount();
     }
+    applyFilter();   // 先套預設的到期篩選再畫
     draw();
   }
 
