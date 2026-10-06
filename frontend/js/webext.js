@@ -137,7 +137,8 @@
       // 先問輕量 meta：資料換了沒（免下載整包）
       var meta = null;
       try { var mr = await fetch('/api/snapshot-meta'); if (mr.ok) meta = await mr.json(); } catch (e) {}
-      var key = (meta && meta.batch_id != null) ? ('b' + meta.batch_id + '|' + (meta.imported_at || '')) : null;
+      // 快取鍵含換人指紋：系統上改了負責人／部門，總覽才會跟著更新（2026-10-06 總覽停在 300、週報 294）
+      var key = (meta && meta.batch_id != null) ? ('b' + meta.batch_id + '|' + (meta.imported_at || '') + '|' + (meta.ov_sig || '')) : null;
       var snap = null;
       if (key) { try { snap = await idbGet(key); } catch (e) {} }   // 命中快取＝秒開，不下載
       if (!snap) {

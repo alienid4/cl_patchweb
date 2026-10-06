@@ -370,7 +370,8 @@ def api_snapshot_meta(db: Session = Depends(get_db)):
         return {"batch_id": None, "imported_at": None, "source_file": None, "row_count": 0}
     return {"batch_id": b.id,
             "imported_at": b.imported_at.isoformat() if b.imported_at else None,
-            "source_file": b.source_file, "row_count": b.row_count}
+            "source_file": b.source_file, "row_count": b.row_count,
+            "ov_sig": query.override_sig(db)}   # 換了負責人／部門→瀏覽器快取也要重抓
 
 
 @app.get("/api/matrix")

@@ -533,12 +533,17 @@ def _overrides(session: Session) -> tuple[dict, dict]:
             {c.vuln_key: c.department_override for c in cs if c.department_override})
 
 
+def override_sig(session: Session) -> str:
+    """換人紀錄的指紋（穩定、跨重啟不變）：伺服器快取與瀏覽器 IndexedDB 快取都用它判斷要不要重抓。"""
+    import hashlib
+    ov_o, ov_d = _overrides(session)
+    return hashlib.sha1(repr((sorted(ov_o.items()), sorted(ov_d.items()))).encode("utf-8")).hexdigest()[:12]
+
+
 def snapshot_bytes(session: Session, light: bool = True) -> bytes:
     import json as _json
     b = latest_batch(session)
-    ov_o, ov_d = _overrides(session)
-    # 改了負責人／部門也要讓快取失效（總覽要跟週報同一套數字）
-    ov_sig = hash((tuple(sorted(ov_o.items())), tuple(sorted(ov_d.items()))))
+    ov_sig = override_sig(session)   # 改了負責人／部門也要讓快取失效（總覽要跟週報同一套數字）
     key = (b.id if b else None, b.imported_at.isoformat() if (b and b.imported_at) else None, light, ov_sig)
     hit = _SNAP_CACHE.get(key)
     if hit is not None:
