@@ -253,6 +253,8 @@
   // 直接顯示會被看成「逾期 -87 天」甚至以為算錯。只有 > 0 才是逾期，其餘一律顯示「—」（與單機版一致：未逾期不列天數）。
   function cellVal(r, key) {
     var v = r ? r[key] : null;
+    // 處理進度存的值是「等複掃」，畫面／匯出顯示「結案申請中」（使用者 2026-10-06 改名，存值不動、舊資料免轉換）
+    if (key === 'progress' && v === '等複掃') return '結案申請中';
     if (key === 'overdue_days') return (v != null && v > 0) ? String(v) : '—';
     return v == null ? '' : String(v);
   }
@@ -264,7 +266,7 @@
   // 一組弱點的處置統計（下鑽頂端與「依負責人」共用，同一套定義）。兩個維度分開看：
   //   ① Excel 官方階段：展延＝首次展延中；例外＝例外管理中（其餘是原始修補期限）
   //   ② 承辦處理進度（四類加起來＝總筆數）：尚未修補＝沒回報（維持原來狀態）；修補中＝處理中；
-  //      已送審＝要申請展延／例外；待複掃＝等複掃
+  //      已送審＝要申請展延／例外；結案申請中＝等複掃（使用者 2026-10-06 改名；存的值仍是「等複掃」）
   function dispoStats(rs) {
     var st = { total: rs.length, overdue: 0, notdue: 0, orig: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, subext: 0, subexc: 0, rescan: 0, notewarn: 0 };
     rs.forEach(function (r) {
@@ -299,7 +301,7 @@
     todo: { label: '尚未修補', grp: 'prog', test: function (r) { return r.progress !== '處理中' && r.progress !== '等複掃' && r.progress !== '要申請展延' && r.progress !== '要申請例外'; } },
     wip: { label: '修補中', grp: 'prog', test: function (r) { return r.progress === '處理中'; } },
     sub: { label: '送審中', grp: 'prog', test: function (r) { return r.progress === '要申請展延' || r.progress === '要申請例外'; } },
-    rescan: { label: '待複掃', grp: 'prog', test: function (r) { return r.progress === '等複掃'; } },
+    rescan: { label: '結案申請中', grp: 'prog', test: function (r) { return r.progress === '等複掃'; } },
     subext: { label: '展延送審', grp: 'prog', test: function (r) { return r.progress === '要申請展延'; } },
     subexc: { label: '例外送審', grp: 'prog', test: function (r) { return r.progress === '要申請例外'; } },
     notewarn: { label: '⚠ 待補進度', grp: 'warn', test: noteNoProgress },
@@ -331,7 +333,7 @@
     }
     if (key === 'progress' && noteNoProgress(r)) {
       td.textContent = '⚠ 未設'; td.style.color = '#b9770e'; td.style.fontWeight = '600';
-      td.title = '追蹤備註有寫（' + String(r.track_note).slice(0, 40) + '），但處理進度沒設——狀態還是「尚未修補」。點 ✏️ 補上（做完了就設「等複掃」）';
+      td.title = '追蹤備註有寫（' + String(r.track_note).slice(0, 40) + '），但處理進度沒設——狀態還是「尚未修補」。點 ✏️ 補上（做完了就設「結案申請中」）';
     }
     return td;
   }
@@ -573,7 +575,7 @@
         var ok = false;
         hostIps(r.host).forEach(function (ip) { if (ipSet[ip]) { ok = true; hitTok[ip] = 1; } });
         if (words.length) {
-          var hay = [r.host, r.owner, r.name, r.plugin_id, r.department, r.progress, r.progress_state, r.track_note, r.target_date, r.stage].map(function (v) { return String(v == null ? '' : v).toLowerCase(); }).join('\n');
+          var hay = [r.host, r.owner, r.name, r.plugin_id, r.department, r.progress, cellVal(r, 'progress'), r.progress_state, r.track_note, r.target_date, r.stage].map(function (v) { return String(v == null ? '' : v).toLowerCase(); }).join('\n');
           words.forEach(function (w) { if (hay.indexOf(w) >= 0) { ok = true; hitTok[w] = 1; } });
         }
         return ok;
@@ -745,7 +747,7 @@
       var hr = U.el('tr', {}, (writable ? [th('選')] : []).concat([
         th('負責人'), th('部門'), th('總筆數'),
         th('逾期', BLH.slice(1)), th('未逾期'),
-        th('尚未修補', BLH.slice(1)), th('修補中'), th('展延送審'), th('例外送審'), th('待複掃'),
+        th('尚未修補', BLH.slice(1)), th('修補中'), th('展延送審'), th('例外送審'), th('結案申請中'),
         th('附件')]));
       table.appendChild(U.el('thead', {}, [ghr, hr]));
       var tb = U.el('tbody');
@@ -847,7 +849,7 @@
       // 可排序表頭：[顯示字, 排序鍵]；點擊切換升降序
       var HEADS = [['弱點', 'name'], ['Plugin', 'plugin'], ['嚴重度', 'sev'], ['台數', 'count'],
         ['原始期限', 'origMin'], ['到期日', 'effMin'], ['處置階段', 'stage'], ['其中逾期', 'od'],
-        ['尚未修補', 'todo'], ['修補中', 'wip'], ['展延送審', 'subext'], ['例外送審', 'subexc'], ['待複掃', 'rescan']];
+        ['尚未修補', 'todo'], ['修補中', 'wip'], ['展延送審', 'subext'], ['例外送審', 'subexc'], ['結案申請中', 'rescan']];
       var NUM_SORT = ['count', 'sev', 'od'].concat(PROG_KEYS);   // 數字欄預設多→少
       var BLH = 'border-left:2px solid #1a7f4b', BLB = ';border-left:2px solid #e3ebe7';
       // 第一列分組標題（跟「依負責人」同一套：承辦進度互斥，五欄相加＝台數）
@@ -971,7 +973,7 @@
   }
 
   var PROGRESS_OPTS = [['', '（不變）'], ['處理中', '處理中'], ['要申請展延', '要申請展延'],
-    ['要申請例外', '要申請例外'], ['等複掃', '等複掃'], ['__clear__', '清除進度']];
+    ['要申請例外', '要申請例外'], ['等複掃', '結案申請中'], ['__clear__', '清除進度']];
 
   // 批次改狀態：對已勾選 N 筆套同一組疊加欄（負責人／部門／進度／預計完成日／備註）。詳細預覽後才套。
   function openBatchStatus(ids, onDone) {
@@ -1150,7 +1152,7 @@
       U.el('option', { value: '處理中', text: '處理中（修補中）' }),
       U.el('option', { value: '要申請展延', text: '要申請展延（第一次做不完）' }),
       U.el('option', { value: '要申請例外', text: '要申請例外（展延後還做不完）' }),
-      U.el('option', { value: '等複掃', text: '等複掃（承辦回報做完、等資安複掃）' }),
+      U.el('option', { value: '等複掃', text: '結案申請中（承辦回報做完、等資安複掃確認結案）' }),
     ]);
     progress.value = row.progress || '';
     var note = U.el('textarea', { rows: '4' });
@@ -1205,8 +1207,8 @@
       warnBox.innerHTML = '';
       var looksDone = DONE_RE.test(note.value);
       warnBox.appendChild(U.el('div', { style: 'font-weight:600;color:#9a5b00;margin-bottom:6px', text: '⚠ 追蹤備註有寫，但處理進度是空白。這樣狀態會一直是「尚未修補」，要不要順手設？' }));
-      if (looksDone) warnBox.appendChild(U.el('div', { style: 'font-size:13px;color:#6b7a73;margin-bottom:6px', text: '備註看起來是「已經做完」→ 建議設「等複掃」（等資安複掃確認結案）。' }));
-      var bR = U.el('button', { class: 'btn ' + (looksDone ? 'btn-primary' : 'btn-secondary') + ' btn-sm', text: '設為「等複掃」並存檔' + (looksDone ? '（建議）' : '') });
+      if (looksDone) warnBox.appendChild(U.el('div', { style: 'font-size:13px;color:#6b7a73;margin-bottom:6px', text: '備註看起來是「已經做完」→ 建議設「結案申請中」（等資安複掃確認結案）。' }));
+      var bR = U.el('button', { class: 'btn ' + (looksDone ? 'btn-primary' : 'btn-secondary') + ' btn-sm', text: '設為「結案申請中」並存檔' + (looksDone ? '（建議）' : '') });
       var bW = U.el('button', { class: 'btn btn-secondary btn-sm', text: '設為「處理中」並存檔' });
       var bK = U.el('button', { class: 'btn btn-secondary btn-sm', text: '不用，照原樣存檔' });
       bR.addEventListener('click', function () { progress.value = '等複掃'; updAttHint(); doSave(); });
@@ -1674,7 +1676,7 @@
     host.appendChild(leadToggle(function () { draw(); }));   // 含申請提前量開關(與到期倒數共用狀態)
     var box = U.el('div'); host.appendChild(box);
     var cols = [['owner', '負責人'], ['department', '部門'], ['total', '未結'], ['original', '原始'],
-      ['extension', '首次展延'], ['exception', '例外管理'], ['rescan', '等複掃'], ['overdue', '逾期']];
+      ['extension', '首次展延'], ['exception', '例外管理'], ['rescan', '結案申請中'], ['overdue', '逾期']];
     async function draw() {
       box.innerHTML = '';
       var lead = _dueLeadOn ? DUE_LEAD_DAYS : 0;
@@ -2674,7 +2676,7 @@
             { label: '要申請展延', value: pg.apply_ext || 0, drill: function () { openFindings('要申請展延', { progress: '要申請展延' }); } },
             { label: '要申請例外', value: pg.apply_exc || 0, drill: function () { openFindings('要申請例外', { progress: '要申請例外' }); } },
             { label: '處理中', value: pg.wip || 0, drill: function () { openFindings('處理中', { progress: '處理中' }); } },
-            { label: '等複掃', value: pg.rescan || 0, drill: function () { openFindings('等複掃', { progress: '等複掃' }); } },
+            { label: '結案申請中', value: pg.rescan || 0, drill: function () { openFindings('結案申請中', { progress: '等複掃' }); } },
           ]);
       } },
       { label: '負責人', render: function (c) { renderOwnerInto(c); } },       // 併入：誰還有幾支＋狀態(每格下鑽)
@@ -2765,13 +2767,25 @@
       if (UI && UI.toast) UI.toast('這份清單沒有原始欄位可匯出', 'error');
       return;
     }
-    exportRowsCSV(cols, rows.map(function (r) { return (r && r.raw) ? r.raw : {}; }), title);
+    // 原始欄之後接上承辦填的欄位（使用者 2026-10-06：匯出要看得到處理進度）；欄名加「承辦_」避免跟原始欄撞名
+    var caseCols = CASE_EXPORT_COLS.slice(1);   // 處置階段原始 Excel 已有，不重複
+    var extra = caseCols.map(function (c) { return ['\u0000' + c[0], '承辦_' + c[1]]; });
+    exportRowsCSV(cols.concat(extra), rows.map(function (r) {
+      var o = {}, raw = (r && r.raw) ? r.raw : {};
+      Object.keys(raw).forEach(function (k) { o[k] = raw[k]; });
+      caseCols.forEach(function (c) { o['\u0000' + c[0]] = r ? r[c[0]] : ''; });
+      return o;
+    }), title);
   }
 
-  // 弱點明細清單的「簡易匯出」欄位(約 8 欄,各資料來源都有這些鍵)
+  // 承辦疊加層的欄位（系統上填的，原始 Excel 沒有）：簡易／完整匯出都帶
+  var CASE_EXPORT_COLS = [['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
+    ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
+
+  // 弱點明細清單的「簡易匯出」欄位：常用 8 欄＋承辦欄位
   var SIMPLE_FINDING_COLS = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'],
     ['name', '弱點'], ['plugin_id', 'Plugin'], ['effective_due', '到期日'],
-    ['overdue_days', '逾期天數'], ['department', '部門']];
+    ['overdue_days', '逾期天數'], ['department', '部門']].concat(CASE_EXPORT_COLS);
 
   // 弱點明細清單的雙匯出鈕：完整(原始整欄,~28) + 簡易(精簡 8 欄)。回傳 [完整鈕, 簡易鈕]。
   function listExportButtons(getRows, title) {
@@ -2878,7 +2892,7 @@
         U.el('td', { text: r.severity || '' }), U.el('td', { text: r.host || '' }),
         U.el('td', { text: r.effective_due || '—' }),
         U.el('td', { text: (r.overdue_days != null && r.overdue_days > 0) ? String(r.overdue_days) : '—' }),
-        U.el('td', { text: r.progress || '' }), U.el('td', { text: r.progress_state || '' }),
+        U.el('td', { text: cellVal(r, 'progress') }), U.el('td', { text: r.progress_state || '' }),
         U.el('td', { text: td }), U.el('td', { text: r.track_note || '' }),
       ];
       if (showDept) tds.push(U.el('td', { text: r.department || '' }));
@@ -2902,7 +2916,7 @@
         var td = r.target_date || '—'; if (r.target_overdue) td += '（已過）';
         h += '<tr>' + [r.owner || '未指派', r.name || r.plugin_id || '', r.severity || '', r.host || '',
           r.effective_due || '—', (r.overdue_days != null && r.overdue_days > 0) ? r.overdue_days : '—',
-          r.progress || '', r.progress_state || '', td, r.track_note || '', r.department || '']
+          cellVal(r, 'progress'), r.progress_state || '', td, r.track_note || '', r.department || '']
           .map(function (x) { return '<td>' + esc(x) + '</td>'; }).join('') + '</tr>';
       });
       return h + '</tbody></table>';
@@ -2937,7 +2951,7 @@
       + kv('已過預計日', s.target.target_overdue) + kv('預計30天內完成', s.target.target_soon) + '</div>'
       + '<div class="block"><b>處理進度分佈（管理人標註）</b><br>'
       + kv('要申請展延', (s.progress || {}).apply_ext || 0) + kv('要申請例外', (s.progress || {}).apply_exc || 0)
-      + kv('處理中', (s.progress || {}).wip || 0) + kv('等複掃', (s.progress || {}).rescan || 0)
+      + kv('處理中', (s.progress || {}).wip || 0) + kv('結案申請中', (s.progress || {}).rescan || 0)
       + kv('待追查', (s.progress || {}).flagged || 0) + '</div>'
       + tbl('應申請未申請清單', s.need_apply_list)
       + tbl('要申請·送審中（來源尚未反映）', s.apply_intent_list || [])
