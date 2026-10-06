@@ -257,13 +257,18 @@
     return v == null ? '' : String(v);
   }
 
+  // ⚠ 待補進度：追蹤備註有寫、處理進度沒設（2026-10-06：寫了「修補完畢」卻忘了設等複掃，狀態沒轉卻以為轉了）
+  var PROGRESS_SET = ['處理中', '要申請展延', '要申請例外', '等複掃'];
+  function noteNoProgress(r) { return !!(r && String(r.track_note || '').trim() && PROGRESS_SET.indexOf(r.progress) < 0); }
+
   // 一組弱點的處置統計（下鑽頂端與「依負責人」共用，同一套定義）。兩個維度分開看：
   //   ① Excel 官方階段：展延＝首次展延中；例外＝例外管理中（其餘是原始修補期限）
   //   ② 承辦處理進度（四類加起來＝總筆數）：尚未修補＝沒回報（維持原來狀態）；修補中＝處理中；
   //      已送審＝要申請展延／例外；待複掃＝等複掃
   function dispoStats(rs) {
-    var st = { total: rs.length, overdue: 0, notdue: 0, orig: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, rescan: 0 };
+    var st = { total: rs.length, overdue: 0, notdue: 0, orig: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, rescan: 0, notewarn: 0 };
     rs.forEach(function (r) {
+      if (noteNoProgress(r)) st.notewarn++;   // 提醒用旗標，不屬於三組互斥
       // 時間（互斥，相加＝總）：逾期＝已過真正到期日；未逾期＝其餘（還在期限內／無到期日）
       if (r.overdue_days != null && r.overdue_days > 0) st.overdue++;
       else st.notdue++;
@@ -292,6 +297,7 @@
     wip: { label: '修補中', grp: 'prog', test: function (r) { return r.progress === '處理中'; } },
     sub: { label: '送審中', grp: 'prog', test: function (r) { return r.progress === '要申請展延' || r.progress === '要申請例外'; } },
     rescan: { label: '待複掃', grp: 'prog', test: function (r) { return r.progress === '等複掃'; } },
+    notewarn: { label: '⚠ 待補進度', grp: 'warn', test: noteNoProgress },
   };
 
   // 表格儲存格：Excel 有填但備註沒有申請紀錄的展延上限／例外核准期限＝不算數，標灰並說明
@@ -305,6 +311,10 @@
       td.title = 'Excel 有填，但備註沒有' + (key === 'exception_due' ? '例外' : '展延') + '的申請紀錄，系統不採用這個日期（請確認原始資料）';
     }
     if (key === 'remark') { td.style.whiteSpace = 'normal'; td.style.textAlign = 'left'; td.style.minWidth = '140px'; td.style.fontSize = '13.5px'; }
+    if (key === 'progress' && noteNoProgress(r)) {
+      td.textContent = '⚠ 未設'; td.style.color = '#b9770e'; td.style.fontWeight = '600';
+      td.title = '追蹤備註有寫（' + String(r.track_note).slice(0, 40) + '），但處理進度沒設——狀態還是「尚未修補」。點 ✏️ 補上（做完了就設「等複掃」）';
+    }
     return td;
   }
 
@@ -761,6 +771,7 @@
       { title: '時間（互斥）', color: '#a3342d', keys: ['overdue', 'notdue'] },
       { title: '處置階段（互斥）', color: '#1f6f8b', keys: ['orig', 'ext', 'exc'] },
       { title: '承辦進度（互斥）', color: '#1a7f4b', keys: ['todo', 'wip', 'sub', 'rescan'] },
+      { title: '提醒', color: '#b9770e', keys: ['notewarn'], hideZero: true },   // 備註有寫、進度沒設（另一把尺，不跟上面相加）
     ];
     function renderStats(st) {
       statsEl.innerHTML = '';
@@ -769,6 +780,7 @@
         U.el('span', { text: '總筆數', style: 'color:#6b7a73;font-size:13.5px' }),
         U.el('b', { text: String(st.total), style: 'font-size:17px;color:#1a7f4b' })]));
       STAT_GROUPS.forEach(function (g) {
+        if (g.hideZero && !g.keys.some(function (k) { return st[k] || statKey === k; })) return;
         statsEl.appendChild(U.el('span', { style: 'width:1px;height:22px;background:#cfd8d3;margin:0 2px' }));
         statsEl.appendChild(U.el('span', { text: g.title, style: 'color:' + g.color + ';font-size:12px;font-weight:600;align-self:center' }));
         g.keys.forEach(function (key) {
@@ -776,7 +788,7 @@
           var chip = U.el('span', { title: '點我只看「' + STAT_DEFS[key].label + '」（再點取消）',
             style: 'display:inline-flex;gap:4px;align-items:baseline;padding:3px 10px;border:1px solid ' + (active ? g.color : '#dfe8e3') + ';border-radius:999px;cursor:pointer;background:' + (active ? g.color : '#f7faf8') }, [
             U.el('span', { text: STAT_DEFS[key].label, style: 'font-size:13.5px;color:' + (active ? '#fff' : '#6b7a73') }),
-            U.el('b', { text: String(st[key]), style: 'font-size:15px;color:' + (active ? '#fff' : (key === 'overdue' ? '#c0392b' : '#2a3430')) })]);
+            U.el('b', { text: String(st[key]), style: 'font-size:15px;color:' + (active ? '#fff' : (key === 'overdue' ? '#c0392b' : key === 'notewarn' ? '#b9770e' : '#2a3430')) })]);
           chip.addEventListener('click', function () { statKey = (statKey === key) ? null : key; draw(); });
           statsEl.appendChild(chip);
         });
@@ -1008,20 +1020,43 @@
     body.appendChild(attHint);
     body.appendChild(attachPanel(row));
     var save = U.el('button', { class: 'btn btn-primary', text: '存檔' });
-    save.addEventListener('click', async function () {
+    // 防呆：追蹤備註有寫、處理進度空白 → 先提醒（寫了「修補完畢」卻忘了設等複掃，狀態就不會轉）
+    var warnBox = U.el('div', { style: 'display:none;margin:4px 0 12px;padding:10px 12px;border:1px solid #f0c27b;background:#fff8ec;border-radius:8px;text-align:left' });
+    body.insertBefore(warnBox, body.firstChild.nextSibling);
+    var DONE_RE = /完畢|完成|已修補|修補好|已修復|已更新|已升級|已關閉|已處理|處理完/;
+    function showWarn() {
+      warnBox.innerHTML = '';
+      var looksDone = DONE_RE.test(note.value);
+      warnBox.appendChild(U.el('div', { style: 'font-weight:600;color:#9a5b00;margin-bottom:6px', text: '⚠ 追蹤備註有寫，但處理進度是空白。這樣狀態會一直是「尚未修補」，要不要順手設？' }));
+      if (looksDone) warnBox.appendChild(U.el('div', { style: 'font-size:13px;color:#6b7a73;margin-bottom:6px', text: '備註看起來是「已經做完」→ 建議設「等複掃」（等資安複掃確認結案）。' }));
+      var bR = U.el('button', { class: 'btn ' + (looksDone ? 'btn-primary' : 'btn-secondary') + ' btn-sm', text: '設為「等複掃」並存檔' + (looksDone ? '（建議）' : '') });
+      var bW = U.el('button', { class: 'btn btn-secondary btn-sm', text: '設為「處理中」並存檔' });
+      var bK = U.el('button', { class: 'btn btn-secondary btn-sm', text: '不用，照原樣存檔' });
+      bR.addEventListener('click', function () { progress.value = '等複掃'; updAttHint(); doSave(); });
+      bW.addEventListener('click', function () { progress.value = '處理中'; updAttHint(); doSave(); });
+      bK.addEventListener('click', function () { doSave(); });
+      warnBox.appendChild(U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, [bR, bW, bK]));
+      warnBox.style.display = 'block';
+      warnBox.scrollIntoView({ block: 'nearest' });
+    }
+    save.addEventListener('click', function () {
       // 部門只能選現有(避免打錯多出部門)；留空＝清除回 Excel 值
       var dv = (dept.value || '').trim();
       if (dv && (_deptList || []).indexOf(dv) < 0) {
         UI.toast('部門「' + dv + '」不在清單中。請從既有部門選擇（避免打錯新增部門）；留空＝回到 Excel 值。', 'error');
         dept.focus(); return;
       }
+      if (String(note.value || '').trim() && !progress.value) { showWarn(); return; }
+      doSave();
+    });
+    async function doSave() {
       var r = await fetch('/api/findings/' + row.id + '/overlay', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ set_owner: true, owner: owner.value, set_department: true, department: dept.value, set_target: true, target_date: target.value, set_progress: true, progress: progress.value, set_note: true, note: note.value })
       });
       if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('存失敗：' + (e.detail || r.status), 'error'); return; }
       UI.closeModal(); UI.toast('已更新', 'success'); if (done) done();
-    });
+    }
     UI.openModal('編輯弱點（承辦管理）', body, { footer: save });
     setTimeout(function () { owner.focus(); }, 0);
   }
@@ -2455,6 +2490,7 @@
 
           // ⑥ 處理進度（管理人標註，次要資訊）
           kpiCards(c, '處理進度（管理人標註；結論以資安 Excel 為準）', [
+            { label: '⚠ 備註有寫、進度未設', value: pg.note_no_progress || 0, danger: true, drill: function () { openFindings('⚠ 待補處理進度（追蹤備註有寫、處理進度沒設）', { note_no_progress: 'true' }); } },
             { label: '已回報（進度／預計完成／備註任一）', value: pg.reported || 0, drill: function () { openFindings('已回報的弱點（處理進度／預計完成日／追蹤備註）', { reported: 'true' }); } },
             { label: '要申請展延', value: pg.apply_ext || 0, drill: function () { openFindings('要申請展延', { progress: '要申請展延' }); } },
             { label: '要申請例外', value: pg.apply_exc || 0, drill: function () { openFindings('要申請例外', { progress: '要申請例外' }); } },

@@ -252,6 +252,14 @@ def display_host(f) -> Optional[str]:
     return str(a).strip() if a not in (None, "") and str(a).strip() else f.host
 
 
+def _note_no_progress(c) -> bool:
+    """追蹤備註有寫、但處理進度沒設（狀態沒轉，卻以為轉了）。"""
+    if c is None:
+        return False
+    from .logic import PROGRESS_VALUES
+    return bool((c.track_note or "").strip()) and c.status not in PROGRESS_VALUES
+
+
 def _is_reported(c) -> bool:
     """承辦有沒有回報過：處理進度、預計完成日、追蹤備註任一有填（不看 Excel，只看系統內疊加欄）。"""
     if c is None:
@@ -269,6 +277,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
          no_owner: bool = False, no_due: bool = False,
          risk: Optional[str] = None, apply_universe: bool = False, not_apply: bool = False,
          no_target: bool = False, flagged: bool = False, reported: bool = False,
+         note_no_progress: bool = False,
          due_min: Optional[int] = None, due_max: Optional[int] = None, lead: int = 0,
          today: Optional[dt.date] = None) -> list[dict]:
     """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
@@ -332,6 +341,10 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             return classify_progress(p, f.close_status == _CD, f.stage,
                                      (c.status_changed_at if c else None), _imp2) in FLAGGED_STATES
         fs = [f for f in fs if _flag(f)]
+    if note_no_progress:   # ⚠ 待補進度：追蹤備註有寫、處理進度沒設（常見：寫了「修補完畢」卻忘了設等複掃）
+        from .models import Case as _Cn
+        _nk = {c.vuln_key for c in session.execute(select(_Cn)).scalars().all() if _note_no_progress(c)}
+        fs = [f for f in fs if "|".join(vuln_key(f)) in _nk]
     if reported:         # 已回報：處理進度／預計完成日／追蹤備註任一有填
         from .models import Case as _Cr
         _rk = {c.vuln_key for c in session.execute(select(_Cr)).scalars().all() if _is_reported(c)}
@@ -876,7 +889,8 @@ def weekly_report(session: Session, department: Optional[str] = None,
             "apply_exc": pcount[PROGRESS_APPLY_EXC],
             "rescan": pcount[PROGRESS_RESCAN],
             "flagged": flagged,
-            "reported": sum(1 for f in open_ if _is_reported(_c(f))),   # 已回報(進度/預計完成日/備註任一)
+            "reported": sum(1 for f in open_ if _is_reported(_c(f))),
+            "note_no_progress": sum(1 for f in open_ if _note_no_progress(_c(f))),   # ⚠ 備註有寫、進度未設   # 已回報(進度/預計完成日/備註任一)
         },
         # 預計完成彙總(僅母體)
         "target": {
