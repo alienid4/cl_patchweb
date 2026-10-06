@@ -52,6 +52,12 @@
     // 寬版(近滿版)：下鑽等寬表格用，免得一直左右拉。opts.wide=true 時加 .modal-wide。
     var modalEl = overlay.querySelector('.modal');
     if (modalEl) modalEl.classList.toggle('modal-wide', !!opts.wide);
+    // 新開(非疊層)的視窗：清掉上一個下鑽留下的滿版樣式，否則之後的登入／設定視窗都變滿版（2026-10-06）
+    // opts.narrow：小視窗(登入這類只有兩三欄的)，寬度收窄
+    if (modalEl && !opts.stack) {
+      modalEl.classList.remove('wx-drillmax');
+      modalEl.style.maxWidth = opts.narrow ? '420px' : '';
+    }
 
     titleEl.textContent = title;
     bodyEl.innerHTML = '';

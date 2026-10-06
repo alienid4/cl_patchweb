@@ -192,7 +192,7 @@ def authenticate_ad_ex(session: Session, cfg: dict, login: str, password: str):
         session.add(u)
     else:
         if not u.is_active:
-            return None
+            return None, "此帳號已停用，請聯絡管理員"
         # 同步 AD 顯示名與信箱（信箱以 AD 為權威、不像部門會與 Excel 短名衝突）；
         # 但「部門」不覆蓋——因 AD 部門是長名、與 Excel 短名不同，
         # 由 Super Admin 在「帳號與權限」設定後即固定，不被每次登入洗掉。
@@ -203,4 +203,4 @@ def authenticate_ad_ex(session: Session, cfg: dict, login: str, password: str):
             u.role = config.ROLE_SUPER
     session.commit()
     session.refresh(u)
-    return u
+    return u, "ok"   # 一律回 (User|None, 原因)；V2.62 漏改這兩條路，AD 登入成功反而 500

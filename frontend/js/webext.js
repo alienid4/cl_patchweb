@@ -490,9 +490,10 @@
     var statsEl = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:5px' });
     stickyTop.appendChild(statsEl);
     // 到期篩選（依真正到期日、今天起算），可複選。每顆是一段，互不重疊：
-    //   已逾期(<0)｜14 天內(0–14)｜30 天內(15–30)｜60 天內(31–60)
+    //   已逾期(<0)｜14 天內(0–14)｜30 天內(15–30)｜60 天內(31–60)｜90(61–90)｜120(91–120)｜180(121–180)｜360 天內(181–360)（使用者 2026-10-06 加後四段）
     //   各段獨立：點哪段＝只選那段，再點＝取消；要累加就多點幾段；「全部」＝清掉所有選擇
-    var DUE_SEG = [['overdue', '已逾期', null, -1], [14, '14 天內', 0, 14], [30, '30 天內', 15, 30], [60, '60 天內', 31, 60]];
+    var DUE_SEG = [['overdue', '已逾期', null, -1], [14, '14 天內', 0, 14], [30, '30 天內', 15, 30], [60, '60 天內', 31, 60],
+      [90, '90 天內', 61, 90], [120, '120 天內', 91, 120], [180, '180 天內', 121, 180], [360, '360 天內', 181, 360]];
     var dueOn = {};          // 段 key → true
     // 預設看 30 天內（含已逾期）——使用者 2026-10-06：主要目的是抓快到期的。
     // 但下鑽本身已帶到期範圍（到期倒數分桶、30/60/90 累計、逾期等）就不再疊預設，否則那一桶會被藏掉。
@@ -1313,19 +1314,27 @@
   function openLogin() {
     var user = U.el('input', { type: 'text', id: 'wx-user', placeholder: '帳號', autocomplete: 'username' });
     var pass = U.el('input', { type: 'password', id: 'wx-pass', placeholder: '密碼', autocomplete: 'current-password' });
-    var err = U.el('p', { class: 'empty-hint', style: 'color:#c0392b;display:none' });
-    [user, pass].forEach(function (i) { i.style.cssText = 'display:block;width:100%;margin:6px 0;padding:8px;border:1px solid #e3e6ea;border-radius:6px'; });
-    var body = U.el('div', {}, [U.el('label', { text: '帳號' }), user, U.el('label', { text: '密碼' }), pass, err]);
+    var err = U.el('p', { class: 'empty-hint', style: 'color:#c0392b;display:none;font-size:15px;margin:6px 0 0' });
+    // 小視窗、大字（使用者 2026-10-06：只有兩欄，不用拉滿版）
+    [user, pass].forEach(function (i) { i.style.cssText = 'display:block;width:100%;margin:4px 0 12px;padding:10px 12px;border:1px solid #cdd5dd;border-radius:6px;font-size:17px;box-sizing:border-box'; });
+    var LBL = 'font-size:16px;font-weight:600';
+    var body = U.el('div', {}, [U.el('label', { text: '帳號（員編）', style: LBL }), user, U.el('label', { text: '密碼', style: LBL }), pass, err]);
     var submit = U.el('button', { class: 'btn btn-primary', text: '登入' });
     async function doLogin() {
       var r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: user.value.trim(), password: pass.value }) });
-      if (!r.ok) { var e = await r.json().catch(function () { return {}; }); err.textContent = e.detail || '登入失敗'; err.style.display = 'block'; return; }
+      if (!r.ok) {
+        var e = await r.json().catch(function () { return {}; });
+        // 沒帶原因（多半是伺服器出錯 5xx）也要講出狀態碼，不要只寫「登入失敗」讓人猜（2026-10-06 同事 AD 登入只看到這四個字）
+        err.textContent = e.detail || ('登入失敗（' + (r.status >= 500 ? '伺服器錯誤 ' + r.status + '，請通知管理員查服務紀錄' : '狀態碼 ' + r.status) + '）');
+        err.style.display = 'block'; return;
+      }
       UI.closeModal(); await refreshMe(); refreshGov(); UI.toast('已登入', 'success');
     }
     submit.addEventListener('click', doLogin);
     pass.addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
-    UI.openModal('登入', body, { footer: submit });
+    submit.style.cssText = 'font-size:16px;padding:8px 28px';
+    UI.openModal('登入', body, { footer: submit, narrow: true });
     setTimeout(function () { user.focus(); }, 0);
   }
   async function doLogout() { await fetch('/api/logout', { method: 'POST' }); await refreshMe(); refreshGov(); UI.toast('已登出', 'info'); }
