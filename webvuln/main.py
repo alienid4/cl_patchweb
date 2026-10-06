@@ -28,6 +28,8 @@ _FRONTEND = Path(__file__).resolve().parents[1] / "frontend"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    import threading
+    threading.Thread(target=query.warm_snapshot_cache, daemon=True).start()   # 開機先算好開頁快照
     yield
 
 
@@ -211,6 +213,8 @@ def import_data(payload: ImportIn, request: Request, db: Session = Depends(get_d
     """收前端解析好的一批 finding → 存成新快照，舊快照退位。
     匯入＝覆蓋最新快照，屬寫入：需登入（承辦/管理員），免登入模式才放行；動作留稽核。"""
     batch = importer.create_batch(db, payload)
+    import threading
+    threading.Thread(target=query.warm_snapshot_cache, daemon=True).start()   # 換了新批次 → 先算好開頁快照
     security.log_audit(db, username=user.username, action="import",
                        target=f"batch:{batch.id}",
                        detail=f"{payload.source_file or ''} {batch.row_count}筆",
@@ -316,9 +320,10 @@ def api_trend(department: str | None = None, limit: int = 12, db: Session = Depe
 
 
 @app.get("/api/snapshot")
-def api_snapshot(db: Session = Depends(get_db)):
-    """最新快照原封內容（各表欄序＋raw 列），供前端重建 workbook 餵回原本 render。"""
-    return query.snapshot(db)
+def api_snapshot(full: bool = False, db: Session = Depends(get_db)):
+    """最新快照原封內容（各表欄序＋raw 列），供前端重建 workbook 餵回原本 render。
+    預設輕量版（不含長文字欄，見 query.HEAVY_AVG_CHARS）且走伺服器端快取；?full=1 取完整版。"""
+    return Response(content=query.snapshot_bytes(db, light=not full), media_type="application/json")
 
 
 @app.get("/api/snapshot-meta")

@@ -560,6 +560,25 @@
       cb.addEventListener('change', function () { ids.forEach(function (id) { selected[id] = cb.checked; }); updCount(); });
       return cb;
     }
+    // 展開明細的表頭：「選」欄是勾選框＝只選這一組（這個負責人／這個弱點底下）的列，不會選到別人
+    function innerHead(icols, grp, inner) {
+      var tr = U.el('tr', {});
+      if (writable) {
+        var ids = grp.map(function (x) { return x.id; });
+        var hcb = U.el('input', { type: 'checkbox', title: '只選這一組的 ' + ids.length + ' 筆（不會選到其他負責人）' });
+        hcb.checked = ids.length > 0 && ids.every(function (id) { return selected[id]; });
+        hcb.addEventListener('click', function (e) { e.stopPropagation(); });
+        hcb.addEventListener('change', function () {
+          ids.forEach(function (id) { selected[id] = hcb.checked; });
+          inner.querySelectorAll('tbody .wx-rowcb').forEach(function (cb) { cb.checked = hcb.checked; });
+          updCount();
+        });
+        tr.appendChild(U.el('th', { style: 'white-space:nowrap' }, [hcb, U.el('span', { text: ' 選', style: 'font-size:12px' })]));
+      }
+      icols.forEach(function (c) { tr.appendChild(U.el('th', { text: c[1] })); });
+      tr.appendChild(U.el('th', { text: '操作' }));
+      return U.el('thead', {}, [tr]);
+    }
     function batchBar() {
       ensureLists();
       cntEl = U.el('span', { text: '已選 0 筆', style: 'font-weight:600;min-width:72px' });
@@ -568,7 +587,8 @@
       var bAttach = U.el('button', { class: 'btn btn-secondary btn-sm', text: '批次上傳佐證' });
       bStatus.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchStatus(ids, onDone); });
       bAttach.addEventListener('click', function () { var ids = selIds(); if (!ids.length) { UI.toast('請先勾選項目', 'error'); return; } openBatchAttach(ids, onDone); });
-      var bSelAll = U.el('button', { class: 'btn btn-secondary btn-sm', text: shown.length < allRows.length ? '全選篩選結果' : '全選' });
+      var bSelAll = U.el('button', { class: 'btn btn-secondary btn-sm', text: '全選全部（' + shown.length + ' 筆）',
+        title: '選目前畫面上全部負責人的 ' + shown.length + ' 筆。只要選某一個人的：展開他，勾明細表頭的「選」' });
       var bSelNone = U.el('button', { class: 'btn btn-secondary btn-sm', text: '全不選' });
       bSelAll.addEventListener('click', function () { shown.forEach(function (r) { selected[r.id] = true; }); draw(); });
       bSelNone.addEventListener('click', function () { selected = {}; draw(); });
@@ -630,8 +650,7 @@
           U.el('td', { text: att ? ('📎' + att) : '' })]);
         var head = U.el('tr', { style: 'cursor:pointer' }, cells);
         var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
-        var ih = (writable ? ['選'] : []).concat(icols.map(function (c) { return c[1]; })); ih.push('操作');
-        inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
+        inner.appendChild(innerHead(icols, grp, inner));
         var itb = U.el('tbody');
         grp.forEach(function (r) {
           var tds = writable ? [U.el('td', {}, [rowCb(r.id)])] : [];
@@ -739,8 +758,7 @@
         var head = U.el('tr', { style: 'cursor:pointer' }, pcells);
         // 展開：這個弱點影響的主機
         var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
-        var ih = (writable ? ['選'] : []).concat(icols.map(function (c) { return c[1]; })); ih.push('操作');
-        inner.appendChild(U.el('thead', {}, [U.el('tr', {}, ih.map(function (h) { return U.el('th', { text: h }); }))]));
+        inner.appendChild(innerHead(icols, grp, inner));
         var itb = U.el('tbody');
         grp.forEach(function (r) {
           var tds = writable ? [U.el('td', {}, [rowCb(r.id)])] : [];
@@ -2397,8 +2415,6 @@
     host.appendChild(headRow);
     host.appendChild(reportFilterBar(function () { renderReportInto(host); }));
 
-    var fresh = (s.freshness.days_ago == null) ? '尚無匯入' : ('資料距今 ' + s.freshness.days_ago + ' 天');
-    host.appendChild(U.el('p', { class: 'empty-hint', text: '產生時間 ' + (s.generated_at || '').replace('T', ' ') + '　·　' + fresh }));
 
     // 選了特定部門 → 清單裡每列部門都一樣,「部門」欄多餘,隱藏(全部門時才顯示,用來分辨)
     var showDept = !(s.department && s.department !== '全部');
@@ -2433,7 +2449,6 @@
           var notApply = Math.max(s.unresolved - s.apply_universe, 0);   // 暫無需申請：未結、尚未達申請時機
           var pg = s.progress || {};
           // ① 概況／申請面 KPI 卡（取代長句；每個數字可點下鑽）
-          c.appendChild(U.el('p', { class: 'empty-hint', style: 'margin:0 0 4px', text: scope + '　·　' + s.today + '（數字可點看明細）' }));
           kpiCards(c, '概況', [
             { label: '未結', value: s.unresolved, drill: function () { openFindings('未結案', {}); } },
             { label: '逾期', value: s.overdue, danger: true, drill: function () { openFindings('已逾期', { band: '已逾期' }); } },

@@ -56,3 +56,12 @@ def client(engine):
     with TestClient(m.app) as c:
         yield c
     m.app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_snapshot_cache():
+    """開頁快照有伺服器端快取（以批次為鍵）；每個測試是新的 DB，先清掉避免跨測試命中。"""
+    from webvuln import query
+    query._SNAP_CACHE.clear()
+    yield
+    query._SNAP_CACHE.clear()

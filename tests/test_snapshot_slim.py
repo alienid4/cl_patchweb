@@ -37,7 +37,7 @@ def test_gzip(client):
     importer_rows = [{"sheet_key": "s", "host": f"10.30.9.{i}", "close_status": "未結案",
                       "raw": {"Host": f"10.30.9.{i}", "Description": "x" * 500}} for i in range(20)]
     assert client.post("/api/import", json={"source_file": "t.xlsx", "findings": importer_rows}).status_code == 200
-    r = client.get("/api/snapshot", headers={"Accept-Encoding": "gzip"})
+    r = client.get("/api/snapshot", params={"full": "1"}, headers={"Accept-Encoding": "gzip"})
     assert r.status_code == 200 and r.headers.get("content-encoding") == "gzip"
 
 
@@ -53,3 +53,16 @@ def test_display_host_falls_back_to_asset_name(session):
     from webvuln.models import Finding
     f = session.query(Finding).filter(Finding.name == "情資A").one()
     assert f.host is None and query.vuln_key(f)[2] == ""   # 存的跟鍵都沒變
+
+
+def test_light_snapshot_omits_long_text_but_keeps_parser_columns(client):
+    """開頁輕量版：長文字欄先不送，解析器要用的欄（Name 等）再長也保留；?full=1 拿完整版。"""
+    rows = [{"sheet_key": "1-系統弱點", "host": f"10.30.4.{i}", "close_status": "未結案",
+             "raw": {"Host": f"10.30.4.{i}", "Name": "N" * 400, "Description": "D" * 900, "Port": "443"}} for i in range(3)]
+    assert client.post("/api/import", json={"source_file": "t.xlsx", "findings": rows,
+                                             "sheet_columns": {"1-系統弱點": ["Host", "Name", "Description", "Port"]}}).status_code == 200
+    light = client.get("/api/snapshot").json()["sheets"][0]
+    assert light["columns"] == ["Host", "Name", "Port"] and light["omitted"] == ["Description"]
+    assert all("Description" not in r and len(r["Name"]) == 400 for r in light["rows"])
+    full = client.get("/api/snapshot", params={"full": "1"}).json()["sheets"][0]
+    assert "Description" in full["columns"] and full["omitted"] == []

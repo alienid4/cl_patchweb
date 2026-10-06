@@ -457,7 +457,71 @@ def _drop_blank_columns(columns: list, rows: list) -> tuple[list, list]:
     return keep, slim
 
 
-def snapshot(session: Session) -> dict:
+# 開頁輕量版：平均每格超過這麼多字的欄先不送（Description、Plugin Output 之類，約占快照七成大小）。
+# 原畫面不用這些欄；要看完整內容的「原始資料」與「完整匯出」另外向伺服器要，不經快照。
+HEAVY_AVG_CHARS = 150
+# 解析器會用到的欄（profiles.js fieldAliases），再長也一律保留，不然畫面會少欄位
+_PROTECT_COLS = ["負責單位", "部門", "負責人", "負責人員", "Host", "內部Host IP", "標的IP", "IP", "網址", "資產名稱",
+                 "Name", "風險項目", "發現", "標的", "Audit Name", "外部情資", "Plugin ID",
+                 "發現嚴重性", "Finding Severity", "Risk Severity", "風險等級", "Grade", "風險",
+                 "修補期限", "改善期限", "預計完成日期", "改善完成日", "首次展延上限", "首次展延期限", "例外核准期限",
+                 "預計完成日", "修補完成日", "結案狀態", "改善狀況", "結案日期", "備註"]
+
+
+def _nk(v) -> str:
+    import unicodedata
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(v))).lower()
+
+
+_PROTECT_NK = [_nk(c) for c in _PROTECT_COLS]
+
+
+def _drop_heavy_columns(columns: list, rows: list) -> tuple[list, list, list]:
+    """去掉長文字欄（輕量版快照用）。回傳 (保留欄, 瘦身後的列, 被拿掉的欄)。"""
+    heavy = []
+    for c in columns:
+        k = _nk(c)
+        if any(k == p or k.startswith(p) for p in _PROTECT_NK):
+            continue
+        vals = [r.get(c) for r in rows if r.get(c) not in (None, "")]
+        if vals and sum(len(str(v)) for v in vals) / len(vals) > HEAVY_AVG_CHARS:
+            heavy.append(c)
+    if not heavy:
+        return columns, rows, []
+    hs = set(heavy)
+    return ([c for c in columns if c not in hs],
+            [{k: v for k, v in r.items() if k not in hs} for r in rows], heavy)
+
+
+# 伺服器端快取：同一批資料只算一次（開機後、匯入後先算好），之後開頁直接回傳 bytes。
+# 2026-10-06 實測 221：每次重算 0.44 秒；快照只跟匯入批次有關（不含承辦疊加層），批次沒換就不會變。
+_SNAP_CACHE: dict = {}
+
+
+def snapshot_bytes(session: Session, light: bool = True) -> bytes:
+    import json as _json
+    b = latest_batch(session)
+    key = (b.id if b else None, b.imported_at.isoformat() if (b and b.imported_at) else None, light)
+    hit = _SNAP_CACHE.get(key)
+    if hit is not None:
+        return hit
+    data = _json.dumps(snapshot(session, light=light), ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+    _SNAP_CACHE.clear()          # 只留最新一批，舊的丟掉
+    _SNAP_CACHE[key] = data
+    return data
+
+
+def warm_snapshot_cache() -> None:
+    """背景預先算好輕量快照（開機、匯入後呼叫）；失敗不影響服務，下次有人開頁再算。"""
+    from .db import SessionLocal
+    try:
+        with SessionLocal() as s:
+            snapshot_bytes(s, light=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[snapshot] 預熱失敗：{e!r}")
+
+
+def snapshot(session: Session, light: bool = False) -> dict:
     """回傳最新快照的『原封』內容（各表欄序＋每列 raw），供網頁前端重建 workbook、
     餵回單機版原本的解析/render pipeline，畫面與單機版一模一樣。
     送出前做兩件事（都不改 DB）：收回計數字串展開的重複列、去掉沒名字的空白欄。"""
@@ -481,10 +545,13 @@ def snapshot(session: Session) -> dict:
         rows = _collapse_counted(by[k])
         cols = scs.get(k) or (list(rows[0].keys()) if rows else [])
         cols, rows = _drop_blank_columns(cols, rows)
-        sheets.append({"name": k, "columns": cols, "rows": rows})
+        dropped: list = []
+        if light:
+            cols, rows, dropped = _drop_heavy_columns(cols, rows)
+        sheets.append({"name": k, "columns": cols, "rows": rows, "omitted": dropped})
     return {"source_file": b.source_file,
             "imported_at": b.imported_at.isoformat() if b.imported_at else None,
-            "sheets": sheets}
+            "light": light, "sheets": sheets}
 
 
 def matrix(session: Session, department: Optional[str] = None,
