@@ -12,15 +12,23 @@
 
   function inDept(r, dept) { return !dept || dept === '__all__' || (r.unit || '(未填)') === dept; }
 
+  /* 已逾期／近期到期／高風險未結 三者互斥（使用者 2026-10-06：已過期的不該還算在高風險未結）：
+   * 先歸已逾期，再歸近期到期；「高風險未結」只剩 Critical/High 且尚未逾期、也不在近期到期內的 */
+  function isOverdueR(r) { return !!(r.realDue && r.daysLeft < 0); }
+  function isSoonR(r, soon) { return !!(r.realDue && r.daysLeft >= 0 && r.daysLeft <= soon); }
+  function isHighOnly(r, soon) {
+    return (r.severity === 'Critical' || r.severity === 'High') && !isOverdueR(r) && !isSoonR(r, soon);
+  }
+
   /* 單一項目(工作表)的彙總(可限定部門) */
   function agg(sheet, dept) {
     var soon = CFG.soonDays || 30;
     var recs = (sheet.records || []).filter(function (r) { return inDept(r, dept); });
     var open = recs.filter(function (r) { return r.closeBucket === 'open'; });
     var closed = recs.filter(function (r) { return r.closeBucket === 'closed'; });
-    var overdue = open.filter(function (r) { return r.realDue && r.daysLeft < 0; });
-    var soonN = open.filter(function (r) { return r.realDue && r.daysLeft >= 0 && r.daysLeft <= soon; });
-    var high = open.filter(function (r) { return r.severity === 'Critical' || r.severity === 'High'; });
+    var overdue = open.filter(isOverdueR);
+    var soonN = open.filter(function (r) { return isSoonR(r, soon); });
+    var high = open.filter(function (r) { return isHighOnly(r, soon); });
     return {
       name: sheet.name, total: recs.length, open: open.length, closed: closed.length,
       overdue: overdue.length, soon: soonN.length, high: high.length,
@@ -119,12 +127,12 @@
       { label: '未結案', value: t.open, cls: 'm-total', recs: function () { return collect(null); } },
       { label: '已逾期', value: t.overdue, cls: 'm-overdue', recs: function () { return collect(function (r) { return r.overdue; }); } },
       { label: '近期到期', value: t.soon, cls: 'm-warn', recs: function () { return collect(function (r) { return r.realDue && r.daysLeft >= 0 && r.daysLeft <= soon; }); } },
-      { label: '高風險未結', value: t.high, cls: 'm-critical', recs: function () { return collect(function (r) { return r.severity === 'Critical' || r.severity === 'High'; }); } },
+      { label: '高風險未結', value: t.high, cls: 'm-critical', title: '高風險未結（不含已逾期、近期到期）', hint: '只算 Critical/High 且還沒逾期、也不在近期到期內的；已逾期與近期到期另外算，三張卡不重疊', recs: function () { return collect(function (r) { return isHighOnly(r, soon); }); } },
       { label: '整體結案率', value: t.rate + '%', cls: 'm-info', title: '整體已結案', recs: function () { return collectClosed(); } },
     ];
     var kgrid = U.el('div', { class: 'summary-kpis' });
     kpis.forEach(function (k) {
-      var attrs = { class: 'metric-card ' + k.cls + (k.recs ? ' clickable' : '') };
+      var attrs = { class: 'metric-card ' + k.cls + (k.recs ? ' clickable' : ''), title: k.hint || null };
       if (k.recs) attrs.onclick = function () {
         var list = k.recs();
         if (list.length) global.UI.openDetail((k.title || k.label) + '（' + list.length + ' 筆）', list);
@@ -360,7 +368,7 @@
         if (r.closeBucket === 'open') {
           g.open++; g.openRecords.push(r);
           if (r.overdue) { g.overdue++; g.overdueRecords.push(r); }
-          if (r.severity === 'Critical' || r.severity === 'High') { g.high++; g.highRecords.push(r); }
+          if (isHighOnly(r, CFG.soonDays || 30)) { g.high++; g.highRecords.push(r); }
         } else if (r.closeBucket === 'closed') { g.closed++; g.closedRecords.push(r); }
       });
     });
