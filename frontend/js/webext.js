@@ -677,6 +677,52 @@
       ]);
     }
 
+    // 群組列的展開明細，可篩成只看某一類（key＝STAT_DEFS 的鍵，null＝全部）。
+    // 點群組列＝展開／收合全部；點列上的數字＝只看那一類，再點同一個數字收合。
+    function filterableDetail(grp, icols, colspan, onState) {
+      var box = U.el('td', { colspan: String(colspan), style: 'background:#f6f8f7;padding:6px' });
+      var detail = U.el('tr', { class: 'hidden' }, [box]);
+      var cur = null, built = false;
+      function fill(key) {
+        cur = key; built = true;
+        var rows = key ? grp.filter(STAT_DEFS[key].test) : grp;
+        box.innerHTML = '';
+        if (key) {
+          var all = U.el('button', { class: 'btn btn-sm', text: '顯示全部 ' + grp.length + ' 筆' });
+          all.addEventListener('click', function (e) { e.stopPropagation(); fill(null); });
+          box.appendChild(U.el('div', { style: 'display:flex;gap:10px;align-items:center;margin:0 0 6px 2px;font-size:13.5px' }, [
+            U.el('span', { text: '只看「' + STAT_DEFS[key].label + '」' + rows.length + ' 筆', style: 'font-weight:700;color:#0f5f35' }), all]));
+        }
+        var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
+        inner.appendChild(innerHead(icols, rows, inner));
+        var itb = U.el('tbody');
+        rows.forEach(function (r) {
+          var tds = writable ? [U.el('td', {}, [rowCb(r.id)])] : [];
+          icols.forEach(function (c) { tds.push(cellTd(r, c[0])); });
+          tds.push(opsCell(r, self));
+          itb.appendChild(U.el('tr', { class: 'wx-pgu' }, tds));
+        });
+        inner.appendChild(itb); makeSortable(inner);
+        box.appendChild(inner); box.appendChild(pager(inner));
+      }
+      function isOpen() { return !detail.classList.contains('hidden'); }
+      function open(key) { if (!built || cur !== key) fill(key); detail.classList.remove('hidden'); onState(true); }
+      function close() { detail.classList.add('hidden'); onState(false); }
+      return {
+        detail: detail, open: open,
+        toggleAll: function () { if (isOpen() && cur === null) close(); else open(null); },
+        wireCell: function (td, key) {
+          if (!td || td.textContent === '—' || td.textContent === '0') return;
+          td.style.cursor = 'pointer'; td.style.textDecoration = 'underline dotted';
+          td.title = '點我展開，只看「' + STAT_DEFS[key].label + '」';
+          td.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (isOpen() && cur === key) close(); else open(key);
+          });
+        },
+      };
+    }
+
     // 依負責人：誰還有幾支＋其中逾期(主角度，追人不追 IP)；點名字展開他的明細
     // 欄位分三段（直線＋表頭標題）：時間(旗標逾期)｜處置階段 原始修補/展延/例外(互斥)｜承辦進度 尚未修補/修補中/送審中/待複掃(互斥)
     function drawOwner() {
@@ -726,23 +772,16 @@
           numTd(ds.wip), numTd(ds.subext), numTd(ds.subexc), numTd(ds.rescan),
           U.el('td', { text: att ? ('📎' + att) : '' })]);
         var head = U.el('tr', { style: 'cursor:pointer' }, cells);
-        var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
-        inner.appendChild(innerHead(icols, grp, inner));
-        var itb = U.el('tbody');
-        grp.forEach(function (r) {
-          var tds = writable ? [U.el('td', {}, [rowCb(r.id)])] : [];
-          icols.forEach(function (c) { tds.push(cellTd(r, c[0])); });
-          tds.push(opsCell(r, self));
-          itb.appendChild(U.el('tr', {}, tds));
+        var fd = filterableDetail(grp, icols, colspanAll, function (open) { nameTd.textContent = (open ? '▾ ' : '▸ ') + k; });
+        // 數字格可點＝展開時只看那一類（使用者 2026-10-06：點 31 就只看那 31 筆）
+        var off = writable ? 1 : 0;
+        [['overdue', 3], ['notdue', 4], ['todo', 5], ['wip', 6], ['subext', 7], ['subexc', 8], ['rescan', 9]].forEach(function (p) {
+          fd.wireCell(cells[off + p[1]], p[0]);
         });
-        Array.prototype.forEach.call(itb.rows, function (tr) { tr.classList.add('wx-pgu'); });
-        inner.appendChild(itb); makeSortable(inner);
-        var ipg = pager(inner);
-        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(colspanAll), style: 'background:#f6f8f7;padding:6px' }, [inner, ipg])]);
-        head.addEventListener('click', function () { var hid = detail.classList.toggle('hidden'); nameTd.textContent = (hid ? '▸ ' : '▾ ') + k; });
-        if (autoExpand()) { detail.classList.remove('hidden'); nameTd.textContent = '▾ ' + k; }
-        head.classList.add('wx-pgu'); head._detail = detail;
-        tb.appendChild(head); tb.appendChild(detail);
+        head.addEventListener('click', fd.toggleAll);
+        if (autoExpand()) fd.open(null);
+        head.classList.add('wx-pgu'); head._detail = fd.detail;
+        tb.appendChild(head); tb.appendChild(fd.detail);
       });
       // 總計列（表尾；每欄加總＝目前顯示的全部）
       var T = dispoStats(shown);
@@ -853,26 +892,18 @@
           U.el('td', { text: a.od ? String(a.od) : '—', style: a.od ? 'color:#c0392b;font-weight:600' : '' })].concat(progTds(a.ds)));
         pcells.forEach(function (td) { td.style.whiteSpace = 'nowrap'; });   // 日期、階段不折行
         var head = U.el('tr', { style: 'cursor:pointer' }, pcells);
-        // 展開：這個弱點影響的主機
-        var inner = U.el('table', { class: 'tracking-table', style: 'margin:0' });
-        inner.appendChild(innerHead(icols, grp, inner));
-        var itb = U.el('tbody');
-        grp.forEach(function (r) {
-          var tds = writable ? [U.el('td', {}, [rowCb(r.id)])] : [];
-          icols.forEach(function (c) { tds.push(cellTd(r, c[0])); });
-          tds.push(opsCell(r, self));
-          itb.appendChild(U.el('tr', {}, tds));
-        });
-        Array.prototype.forEach.call(itb.rows, function (tr) { tr.classList.add('wx-pgu'); });
-        inner.appendChild(itb); makeSortable(inner);
-        var ipg = pager(inner);
-        var detail = U.el('tr', { class: 'hidden' }, [U.el('td', { colspan: String(pColspan), style: 'background:#f6f8f7;padding:6px' }, [inner, ipg])]);
-        // 展開時名稱整段顯示（折行），收合回一行截斷（使用者 2026-10-06：點了要看得到全名）
+        // 展開：這個弱點影響的主機；展開時名稱整段顯示（折行），收合回一行截斷（使用者 2026-10-06：點了要看得到全名）
         function nameState(open) { nameTd.textContent = (open ? '▾ ' : '▸ ') + a.name; nameTd.style.whiteSpace = open ? 'normal' : 'nowrap'; }
-        head.addEventListener('click', function () { nameState(!detail.classList.toggle('hidden')); });
-        if (autoExpand()) { detail.classList.remove('hidden'); nameState(true); }
-        head.classList.add('wx-pgu'); head._detail = detail;
-        tb.appendChild(head); tb.appendChild(detail);
+        var fd = filterableDetail(grp, icols, pColspan, nameState);
+        // 其中逾期＋承辦進度五欄可點＝只看那一類
+        var off = writable ? 1 : 0;
+        [['overdue', 7], ['todo', 8], ['wip', 9], ['subext', 10], ['subexc', 11], ['rescan', 12]].forEach(function (p) {
+          fd.wireCell(pcells[off + p[1]], p[0]);
+        });
+        head.addEventListener('click', fd.toggleAll);
+        if (autoExpand()) fd.open(null);
+        head.classList.add('wx-pgu'); head._detail = fd.detail;
+        tb.appendChild(head); tb.appendChild(fd.detail);
       });
       // 總計列：台數＝目前顯示總筆數、其中逾期＝逾期總數（與頂端統計一致）
       var pOd = shown.filter(function (x) { return x.overdue_days != null && x.overdue_days > 0; }).length;
