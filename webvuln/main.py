@@ -48,6 +48,42 @@ async def _sheet_scope(request: Request, call_next):
         query.SHEET_SCOPE.reset(tok)
 
 
+@app.middleware("http")
+async def _view_scope(request: Request, call_next):
+    """登入者能看的範圍（見 query.VIEW_SCOPE）：一般使用者只看自己負責、部門窗口只看自己部門、Super Admin 全部。
+    只套在 /api/；免登入模式、未登入不限（未登入本來就由各端點自己擋）。"""
+    sc = None
+    if request.url.path.startswith("/api/"):
+        token = request.cookies.get(config.SESSION_COOKIE)
+        if token:
+            gen = app.dependency_overrides.get(get_db, get_db)()   # 走同一個 get_db（測試覆寫也吃得到）
+            db = next(gen)
+            try:
+                if not _open_mode(db):
+                    sc = _view_scope_for(security.get_session_user(db, token))
+            finally:
+                gen.close()
+    tok = query.VIEW_SCOPE.set(sc)
+    try:
+        return await call_next(request)
+    finally:
+        query.VIEW_SCOPE.reset(tok)
+
+
+def _view_scope_for(user):
+    """跟 _scope_ok 同一套規則（看得到＝改得了）。"""
+    if user is None:
+        return None
+    role = config.canon_role(getattr(user, "role", ""))
+    if role == config.ROLE_SUPER:
+        return None
+    if role == config.ROLE_DEPT_ADMIN:
+        d = (getattr(user, "department", None) or "").strip()
+        return ("dept", d) if d else ("deny", "")
+    n = (getattr(user, "display_name", None) or "").strip()
+    return ("owner", n) if n else ("deny", "")
+
+
 def get_db():
     db = SessionLocal()
     try:

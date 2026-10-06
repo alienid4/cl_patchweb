@@ -748,4 +748,4 @@ body.modal-open { overflow: hidden; }
 }
 
 /* [網頁版加] 左側大項收合箭頭 */
-.webext-chev{float:right;font-size:12px;opacity:.85;cursor:pointer;padding:0 2px}
+.webext-chev{float:right;font-size:22px;line-height:1;opacity:.9;cursor:pointer;padding:0 6px;margin-top:-2px}   /* 使用者 2026-10-06：箭頭太小，放大好點 */

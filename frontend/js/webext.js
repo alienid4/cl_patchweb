@@ -1298,7 +1298,10 @@
     var online = (me.online != null) ? ('　·　目前登入 ' + me.online + ' 人') : '';
     if (who) {
       if (me.authenticated) {
-        who.textContent = '歡迎 ' + (me.display_name || me.username) + '（' + _roleLabel(me.role) + '）登入' + online;
+        // 看得到的範圍跟著角色（後端 VIEW_SCOPE 擋），這裡講清楚，免得以為資料少了
+        var scopeTxt = me.is_super ? '' : (me.role === 'dept_admin' ? '；只顯示 ' + (me.department || '（未設部門）') + ' 的弱點'
+          : '；只顯示你負責的弱點');
+        who.textContent = '歡迎 ' + (me.display_name || me.username) + '（' + _roleLabel(me.role) + '）登入' + scopeTxt + online;
       } else if (me.open_write) {
         who.textContent = '免登入模式（最高權限）' + online;
       } else {
@@ -1329,7 +1332,14 @@
         err.textContent = e.detail || ('登入失敗（' + (r.status >= 500 ? '伺服器錯誤 ' + r.status + '，請通知管理員查服務紀錄' : '狀態碼 ' + r.status) + '）');
         err.style.display = 'block'; return;
       }
-      UI.closeModal(); await refreshMe(); refreshGov(); UI.toast('已登入', 'success');
+      UI.closeModal(); await refreshMe();
+      // 登入後部門預設成自己的部門（使用者 2026-10-06）；部門名要跟 Excel 對得上才選得到，對不上就維持原樣
+      var dsel = document.getElementById('my-dept-select');
+      if (me.department && dsel && [].some.call(dsel.options, function (o) { return o.value === me.department; })) {
+        _deptPick = null; _lsSet('wx_dept', null);
+        dsel.value = me.department; dsel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      refreshGov(); UI.toast('已登入', 'success');
     }
     submit.addEventListener('click', doLogin);
     pass.addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
@@ -2626,9 +2636,11 @@
           // ① 概況／申請面 KPI 卡（取代長句；每個數字可點下鑽）
           kpiCards(c, '概況', [
             { label: '未結', value: s.unresolved, drill: function () { openFindings('未結案', {}); } },
-            { label: '逾期', value: s.overdue, danger: true, drill: function () { openFindings('已逾期', { band: '已逾期' }); } },
-            { label: '高風險', value: s.high_risk, danger: true, drill: function () { openFindings('高風險（Critical/High）', { risk: 'high' }); } },
-            { label: '高風險且逾期', value: s.high_risk_overdue, danger: true, drill: function () { openFindings('高風險且逾期', { risk: 'high', band: '已逾期' }); } },
+            // 跟總覽同一套：已逾期／近期到期／高風險未結 三者互斥（使用者 2026-10-06：數字要對得上才有說服力）
+            { label: '已逾期', value: s.overdue, danger: true, drill: function () { openFindings('已逾期', { band: '已逾期' }); } },
+            { label: '近期到期（30 天內）', value: s.soon, drill: function () { openFindings('近期到期（30 天內）', { due_min: '0', due_max: '30' }); } },
+            { label: '高風險未結（不含逾期、近期）', value: s.high_risk_only, danger: true, drill: function () { openFindings('高風險未結（不含已逾期、近期到期）', { risk: 'high_only' }); } },
+            { label: '其中高風險且逾期', value: s.high_risk_overdue, danger: true, drill: function () { openFindings('高風險且逾期', { risk: 'high', band: '已逾期' }); } },
           ]);
           kpiCards(c, '申請面（需申請＝未申請＋已申請）', [
             { label: '需申請', value: s.apply_universe, drill: function () { openFindings('需申請母體', { apply_universe: 'true' }); } },
@@ -2952,7 +2964,7 @@
           + kv('本週新增', s.change.new) + kv('本週解決', s.change.resolved) + '</div>') : '')
       + '<div class="block"><b>本期概況（未結案）</b><br>'
       + kv('未結案', s.unresolved) + kv('逾期', s.overdue) + kv('如期', s.on_track)
-      + kv('高風險', s.high_risk) + kv('高風險且逾期', s.high_risk_overdue) + '</div>'
+      + kv('近期到期', s.soon) + kv('高風險未結(不含逾期、近期)', s.high_risk_only) + kv('其中高風險且逾期', s.high_risk_overdue) + '</div>'
       + '<div class="block"><b>申請進度</b><br>'
       + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已申請處置中', s.applied_count) + '</div>'
       + '<div class="block"><b>預計完成彙總</b><br>'
@@ -3002,7 +3014,7 @@
       + '<p class="sub">範圍：' + esc(scope) + '　|　基準日：' + esc(s.today) + '</p>'
       + '<div class="block"><b>本期概況（未結案）</b><br>'
       + kv('未結案', s.unresolved) + kv('逾期', s.overdue) + kv('如期', s.on_track)
-      + kv('高風險', s.high_risk) + kv('高風險且逾期', s.high_risk_overdue) + '</div>'
+      + kv('近期到期', s.soon) + kv('高風險未結(不含逾期、近期)', s.high_risk_only) + kv('其中高風險且逾期', s.high_risk_overdue) + '</div>'
       + '<div class="block"><b>申請進度</b><br>'
       + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已申請處置中', s.applied_count) + '</div>'
       + '<h3>近一季未結趨勢（每次匯入）</h3>'

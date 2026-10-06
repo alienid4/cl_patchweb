@@ -37,6 +37,28 @@ def latest_batch(session: Session) -> Optional[ImportBatch]:
 # 一處生效就不會有哪個面板漏改、數字對不起來。
 SHEET_SCOPE: ContextVar[Optional[str]] = ContextVar("SHEET_SCOPE", default=None)
 
+# 「登入者能看的範圍」（使用者 2026-10-06：AD 登入看週報，應該只看到自己的弱點）。由 main 的中介層依登入者設定：
+#   None＝不限（Super Admin／免登入模式／排程等沒有請求的背景工作）
+#   ("owner", 名字)＝一般使用者只看負責人是自己的；("dept", 部門)＝部門窗口只看自己部門；("deny", "")＝看不到（缺名字或部門）
+# 跟寫入權限 _scope_ok 同一套規則：看得到的＝改得了的。
+VIEW_SCOPE: ContextVar[Optional[tuple]] = ContextVar("VIEW_SCOPE", default=None)
+
+
+def _in_view(f: Finding) -> bool:
+    sc = VIEW_SCOPE.get()
+    if not sc:
+        return True
+    kind, val = sc
+    if kind == "owner":
+        return bool(val) and (f.owner or "").strip() == val
+    if kind == "dept":
+        return bool(val) and (f.department or "") == val
+    return False
+
+
+def _view_filter(rows):
+    return rows if not VIEW_SCOPE.get() else [f for f in rows if _in_view(f)]
+
 
 def _latest_findings(session: Session, department: Optional[str] = None) -> list[Finding]:
     b = latest_batch(session)
@@ -48,7 +70,7 @@ def _latest_findings(session: Session, department: Optional[str] = None) -> list
     sheet = SHEET_SCOPE.get()
     if sheet:
         q = q.where(Finding.sheet_key == sheet)
-    return list(session.execute(q).scalars().all())
+    return _view_filter(list(session.execute(q).scalars().all()))
 
 
 def sheets(session: Session) -> list[dict]:
@@ -59,6 +81,8 @@ def sheets(session: Session) -> list[dict]:
     order: list[str] = []
     cnt: dict[str, int] = {}
     for f in session.execute(select(Finding).where(Finding.batch_id == b.id).order_by(Finding.id)).scalars().all():
+        if not _in_view(f):   # 工作表筆數也只算看得到的
+            continue
         k = f.sheet_key or "未分類"
         if k not in cnt:
             cnt[k] = 0
@@ -320,6 +344,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
     # 總覽「每個數字可下鑽」用的組合篩選：
     if risk == "high":   # 高風險 = Critical/High
         fs = [f for f in fs if f.severity in HIGH_RISK]
+    elif risk == "high_only":   # 高風險未結（不含已逾期、近期到期），與總覽三卡互斥同口徑
+        fs = [f for f in fs if _is_high_only(f, today)]
     _in_universe = lambda f: should_apply(f, today) or f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
     if apply_universe:   # 需申請母體 = 應申請未申請 + 已申請處置中
         fs = [f for f in fs if _in_universe(f)]
@@ -498,10 +524,22 @@ def _drop_heavy_columns(columns: list, rows: list) -> tuple[list, list, list]:
 _SNAP_CACHE: dict = {}
 
 
+def _overrides(session: Session) -> tuple[dict, dict]:
+    """系統上改過的負責人／部門（承辦疊加層），{vuln_key 字串: 值}。"""
+    from .models import Case
+    cs = session.execute(select(Case).where(
+        (Case.owner_override.isnot(None)) | (Case.department_override.isnot(None)))).scalars().all()
+    return ({c.vuln_key: c.owner_override for c in cs if c.owner_override},
+            {c.vuln_key: c.department_override for c in cs if c.department_override})
+
+
 def snapshot_bytes(session: Session, light: bool = True) -> bytes:
     import json as _json
     b = latest_batch(session)
-    key = (b.id if b else None, b.imported_at.isoformat() if (b and b.imported_at) else None, light)
+    ov_o, ov_d = _overrides(session)
+    # 改了負責人／部門也要讓快取失效（總覽要跟週報同一套數字）
+    ov_sig = hash((tuple(sorted(ov_o.items())), tuple(sorted(ov_d.items()))))
+    key = (b.id if b else None, b.imported_at.isoformat() if (b and b.imported_at) else None, light, ov_sig)
     hit = _SNAP_CACHE.get(key)
     if hit is not None:
         return hit
@@ -521,6 +559,37 @@ def warm_snapshot_cache() -> None:
         print(f"[snapshot] 預熱失敗：{e!r}")
 
 
+# 總覽（前端吃原始列自己算）要跟週報同一套數字：系統上改過的負責人／部門，寫回快照那一列的對應欄。
+# 使用者 2026-10-06：「數字要對得上才有說服力」——原本總覽照 Excel、週報照改過的，同一部門差 6 筆。
+_UNIT_NK = [_nk(c) for c in ("負責單位", "部門")]
+_OWNER_NK = [_nk(c) for c in ("負責人", "負責人員")]
+
+
+def _with_overrides(f: Finding, ov_o: dict, ov_d: dict) -> dict:
+    raw = f.raw or {}
+    if not ov_o and not ov_d:
+        return raw
+    k = "|".join(vuln_key(f))
+    o, d = ov_o.get(k), ov_d.get(k)
+    if not o and not d:
+        return raw
+    out = dict(raw)
+    unit_keys = [c for c in out if _nk(c) in _UNIT_NK]
+    owner_keys = [c for c in out if _nk(c) in _OWNER_NK]
+    if owner_keys:
+        for c in owner_keys:
+            if o:
+                out[c] = o
+        for c in unit_keys:
+            if d:
+                out[c] = d
+    else:
+        # 沒有負責人欄（如第 8 表「部門-人名」寫在同一格）：整格重組成「部門-負責人」
+        for c in unit_keys:
+            out[c] = f"{d or f.department or ''}-{o or f.owner or ''}"
+    return out
+
+
 def snapshot(session: Session, light: bool = False) -> dict:
     """回傳最新快照的『原封』內容（各表欄序＋每列 raw），供網頁前端重建 workbook、
     餵回單機版原本的解析/render pipeline，畫面與單機版一模一樣。
@@ -534,12 +603,13 @@ def snapshot(session: Session, light: bool = False) -> dict:
         select(Finding).where(Finding.batch_id == b.id).order_by(Finding.id)).scalars().all()
     order: list[str] = []
     by: dict[str, list] = {}
+    ov_o, ov_d = _overrides(session)
     for f in findings:
         k = f.sheet_key or "未分類"
         if k not in by:
             by[k] = []
             order.append(k)
-        by[k].append(f.raw or {})
+        by[k].append(_with_overrides(f, ov_o, ov_d))
     sheets = []
     for k in order:
         rows = _collapse_counted(by[k])
@@ -610,6 +680,19 @@ def stage_stats(session: Session, department: Optional[str] = None,
 def _is_overdue(f: Finding, today: dt.date) -> bool:
     od = overdue_days(f.effective_due, today)
     return od is not None and od > 0
+
+
+SOON_DAYS = 30   # 「近期到期」門檻，與前端 config.soonDays 一致
+
+
+def _is_high_only(f: Finding, today: dt.date) -> bool:
+    """高風險未結，扣掉已逾期與近期到期（總覽三卡互斥：已逾期 → 近期到期 → 其餘高風險）。"""
+    if f.severity not in HIGH_RISK:
+        return False
+    if not f.effective_due:
+        return True
+    d = (f.effective_due - today).days
+    return d > SOON_DAYS
 
 
 def owner_summary(session: Session, department: Optional[str] = None,
@@ -721,7 +804,7 @@ def trend(session: Session, department: Optional[str] = None,
         q = select(Finding).where(Finding.batch_id == b.id, Finding.close_status == CLOSE_OPEN)
         if department and department != "全部":
             q = q.where(Finding.department == department)
-        rows = session.execute(q).scalars().all()
+        rows = _view_filter(session.execute(q).scalars().all())
         out.append({
             "imported_at": b.imported_at.isoformat() if b.imported_at else None,
             "date": b.imported_at.date().isoformat() if b.imported_at else None,
@@ -748,7 +831,7 @@ def close_stats(session: Session, department: Optional[str] = None,
         q = select(Finding).where(Finding.batch_id == b.id)
         if department and department != "全部":
             q = q.where(Finding.department == department)
-        return {vuln_key(f): f for f in session.execute(q).scalars().all()}
+        return {vuln_key(f): f for f in _view_filter(session.execute(q).scalars().all())}
 
     cur = _rows(latest)
     old = _rows(prev)
@@ -808,7 +891,7 @@ def weekly_report(session: Session, department: Optional[str] = None,
         q = select(Finding).where(Finding.batch_id == batch.id, Finding.close_status == CLOSE_OPEN)
         if department and department != "全部":
             q = q.where(Finding.department == department)
-        rows = session.execute(q).scalars().all()
+        rows = _view_filter(session.execute(q).scalars().all())
         if owner:
             rows = [f for f in rows if (f.owner or "").strip() == owner]
         return Counter("|".join(vuln_key(f)) for f in rows)   # 多重集合：同鍵重複列各算一次
@@ -940,6 +1023,8 @@ def weekly_report(session: Session, department: Optional[str] = None,
         "on_track": len(on_track),
         "high_risk": sum(1 for f in open_ if f.severity in HIGH_RISK),
         "high_risk_overdue": sum(1 for f in overdue if f.severity in HIGH_RISK),  # 主管最在意:高風險且逾期
+        "soon": sum(1 for f in open_ if f.effective_due and 0 <= (f.effective_due - today).days <= SOON_DAYS),
+        "high_risk_only": sum(1 for f in open_ if _is_high_only(f, today)),   # 與總覽「高風險未結」同口徑
         "change": change,                          # 本週變化(週對週):prev/now/delta/new/resolved
 
         # 申請面
