@@ -303,12 +303,19 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
          no_target: bool = False, flagged: bool = False, reported: bool = False,
          note_no_progress: bool = False,
          due_min: Optional[int] = None, due_max: Optional[int] = None, lead: int = 0,
+         horizon: Optional[int] = None,
          today: Optional[dt.date] = None) -> list[dict]:
     """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
     only_should_apply/no_owner/no_due 為缺口/行動線清單；applied=已申請處置中(例外/展延，官方)；
     apply_intent=管理人標「要申請展延/例外」(送審中，尚未在 Excel 反映)。"""
     today = today or dt.date.today()
     fs = _latest_findings(session, department)
+    # horizon＝週報分解表的拉霸（2026-10-07）：到期前幾天內算「需申請」；沒給就用預設行動線（提前期）
+    if horizon is None:
+        _sa = lambda f: should_apply(f, today)
+    else:
+        _sa = lambda f: (f.close_status == CLOSE_OPEN and f.stage == STAGE_ORIGINAL and f.effective_due is not None
+                         and (f.effective_due - today).days <= horizon)
 
     if status and status != "全部":
         fs = [f for f in fs if f.close_status == status]
@@ -336,7 +343,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
     if band:
         fs = [f for f in fs if _band(f, today) == band]
     if only_should_apply:
-        fs = [f for f in fs if should_apply(f, today)]
+        fs = [f for f in fs if _sa(f)]
     if no_owner:
         fs = [f for f in fs if not (f.owner or "").strip()]
     if no_due:
@@ -346,7 +353,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if f.severity in HIGH_RISK]
     elif risk == "high_only":   # 高風險未結（不含已逾期、近期到期），與總覽三卡互斥同口徑
         fs = [f for f in fs if _is_high_only(f, today)]
-    _in_universe = lambda f: should_apply(f, today) or f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
+    _in_universe = lambda f: _sa(f) or f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
     if apply_universe:   # 需申請母體 = 應申請未申請 + 已申請處置中
         fs = [f for f in fs if _in_universe(f)]
     if not_apply:        # 還不急 = 未結但不在申請母體(原始階段、未過行動線)

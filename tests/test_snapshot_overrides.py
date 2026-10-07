@@ -53,3 +53,17 @@ def test_report_buckets_exclusive(client):
     df = rep["due_fine"]   # 細分到期桶互斥、相加＝未結
     assert sum(df.values()) == rep["unresolved"] == 6
     assert (df["overdue"], df["d14"], df["d360"], df["no_due"]) == (2, 2, 1, 1)   # 200 天落在 181–360
+
+
+def test_horizon_param(client):
+    import datetime as dt
+    t = dt.date.today()
+    d = lambda n: (t + dt.timedelta(days=n)).isoformat()
+    fs = [dict(sheet_key="s1", plugin_id=str(i), name=f"v{i}", host=f"h{i}", severity="High", department="A",
+               owner="x", remediation_due=due, close_status="未結案") for i, due in enumerate([d(-5), d(20), d(100), d(400)])]
+    assert client.post("/api/import", json={"source_file": "t.xlsx", "findings": fs}).status_code == 200
+    hosts = lambda p: sorted(r["host"] for r in client.get("/api/findings", params=p).json())
+    assert hosts({"should_apply": "true", "horizon": 30}) == ["h0", "h1"]
+    assert hosts({"should_apply": "true", "horizon": 120}) == ["h0", "h1", "h2"]
+    assert hosts({"not_apply": "true", "horizon": 120}) == ["h3"]
+    assert hosts({"should_apply": "true", "horizon": 0}) == ["h0"]

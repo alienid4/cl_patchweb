@@ -512,7 +512,7 @@
     var _pp = params || {};
     // 這幾類下鑽依定義就是「到期日還遠」（已申請處置中＝展延/例外期限通常在數月後、暫無需申請、高風險未結不含近期），
     // 疊預設 30 天會整批藏掉（2026-10-07：已申請處置中 69 支點進去 0 筆）→ 不疊預設
-    var _farByDef = _pp.applied || _pp.not_apply || _pp.risk === 'high_only' || _pp._src;   // 比較清單也不疊預設
+    var _farByDef = _pp.applied || _pp.not_apply || _pp.risk === 'high_only' || _pp._src || _pp.horizon != null;   // 比較清單、拉霸範圍也不疊預設
     if (_pp.due_min == null && _pp.due_max == null && !_pp.band && !_farByDef) { dueOn = { overdue: true, 14: true, 30: true }; }
     var dueBar = U.el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:5px' },
       [U.el('span', { text: '到期（可複選）：', style: 'color:#6b7a73;font-size:14px' })]);
@@ -2702,6 +2702,9 @@
           kpiCards(c, '申請追蹤', [
             { label: '未回報預計完成日', value: s.target.no_target, danger: true, drill: function () { openFindings('未回報預計完成日', { no_target: 'true' }); } },
             { label: '待追查', value: pg.flagged || 0, danger: true, drill: function () { openFindings('待追查（聲稱申請或完成，來源未反映）', { flagged: 'true' }); } },
+            // 原「處理進度」那排併進來（2026-10-07：展延送審等四格跟分解表重複，拿掉）
+            { label: '⚠ 備註有寫、進度未設', value: pg.note_no_progress || 0, danger: true, drill: function () { openFindings('⚠ 待補處理進度（追蹤備註有寫、處理進度沒設）', { note_no_progress: 'true' }); } },
+            { label: '已回報（進度／預計完成／備註任一）', value: pg.reported || 0, drill: function () { openFindings('已回報的弱點（處理進度／預計完成日／追蹤備註）', { reported: 'true' }); } },
           ]);
 
 
@@ -2741,15 +2744,6 @@
             c.appendChild(U.el('p', { class: 'empty-hint', text: '本期變化（本批 vs 上批）：新增 ' + s.change.new + '、解決 ' + s.change.resolved + '，淨變化 ' + (s.change.delta > 0 ? '+' : '') + s.change.delta + '。' }));
           }
 
-          // ⑥ 處理進度（管理人標註，次要資訊）
-          kpiCards(c, '處理進度（管理人標註；結論以資安 Excel 為準）', [
-            { label: '⚠ 備註有寫、進度未設', value: pg.note_no_progress || 0, danger: true, drill: function () { openFindings('⚠ 待補處理進度（追蹤備註有寫、處理進度沒設）', { note_no_progress: 'true' }); } },
-            { label: '已回報（進度／預計完成／備註任一）', value: pg.reported || 0, drill: function () { openFindings('已回報的弱點（處理進度／預計完成日／追蹤備註）', { reported: 'true' }); } },
-            { label: '要申請展延', value: pg.apply_ext || 0, drill: function () { openFindings('要申請展延', { progress: '要申請展延' }); } },
-            { label: '要申請例外', value: pg.apply_exc || 0, drill: function () { openFindings('要申請例外', { progress: '要申請例外' }); } },
-            { label: '處理中', value: pg.wip || 0, drill: function () { openFindings('處理中', { progress: '處理中' }); } },
-            { label: '結案申請中', value: pg.rescan || 0, drill: function () { openFindings('結案申請中', { progress: '等複掃' }); } },
-          ]);
       } },
       { label: '與上次比較', render: function (c) { compareSection(c); } },   // 2026-10-07：獨立一頁
       { label: '負責人', render: function (c) { renderOwnerInto(c); } },       // 併入：誰還有幾支＋狀態(每格下鑽)
@@ -2927,33 +2921,81 @@
   // （52 筆展延送審＝已送出、只是 Excel 還沒更新；真正沒動的是「尚未修補」那格，只有它用紅字）
   function applyTree(host, s, notApply) {
     ensureTreeStyle();
+    var H = parseInt(_lsGet('wx_horizon') || '30', 10); if (!(H >= 0 && H <= 365)) H = 30;   // 拉霸：到期前幾天內算「需申請」（預設 30＝申請提前期）
     var g = U.el('div', { class: 'wx-tree' });
-    host.appendChild(U.el('div', { class: 'wx-tree-wrap' }, [U.el('div', { class: 'wx-tree-cap', text: '未結弱點分解（點任一數字看清單）' }), g]));
-    function node(label, value, cls, area, drill, hint) {
-      var n = U.el('div', { class: 'wx-node ' + cls + (drill && value ? ' clk' : ''), style: 'grid-area:' + area, title: hint || (drill ? '點我看清單' : '') }, [
-        U.el('div', { class: 'wx-node-lb', text: label }), U.el('div', { class: 'wx-node-n', text: value == null ? '…' : String(value) })]);
-      if (drill && value) n.addEventListener('click', drill);
-      g.appendChild(n); return n;
+    var cap = U.el('div', { class: 'wx-tree-cap', text: '未結弱點分解（點任一數字看清單）' });
+    var wrap = U.el('div', { class: 'wx-tree-wrap' }, [cap, g]);
+    host.appendChild(wrap);
+    var NODES = {};
+    function node(id, label, cls, area, hint) {
+      var n = U.el('div', { class: 'wx-node ' + cls, style: 'grid-area:' + area, title: hint || '' }, [
+        U.el('div', { class: 'wx-node-lb', text: label }), U.el('div', { class: 'wx-node-n', text: '…' })]);
+      n.addEventListener('click', function () { if (n._drill && n._v) n._drill(); });
+      g.appendChild(n); NODES[id] = n; return n;
     }
-    node('未結', s.unresolved, 'n-root', 'root', function () { openFindings('未結案', {}); });
-    node('需申請', s.apply_universe, 'n-need', 'need', function () { openFindings('需申請母體', { apply_universe: 'true' }); }, '已進入到期前 30 天、或已經是展延／例外');
-    node('暫無需申請（期限內）', notApply, 'n-not', 'not', function () { openFindings('暫無需申請（期限內）', { not_apply: 'true' }); }, '離到期還超過 30 天，時間到了會自動算進「應申請未申請」');
-    node('應申請未申請', s.need_apply_count, 'n-sa', 'sa', function () { openFindings('應申請未申請', { should_apply: 'true' }); });
-    node('已核准展延／例外', s.applied_count, 'n-app', 'app', function () { openFindings('已核准展延／例外（期限內，仍待修補）', { applied: 'true' }); }, '資安已核准、期限還沒到；仍待修補');
+    node('root', '未結', 'n-root', 'root');
+    node('need', '需申請', 'n-need', 'need');
+    node('not', '暫無需申請（期限內）', 'n-not', 'not');
+    node('sa', '應申請未申請', 'n-sa', 'sa');
+    node('app', '已核准展延／例外', 'n-app', 'app', '資安已核准、期限還沒到；仍待修補');
     var KS = ['todo', 'wip', 'subext', 'subexc', 'rescan'];
-    var leaf = {};
-    KS.forEach(function (k, i) { leaf[k] = node(STAT_DEFS[k].label, null, 'n-leaf' + (k === 'todo' ? ' n-todo' : ''), 'p' + i, null); });
-    jget('/api/findings?' + qd({ status: '未結案', should_apply: 'true' })).then(function (rows) {
-      var st = dispoStats(rows);
-      KS.forEach(function (k) {
-        var n = leaf[k], v = st[k];
-        n.querySelector('.wx-node-n').textContent = String(v);
-        if (v) {
-          n.classList.add('clk'); n.title = '點我看清單';
-          n.addEventListener('click', function () { openFindings('應申請未申請・' + STAT_DEFS[k].label, { should_apply: 'true', _stat: k }); });
-        } else n.classList.add('zero');
+    KS.forEach(function (k, i) { node(k, STAT_DEFS[k].label, 'n-leaf' + (k === 'todo' ? ' n-todo' : ''), 'p' + i); });
+    // 拉霸：0–365 天（使用者 2026-10-07 概念圖），拖拉即時重算上面的分解數字
+    var rng = U.el('input', { type: 'range', min: '0', max: '365', step: '1', value: String(H), class: 'wx-hz-range' });
+    var hzVal = U.el('b', { class: 'wx-hz-val' });
+    var ticks = U.el('div', { class: 'wx-hz-ticks' });
+    [0, 14, 30, 60, 90, 180, 365].forEach(function (d) {
+      var t = U.el('button', { class: 'wx-hz-tick', text: d === 0 ? '只看已逾期' : d + ' 天', style: 'left:' + (d / 365 * 100) + '%' });
+      t.addEventListener('click', function () { rng.value = String(d); upd(); });
+      ticks.appendChild(t);
+    });
+    wrap.appendChild(U.el('div', { class: 'wx-hz' }, [
+      U.el('div', { class: 'wx-hz-head' }, [U.el('span', { text: '需申請的時間線：到期前 ' }), hzVal,
+        U.el('span', { text: ' 天內（含已逾期）就算「需申請」；拖拉或點下面的刻度看不同範圍' })]),
+      rng, ticks]));
+    var rows = null;
+    function set(id, v, drill) {
+      var n = NODES[id]; n._v = v; n._drill = drill;
+      n.querySelector('.wx-node-n').textContent = String(v);
+      n.classList.toggle('clk', !!v);
+      if (/n-leaf/.test(n.className)) n.classList.toggle('zero', !v);
+    }
+    function calc() {
+      if (!rows) return;
+      var today = new Date(); today.setHours(0, 0, 0, 0);
+      var c = { root: 0, need: 0, not: 0, sa: 0, app: 0 };
+      var saRows = [];
+      rows.forEach(function (r) {
+        c.root++;
+        var ap = r.stage === '例外管理中' || r.stage === '首次展延中';
+        var dd = r.effective_due ? Math.round((new Date(r.effective_due + 'T00:00:00') - today) / 86400000) : null;
+        var sa = !ap && r.stage === '原始修補期限' && dd != null && dd <= H;
+        if (ap) c.app++;
+        if (sa) { c.sa++; saRows.push(r); }
+        if (ap || sa) c.need++; else c.not++;
       });
-    }).catch(function () { KS.forEach(function (k) { leaf[k].querySelector('.wx-node-n').textContent = '—'; }); });
+      var st = dispoStats(saRows);
+      var hp = { horizon: String(H) }, lb = '（到期前 ' + H + ' 天內）';
+      set('root', c.root, function () { openFindings('未結案', {}); });
+      set('need', c.need, function () { openFindings('需申請' + lb, Object.assign({ apply_universe: 'true' }, hp)); });
+      set('not', c.not, function () { openFindings('暫無需申請（到期超過 ' + H + ' 天）', Object.assign({ not_apply: 'true' }, hp)); });
+      set('sa', c.sa, function () { openFindings('應申請未申請' + lb, Object.assign({ should_apply: 'true' }, hp)); });
+      set('app', c.app, function () { openFindings('已核准展延／例外（期限內，仍待修補）', { applied: 'true' }); });
+      KS.forEach(function (k) {
+        set(k, st[k], function () { openFindings('應申請未申請・' + STAT_DEFS[k].label + lb, Object.assign({ should_apply: 'true', _stat: k }, hp)); });
+      });
+      NODES.not.title = '離到期還超過 ' + H + ' 天';
+      NODES.need.title = '到期前 ' + H + ' 天內（含已逾期）、或已經是展延／例外';
+    }
+    function upd() {
+      H = parseInt(rng.value, 10); hzVal.textContent = String(H);
+      rng.style.setProperty('--p', (H / 365 * 100) + '%');
+      _lsSet('wx_horizon', String(H)); calc();
+    }
+    upd();
+    rng.addEventListener('input', upd);
+    jget('/api/findings?' + qd({ status: '未結案' })).then(function (rs) { rows = rs; calc(); })
+      .catch(function () { Object.keys(NODES).forEach(function (k) { NODES[k].querySelector('.wx-node-n').textContent = '—'; }); });
   }
   function ensureTreeStyle() {
     if (document.getElementById('wx-tree-style')) return;
@@ -2975,6 +3017,15 @@
       '.n-leaf{background:#fff;border-color:#e3d9ec;color:#4a3d57}.n-leaf .wx-node-n{font-size:22px}' +
       '.n-leaf.n-todo{background:#fff5f4;border-color:#f3c3bd;color:#c0392b}' +
       '.n-leaf.zero{opacity:.55}' +
+      '.wx-hz{margin:12px 2px 4px;padding:10px 14px 30px;background:#f4f8f6;border:1px solid #dbe7e0;border-radius:10px}' +
+      '.wx-hz-head{font-size:14px;color:#2a3430;margin-bottom:8px}.wx-hz-val{font-size:20px;color:#c0392b;margin:0 2px}' +
+      '.wx-hz-range{-webkit-appearance:none;appearance:none;width:100%;height:12px;border-radius:6px;outline:none;cursor:pointer;' +
+      'background:linear-gradient(90deg,#c0392b 0,#e67e22 var(--p,8%),#17516b var(--p,8%),#17516b 100%)}' +
+      '.wx-hz-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:30px;border-radius:5px;background:#c45a1c;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35)}' +
+      '.wx-hz-range::-moz-range-thumb{width:16px;height:30px;border-radius:5px;background:#c45a1c;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35)}' +
+      '.wx-hz-ticks{position:relative;height:18px;margin-top:4px}' +
+      '.wx-hz-tick{position:absolute;transform:translateX(-50%);border:0;background:none;color:#55625c;font-size:12px;cursor:pointer;padding:2px 4px;white-space:nowrap}' +
+      '.wx-hz-tick:hover{color:#0f5f35;text-decoration:underline}' +
       '@media (max-width:760px){.wx-tree{grid-template-columns:repeat(5,1fr);grid-template-areas:"root root root root root" "need need need need need" "sa sa sa sa sa" "p0 p1 p2 p3 p4" "app app app not not"}}';
     document.head.appendChild(st);
   }
