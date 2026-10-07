@@ -2937,7 +2937,12 @@
     node('need', '需申請', 'n-need', 'need');
     node('not', '暫無需申請（期限內）', 'n-not', 'not');
     node('sa', '應申請未申請', 'n-sa', 'sa');
-    node('app', '已核准展延／例外', 'n-app', 'app', '資安已核准、期限還沒到；仍待修補');
+    node('app', '已核准展延／例外', 'n-app', 'app', '資安已核准；仍待修補');
+    // 已核准再依拉霸拆兩格：期限 N 天內到期（將屆，要修或再申請）／超過 N 天（2026-10-07 使用者：拉到 365 天，12/31 到期的例外還是沒跳出來）
+    var appSub = U.el('div', { class: 'wx-app-sub' });
+    var aSoon = U.el('button', { class: 'wx-app-chip soon' }), aFar = U.el('button', { class: 'wx-app-chip' });
+    appSub.appendChild(aSoon); appSub.appendChild(aFar); NODES.app.appendChild(appSub);
+    [aSoon, aFar].forEach(function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); if (b._v && b._drill) b._drill(); }); });
     var KS = ['todo', 'wip', 'subext', 'subexc', 'rescan'];
     KS.forEach(function (k, i) { node(k, STAT_DEFS[k].label, 'n-leaf' + (k === 'todo' ? ' n-todo' : ''), 'p' + i); });
     // 拉霸：0–365 天（使用者 2026-10-07 概念圖），拖拉即時重算上面的分解數字
@@ -2968,14 +2973,14 @@
     function calc() {
       if (!rows) return;
       var today = new Date(); today.setHours(0, 0, 0, 0);
-      var c = { root: 0, need: 0, not: 0, sa: 0, app: 0 };
+      var c = { root: 0, need: 0, not: 0, sa: 0, app: 0, appSoon: 0, appFar: 0 };
       var saRows = [];
       rows.forEach(function (r) {
         c.root++;
         var ap = r.stage === '例外管理中' || r.stage === '首次展延中';
         var dd = r.effective_due ? Math.round((new Date(r.effective_due + 'T00:00:00') - today) / 86400000) : null;
         var sa = !ap && r.stage === '原始修補期限' && dd != null && dd <= H;
-        if (ap) c.app++;
+        if (ap) { c.app++; if (dd != null && dd <= H) c.appSoon++; else c.appFar++; }
         if (sa) { c.sa++; saRows.push(r); }
         if (ap || sa) c.need++; else c.not++;
       });
@@ -2985,7 +2990,12 @@
       set('need', c.need, function () { openFindings('需申請' + lb, Object.assign({ apply_universe: 'true' }, hp)); });
       set('not', c.not, function () { openFindings('暫無需申請（到期超過 ' + H + ' 天）', Object.assign({ not_apply: 'true' }, hp)); });
       set('sa', c.sa, function () { openFindings('應申請未申請' + lb, Object.assign({ should_apply: 'true' }, hp)); });
-      set('app', c.app, function () { openFindings('已核准展延／例外（期限內，仍待修補）', { applied: 'true' }); });
+      set('app', c.app, function () { openFindings('已核准展延／例外（仍待修補）', { applied: 'true' }); });
+      aSoon._v = c.appSoon; aSoon.textContent = H + ' 天內到期 ' + c.appSoon; aSoon.disabled = !c.appSoon;
+      aSoon.title = '例外／展延期限在 ' + H + ' 天內就到（含已過）：要修補，或確認是否再申請';
+      aSoon._drill = function () { openFindings('已核准展延／例外・' + H + ' 天內到期', { applied: 'true', due_max: String(H), horizon: String(H) }); };
+      aFar._v = c.appFar; aFar.textContent = '超過 ' + H + ' 天 ' + c.appFar; aFar.disabled = !c.appFar;
+      aFar._drill = function () { openFindings('已核准展延／例外・期限超過 ' + H + ' 天', { applied: 'true', due_min: String(H + 1), horizon: String(H) }); };
       KS.forEach(function (k) {
         set(k, st[k], function () { openFindings('應申請未申請・' + STAT_DEFS[k].label + lb, Object.assign({ should_apply: 'true', _stat: k }, hp)); });
       });
@@ -3023,6 +3033,10 @@
       '.n-leaf{background:#fff;border-color:#e3d9ec;color:#4a3d57}.n-leaf .wx-node-n{font-size:22px}' +
       '.n-leaf.n-todo{background:#fff5f4;border-color:#f3c3bd;color:#c0392b}' +
       '.n-leaf.zero{opacity:.55}' +
+      '.wx-app-sub{display:flex;flex-direction:column;gap:6px;margin-top:8px;width:100%}' +
+      '.wx-app-chip{border:1px solid #bcd9ef;background:#fff;color:#1d5f8f;border-radius:8px;padding:5px 8px;font-size:13px;font-weight:700;cursor:pointer}' +
+      '.wx-app-chip.soon{border-color:#f0c27b;background:#fff8ec;color:#b9620e}' +
+      '.wx-app-chip:disabled{opacity:.5;cursor:default}.wx-app-chip:not(:disabled):hover{box-shadow:0 3px 8px -4px rgba(0,0,0,.4)}' +
       '.wx-hz{margin:12px 2px 4px;padding:10px 14px 12px;background:#f4f8f6;border:1px solid #dbe7e0;border-radius:10px}' +
       '.wx-hz-head{font-size:14px;color:#2a3430;margin-bottom:8px}.wx-hz-val{font-size:20px;color:#c0392b;margin:0 2px}' +
       '.wx-hz-range{-webkit-appearance:none;appearance:none;width:100%;height:12px;border-radius:6px;outline:none;cursor:pointer;' +
