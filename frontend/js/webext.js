@@ -2943,16 +2943,21 @@
     // 拉霸：0–365 天（使用者 2026-10-07 概念圖），拖拉即時重算上面的分解數字
     var rng = U.el('input', { type: 'range', min: '0', max: '365', step: '1', value: String(H), class: 'wx-hz-range' });
     var hzVal = U.el('b', { class: 'wx-hz-val' });
+    // 刻度只標 0／90／180／365（線性軸，14、30 太擠會疊字）；常用天數另外一排快捷鈕
     var ticks = U.el('div', { class: 'wx-hz-ticks' });
-    [0, 14, 30, 60, 90, 180, 365].forEach(function (d) {
-      var t = U.el('button', { class: 'wx-hz-tick', text: d === 0 ? '只看已逾期' : d + ' 天', style: 'left:' + (d / 365 * 100) + '%' });
-      t.addEventListener('click', function () { rng.value = String(d); upd(); });
-      ticks.appendChild(t);
+    [0, 90, 180, 365].forEach(function (d) {
+      ticks.appendChild(U.el('span', { class: 'wx-hz-tick', text: String(d), style: 'left:' + (d / 365 * 100) + '%' }));
+    });
+    var chips = U.el('div', { class: 'wx-hz-chips' }), chipEls = [];
+    [[0, '只看已逾期'], [14, '14 天'], [30, '30 天'], [60, '60 天'], [90, '90 天'], [180, '180 天'], [365, '365 天']].forEach(function (x) {
+      var b = U.el('button', { class: 'wx-hz-chip', text: x[1] }); b._d = x[0];
+      b.addEventListener('click', function () { rng.value = String(x[0]); upd(); });
+      chips.appendChild(b); chipEls.push(b);
     });
     wrap.appendChild(U.el('div', { class: 'wx-hz' }, [
       U.el('div', { class: 'wx-hz-head' }, [U.el('span', { text: '需申請的時間線：到期前 ' }), hzVal,
         U.el('span', { text: ' 天內（含已逾期）就算「需申請」；拖拉或點下面的刻度看不同範圍' })]),
-      rng, ticks]));
+      rng, ticks, chips]));
     var rows = null;
     function set(id, v, drill) {
       var n = NODES[id]; n._v = v; n._drill = drill;
@@ -2990,6 +2995,7 @@
     function upd() {
       H = parseInt(rng.value, 10); hzVal.textContent = String(H);
       rng.style.setProperty('--p', (H / 365 * 100) + '%');
+      chipEls.forEach(function (b) { b.classList.toggle('on', b._d === H); });
       _lsSet('wx_horizon', String(H)); calc();
     }
     upd();
@@ -3017,15 +3023,18 @@
       '.n-leaf{background:#fff;border-color:#e3d9ec;color:#4a3d57}.n-leaf .wx-node-n{font-size:22px}' +
       '.n-leaf.n-todo{background:#fff5f4;border-color:#f3c3bd;color:#c0392b}' +
       '.n-leaf.zero{opacity:.55}' +
-      '.wx-hz{margin:12px 2px 4px;padding:10px 14px 30px;background:#f4f8f6;border:1px solid #dbe7e0;border-radius:10px}' +
+      '.wx-hz{margin:12px 2px 4px;padding:10px 14px 12px;background:#f4f8f6;border:1px solid #dbe7e0;border-radius:10px}' +
       '.wx-hz-head{font-size:14px;color:#2a3430;margin-bottom:8px}.wx-hz-val{font-size:20px;color:#c0392b;margin:0 2px}' +
       '.wx-hz-range{-webkit-appearance:none;appearance:none;width:100%;height:12px;border-radius:6px;outline:none;cursor:pointer;' +
       'background:linear-gradient(90deg,#c0392b 0,#e67e22 var(--p,8%),#17516b var(--p,8%),#17516b 100%)}' +
       '.wx-hz-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:30px;border-radius:5px;background:#c45a1c;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35)}' +
       '.wx-hz-range::-moz-range-thumb{width:16px;height:30px;border-radius:5px;background:#c45a1c;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35)}' +
       '.wx-hz-ticks{position:relative;height:18px;margin-top:4px}' +
-      '.wx-hz-tick{position:absolute;transform:translateX(-50%);border:0;background:none;color:#55625c;font-size:12px;cursor:pointer;padding:2px 4px;white-space:nowrap}' +
-      '.wx-hz-tick:hover{color:#0f5f35;text-decoration:underline}' +
+      '.wx-hz-tick{position:absolute;transform:translateX(-50%);color:#7a8781;font-size:12px;white-space:nowrap}' +
+      '.wx-hz-tick:first-child{transform:none}.wx-hz-tick:last-child{transform:translateX(-100%)}' +
+      '.wx-hz-chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}' +
+      '.wx-hz-chip{border:1px solid #cfdcd5;background:#fff;color:#2a3430;border-radius:999px;padding:3px 12px;font-size:13px;cursor:pointer}' +
+      '.wx-hz-chip:hover{border-color:#1a7f4b;color:#0f5f35}.wx-hz-chip.on{background:#c45a1c;border-color:#c45a1c;color:#fff;font-weight:700}' +
       '@media (max-width:760px){.wx-tree{grid-template-columns:repeat(5,1fr);grid-template-areas:"root root root root root" "need need need need need" "sa sa sa sa sa" "p0 p1 p2 p3 p4" "app app app not not"}}';
     document.head.appendChild(st);
   }
