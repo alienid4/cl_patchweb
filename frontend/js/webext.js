@@ -460,7 +460,8 @@
     var footer = U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, expBtns);   // 完整/簡易 兩顆
     UI.openModal(title, box, { footer: footer, wide: true, noBackdropClose: true });   // 寬版＋點外面不關(只 ✕／Esc)
     var rows;
-    try { rows = await jget('/api/findings?' + qd(Object.assign({ status: '未結案' }, params || {}))); }
+    var _q = Object.assign({ status: '未結案' }, params || {}); var _stat0 = _q._stat; delete _q._stat;   // _stat＝開窗先選好某統計類（不送後端）
+    try { rows = await jget('/api/findings?' + qd(_q)); }
     catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
     if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '無資料' })); return; }
     var allRows = rows;   // 這個視窗的完整清單；rows 是套用搜尋後「眼前這份」，三種檢視、全選、匯出都吃 rows
@@ -469,7 +470,7 @@
     function nPluginOf(rs) { var s = {}; rs.forEach(function (r) { s[(r.plugin_id || '') + '|' + (r.name || '')] = 1; }); return Object.keys(s).length; }
     ensureDrillMaxStyle();
     var _mEl = document.querySelector('#modal-overlay .modal'); if (_mEl) _mEl.classList.add('wx-drillmax');   // 下鑽放到接近滿版
-    var statKey = null;        // 點統計數字下鑽：只顯示該類（null＝全部）
+    var statKey = (_stat0 && STAT_DEFS[_stat0]) ? _stat0 : null;   // 點統計數字下鑽：只顯示該類（null＝全部）
     var shown = rows;          // 眼前真正顯示的列（rows 再套 statKey）
 
     // ── 頂端固定區（往下捲也留在上面）：頁籤＋筆數、搜尋、批次列 ──
@@ -2672,15 +2673,8 @@
             { label: '待追查', value: pg.flagged || 0, danger: true, drill: function () { openFindings('待追查（聲稱申請或完成，來源未反映）', { flagged: 'true' }); } },
           ]);
 
-          // ② 分解條：母體＝子項相加，以視覺呈現避免誤加
-          stackedBar(c, '未結 ' + s.unresolved + '　＝　需申請 ＋ 暫無需申請', s.unresolved, [
-            { label: '需申請', value: s.apply_universe, color: '#1a7f4b', onClick: function () { openFindings('需申請母體', { apply_universe: 'true' }); } },
-            { label: '暫無需申請', value: notApply, color: '#b0bec5', onClick: function () { openFindings('暫無需申請（期限內）', { not_apply: 'true' }); } },
-          ]);
-          stackedBar(c, '需申請 ' + s.apply_universe + '　＝　未申請 ＋ 已核准', s.apply_universe, [
-            { label: '應申請未申請', value: s.need_apply_count, color: '#c0392b', onClick: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
-            { label: '已核准展延／例外', value: s.applied_count, color: '#1a7f4b', onClick: function () { openFindings('已核准展延／例外（期限內，仍待修補）', { applied: 'true' }); } },
-          ]);
+          // ② 分解樹（使用者 2026-10-07 自己畫的表）：未結 → 需申請／暫無需申請 → 應申請未申請／已核准 → 應申請未申請再拆承辦進度
+          applyTree(c, s, notApply);
 
           // ③ 視覺：嚴重度圓餅 + 到期倒數長條（皆可點下鑽）
           var vis = U.el('div', { style: 'display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;margin:10px 0' });
@@ -2761,6 +2755,55 @@
 
   // 緊湊 KPI 卡片格：一組小標 + 一排數字磚(數字大、標籤小)，取代一疊 2 欄表，省約 4/5 空間。
   // items=[{label,value,danger,drill}]；danger→紅、drill→可點(綠、hover)。
+  // 申請面分解樹：每一層相加＝上一層，每個數字可點下鑽；最底層「應申請未申請」依承辦進度拆
+  // （52 筆展延送審＝已送出、只是 Excel 還沒更新；真正沒動的是「尚未修補」那格，只有它用紅字）
+  function applyTree(host, s, notApply) {
+    var wrap = U.el('div', { style: 'margin:10px 0 14px' });
+    host.appendChild(wrap);
+    var T = 'width:100%;border-collapse:collapse;text-align:center;font-size:14.5px';
+    var table = U.el('table', { style: T });
+    var C = { root: '#ffffff', l1: '#e2f0d9', l2: '#d6eaf8', l3: '#f3e5f5' };
+    function cell(txt, opt) {
+      opt = opt || {};
+      var td = U.el('td', { text: txt, colspan: opt.cs ? String(opt.cs) : null, rowspan: opt.rs ? String(opt.rs) : null,
+        style: 'border:1px solid #b9c6bf;padding:5px 8px;background:' + (opt.bg || '#fff') + (opt.b ? ';font-weight:700' : '') +
+          (opt.red ? ';color:#c0392b' : '') + (opt.big ? ';font-size:17px' : '') });
+      if (opt.drill) { td.style.cursor = 'pointer'; td.style.textDecoration = 'underline dotted'; td.title = '點我看清單'; td.addEventListener('click', opt.drill); }
+      return td;
+    }
+    var dNeed = function () { openFindings('需申請母體', { apply_universe: 'true' }); };
+    var dNot = function () { openFindings('暫無需申請（期限內）', { not_apply: 'true' }); };
+    var dApp = function () { openFindings('已核准展延／例外（期限內，仍待修補）', { applied: 'true' }); };
+    var dSa = function (k) { return function () { openFindings('應申請未申請' + (k ? '・' + STAT_DEFS[k].label : ''), k ? { should_apply: 'true', _stat: k } : { should_apply: 'true' }); }; };
+    var tb = U.el('tbody');
+    tb.appendChild(U.el('tr', {}, [cell('未結', { cs: 6, bg: C.root, b: true })]));
+    tb.appendChild(U.el('tr', {}, [cell(String(s.unresolved), { cs: 6, bg: C.root, big: true, b: true, drill: function () { openFindings('未結案', {}); } })]));
+    tb.appendChild(U.el('tr', {}, [cell('需申請', { cs: 5, bg: C.l1, b: true }), cell('暫無需申請（期限內）', { bg: C.l1, b: true })]));
+    tb.appendChild(U.el('tr', {}, [cell(String(s.apply_universe), { cs: 5, bg: C.l1, big: true, drill: dNeed }),
+      cell(String(notApply), { rs: 5, bg: C.l1, big: true, drill: dNot })]));
+    tb.appendChild(U.el('tr', {}, [cell('應申請未申請', { cs: 4, bg: C.l2, b: true }), cell('已核准展延／例外（期限內，仍待修補）', { bg: C.l2, b: true })]));
+    tb.appendChild(U.el('tr', {}, [cell(String(s.need_apply_count), { cs: 4, bg: C.l2, big: true, red: s.need_apply_count > 0, drill: dSa(null) }),
+      cell(String(s.applied_count), { rs: 3, bg: C.l2, big: true, drill: dApp })]));
+    var heads = U.el('tr', {}), nums = U.el('tr', {});
+    tb.appendChild(heads); tb.appendChild(nums);
+    table.appendChild(tb); wrap.appendChild(table);
+    // 最底層：應申請未申請 依承辦進度（另外抓那份清單算，跟下鑽同一套 dispoStats）
+    var KS = ['todo', 'wip', 'subext', 'subexc', 'rescan'];
+    // 欄寬：最底層 4 格放 5 個進度 → 把「應申請未申請」那兩列 colspan 改成 5，右側兩格不動
+    tb.rows[4].cells[0].colSpan = 5; tb.rows[5].cells[0].colSpan = 5;
+    tb.rows[0].cells[0].colSpan = 7; tb.rows[1].cells[0].colSpan = 7; tb.rows[2].cells[0].colSpan = 6; tb.rows[3].cells[0].colSpan = 6;
+    KS.forEach(function (k) { heads.appendChild(cell(STAT_DEFS[k].label, { bg: C.l3, b: true })); nums.appendChild(cell('…', { bg: C.l3 })); });
+    jget('/api/findings?' + qd({ status: '未結案', should_apply: 'true' })).then(function (rows) {
+      var st = dispoStats(rows);
+      KS.forEach(function (k, i) {
+        var n = st[k], td = nums.cells[i];
+        td.textContent = String(n); td.style.fontSize = '17px'; td.style.fontWeight = '700';
+        if (k === 'todo' && n) td.style.color = '#c0392b';
+        if (n) { td.style.cursor = 'pointer'; td.style.textDecoration = 'underline dotted'; td.title = '點我看清單'; td.addEventListener('click', dSa(k)); }
+      });
+    }).catch(function () { KS.forEach(function (k, i) { nums.cells[i].textContent = '—'; }); });
+  }
+
   function kpiCards(host, title, items) {
     ensureChartStyle();
     host.appendChild(U.el('div', { class: 'wx-kpi-grp', text: title }));
