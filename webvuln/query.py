@@ -988,6 +988,16 @@ def weekly_report(session: Session, department: Optional[str] = None,
         elif d <= 60: due_buckets["d31_60"] += 1
         elif d <= 90: due_buckets["d61_90"] += 1
         else: due_buckets["d90plus"] += 1
+    # 細分版（跟下鑽到期篩選同一套 14/30/60/90/120/180/360，使用者 2026-10-07）：各段互斥、相加＝未結
+    due_fine = {"overdue": 0, "d14": 0, "d30": 0, "d60": 0, "d90": 0, "d120": 0, "d180": 0, "d360": 0,
+                "d360plus": 0, "no_due": 0}
+    for f in open_:
+        if not f.effective_due:
+            due_fine["no_due"] += 1; continue
+        d = (f.effective_due - today).days
+        k = ("overdue" if d < 0 else "d14" if d <= 14 else "d30" if d <= 30 else "d60" if d <= 60 else
+             "d90" if d <= 90 else "d120" if d <= 120 else "d180" if d <= 180 else "d360" if d <= 360 else "d360plus")
+        due_fine[k] += 1
 
     # 需申請母體＝應申請未申請 + 已申請(都曾需要申請決策)
     universe = need_apply + applied
@@ -1038,7 +1048,8 @@ def weekly_report(session: Session, department: Optional[str] = None,
         "apply_universe": len(universe),          # 需申請母體
         "stages": stages,                         # 處置落點：原始/首次展延/例外管理各計數與到期區間
         "severity": sev_dist,                     # 嚴重度分佈(未結案)：供圓餅
-        "due_buckets": due_buckets,               # 到期倒數桶(未結案,真正到期日)：供長條
+        "due_buckets": due_buckets,
+        "due_fine": due_fine,               # 到期倒數桶(未結案,真正到期日)：供長條
         # 處理進度分佈(管理人手動標)：要申請展延/例外、處理中、等複掃，及需追查(⚠️)總數
         "progress": {
             "wip": pcount[PROGRESS_WIP],

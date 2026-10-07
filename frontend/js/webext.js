@@ -2684,10 +2684,16 @@
           if (sevItems.length) donutChart(pie, sevItems, '未結'); else pie.appendChild(U.el('p', { class: 'empty-hint', text: '無未結案。' }));
           var bar = U.el('div', { style: 'flex:1 1 300px;min-width:280px' });
           bar.appendChild(U.el('div', { class: 'panel-head' }, [U.el('h3', { text: '到期倒數（未結案·真正到期日）' })]));
-          var bp = { overdue: { band: '已逾期' }, d30: { due_min: '0', due_max: '30' },
-            d31_60: { due_min: '31', due_max: '60' }, d61_90: { due_min: '61', due_max: '90' }, d90plus: { due_min: '91' } };
-          var bl = { overdue: '已逾期', d30: '30 天內', d31_60: '31–60 天', d61_90: '61–90 天', d90plus: '90 天以上' };
-          hbarChart(bar, dueBucketItems(s.due_buckets, function (key) { openFindings(bl[key] + '（到期倒數）', bp[key]); }));
+          // 分段跟下鑽的到期篩選同一套（使用者 2026-10-07）：已逾期／14／30／60／90／120／180／360／360 以上／無到期日
+          var FINE = [['overdue', '已逾期', { band: '已逾期' }, '#c0392b'], ['d14', '14 天內', { due_min: '0', due_max: '14' }, '#d84315'],
+            ['d30', '15–30 天', { due_min: '15', due_max: '30' }, '#ef6c00'], ['d60', '31–60 天', { due_min: '31', due_max: '60' }, '#f9a825'],
+            ['d90', '61–90 天', { due_min: '61', due_max: '90' }, '#c0ca33'], ['d120', '91–120 天', { due_min: '91', due_max: '120' }, '#7cb342'],
+            ['d180', '121–180 天', { due_min: '121', due_max: '180' }, '#43a047'], ['d360', '181–360 天', { due_min: '181', due_max: '360' }, '#26a69a'],
+            ['d360plus', '360 天以上', { due_min: '361' }, '#90a4ae'], ['no_due', '無到期日', { no_due: 'true' }, '#cfd8dc']];
+          var df = s.due_fine || {};
+          hbarChart(bar, FINE.filter(function (x) { return x[0] !== 'no_due' || df.no_due; }).map(function (x) {
+            return { label: x[1], value: df[x[0]] || 0, color: x[3], key: x[0], onClick: function () { openFindings(x[1] + '（到期倒數）', x[2]); } };
+          }));
           vis.appendChild(pie); vis.appendChild(bar);
           c.appendChild(vis);
 

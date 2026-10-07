@@ -50,3 +50,6 @@ def test_report_buckets_exclusive(client):
     rep = client.get("/api/report").json()
     assert (rep["overdue"], rep["soon"], rep["high_risk_only"], rep["high_risk"]) == (2, 2, 2, 4)
     assert sorted(r["host"] for r in client.get("/api/findings", params={"risk": "high_only"}).json()) == ["h2", "h3"]
+    df = rep["due_fine"]   # 細分到期桶互斥、相加＝未結
+    assert sum(df.values()) == rep["unresolved"] == 6
+    assert (df["overdue"], df["d14"], df["d360"], df["no_due"]) == (2, 2, 1, 1)   # 200 天落在 181–360
