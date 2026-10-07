@@ -56,14 +56,19 @@ def test_report_buckets_exclusive(client):
 
 
 def test_horizon_param(client):
+    """拉霸＝時間推進 N 天；例外到期後就算應申請未申請（2026-10-07 使用者更正）。"""
     import datetime as dt
     t = dt.date.today()
     d = lambda n: (t + dt.timedelta(days=n)).isoformat()
     fs = [dict(sheet_key="s1", plugin_id=str(i), name=f"v{i}", host=f"h{i}", severity="High", department="A",
                owner="x", remediation_due=due, close_status="未結案") for i, due in enumerate([d(-5), d(20), d(100), d(400)])]
+    fs.append(dict(sheet_key="s1", plugin_id="9", name="v9", host="hx", severity="High", department="A", owner="x",
+                   remediation_due=d(-200), exception_due=d(85), remark="例外管理(iForm_1)", close_status="未結案"))
     assert client.post("/api/import", json={"source_file": "t.xlsx", "findings": fs}).status_code == 200
     hosts = lambda p: sorted(r["host"] for r in client.get("/api/findings", params=p).json())
-    assert hosts({"should_apply": "true", "horizon": 30}) == ["h0", "h1"]
-    assert hosts({"should_apply": "true", "horizon": 120}) == ["h0", "h1", "h2"]
-    assert hosts({"not_apply": "true", "horizon": 120}) == ["h3"]
-    assert hosts({"should_apply": "true", "horizon": 0}) == ["h0"]
+    assert hosts({"should_apply": "true", "horizon": 0}) == ["h0", "h1"]            # 今天＝原規則（到期前 30 天）
+    assert hosts({"should_apply": "true"}) == ["h0", "h1"]
+    assert hosts({"applied": "true", "horizon": 0}) == ["hx"]
+    assert hosts({"should_apply": "true", "horizon": 90}) == ["h0", "h1", "h2", "hx"]  # 第 90 天：例外(85 天)已到期
+    assert hosts({"applied": "true", "horizon": 90}) == []
+    assert hosts({"not_apply": "true", "horizon": 90}) == ["h3"]

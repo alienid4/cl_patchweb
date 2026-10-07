@@ -310,12 +310,22 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
     apply_intent=管理人標「要申請展延/例外」(送審中，尚未在 Excel 反映)。"""
     today = today or dt.date.today()
     fs = _latest_findings(session, department)
-    # horizon＝週報分解表的拉霸（2026-10-07）：到期前幾天內算「需申請」；沒給就用預設行動線（提前期）
+    # horizon＝週報分解表的拉霸（2026-10-07 使用者更正）：時間推進 N 天，看「那一天」的狀態。
+    #   應申請未申請＝那天已過行動線的原始期限 ＋ 例外／展延到那天已到期的（失去例外管理，要處理）
+    #   已核准＝例外／展延到那天還沒到期的。horizon=0 就是今天，跟 should_apply 一致。
+    _ap = lambda f: f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
     if horizon is None:
         _sa = lambda f: should_apply(f, today)
+        _apv = _ap
     else:
-        _sa = lambda f: (f.close_status == CLOSE_OPEN and f.stage == STAGE_ORIGINAL and f.effective_due is not None
-                         and (f.effective_due - today).days <= horizon)
+        _T = today + dt.timedelta(days=horizon)
+        def _sa(f):
+            if f.close_status != CLOSE_OPEN or not f.effective_due:
+                return False
+            if _ap(f):
+                return f.effective_due < _T          # 例外／展延到那天已到期
+            return f.stage == STAGE_ORIGINAL and action_line(f, today) <= _T
+        _apv = lambda f: _ap(f) and not (f.effective_due and f.effective_due < _T)
 
     if status and status != "全部":
         fs = [f for f in fs if f.close_status == status]
@@ -327,8 +337,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if f.sheet_key == sheet_key]
     if stage:
         fs = [f for f in fs if f.stage == stage]
-    if applied:  # 已申請處置中：備註有申請紀錄→階段已成 例外/展延(備註閘門)
-        fs = [f for f in fs if f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)]
+    if applied:  # 已核准：備註有申請紀錄→階段已成 例外/展延(備註閘門)；有 horizon 時只留到那天還沒到期的
+        fs = [f for f in fs if _apv(f)]
     if apply_intent:  # 管理人標「要申請展延/例外」(不論官方階段，含尚未反映的送審中)
         from .models import Case as _C
         from .logic import PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC
@@ -353,7 +363,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if f.severity in HIGH_RISK]
     elif risk == "high_only":   # 高風險未結（不含已逾期、近期到期），與總覽三卡互斥同口徑
         fs = [f for f in fs if _is_high_only(f, today)]
-    _in_universe = lambda f: _sa(f) or f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
+    _in_universe = lambda f: _sa(f) or _apv(f)
     if apply_universe:   # 需申請母體 = 應申請未申請 + 已申請處置中
         fs = [f for f in fs if _in_universe(f)]
     if not_apply:        # 還不急 = 未結但不在申請母體(原始階段、未過行動線)

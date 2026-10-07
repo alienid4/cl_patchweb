@@ -2921,7 +2921,8 @@
   // （52 筆展延送審＝已送出、只是 Excel 還沒更新；真正沒動的是「尚未修補」那格，只有它用紅字）
   function applyTree(host, s, notApply) {
     ensureTreeStyle();
-    var H = parseInt(_lsGet('wx_horizon') || '30', 10); if (!(H >= 0 && H <= 365)) H = 30;   // 拉霸：到期前幾天內算「需申請」（預設 30＝申請提前期）
+    // 拉霸＝時間推進（2026-10-07 使用者更正）：推到「今天＋N 天」那一天看狀態；0＝今天
+    var H = parseInt(_lsGet('wx_proj') || '0', 10); if (!(H >= 0 && H <= 365)) H = 0;
     var g = U.el('div', { class: 'wx-tree' });
     var cap = U.el('div', { class: 'wx-tree-cap', text: '未結弱點分解（點任一數字看清單）' });
     var wrap = U.el('div', { class: 'wx-tree-wrap' }, [cap, g]);
@@ -2937,31 +2938,29 @@
     node('need', '需申請', 'n-need', 'need');
     node('not', '暫無需申請（期限內）', 'n-not', 'not');
     node('sa', '應申請未申請', 'n-sa', 'sa');
-    node('app', '已核准展延／例外', 'n-app', 'app', '資安已核准；仍待修補');
-    // 已核准再依拉霸拆兩格：期限 N 天內到期（將屆，要修或再申請）／超過 N 天（2026-10-07 使用者：拉到 365 天，12/31 到期的例外還是沒跳出來）
-    var appSub = U.el('div', { class: 'wx-app-sub' });
-    var aSoon = U.el('button', { class: 'wx-app-chip soon' }), aFar = U.el('button', { class: 'wx-app-chip' });
-    appSub.appendChild(aSoon); appSub.appendChild(aFar); NODES.app.appendChild(appSub);
-    [aSoon, aFar].forEach(function (b) { b.addEventListener('click', function (e) { e.stopPropagation(); if (b._v && b._drill) b._drill(); }); });
+    node('app', '已核准展延／例外', 'n-app', 'app', '資安已核准、到那天期限還沒到；仍待修補');
+    // 應申請未申請底下註明「其中例外／展延已到期」：時間推過例外期限，就失去例外管理
+    var saNote = U.el('div', { class: 'wx-node-note' }); NODES.sa.appendChild(saNote);
     var KS = ['todo', 'wip', 'subext', 'subexc', 'rescan'];
     KS.forEach(function (k, i) { node(k, STAT_DEFS[k].label, 'n-leaf' + (k === 'todo' ? ' n-todo' : ''), 'p' + i); });
     // 拉霸：0–365 天（使用者 2026-10-07 概念圖），拖拉即時重算上面的分解數字
     var rng = U.el('input', { type: 'range', min: '0', max: '365', step: '1', value: String(H), class: 'wx-hz-range' });
     var hzVal = U.el('b', { class: 'wx-hz-val' });
+    var dateLb = U.el('b', { class: 'wx-hz-date' });
     // 刻度只標 0／90／180／365（線性軸，14、30 太擠會疊字）；常用天數另外一排快捷鈕
     var ticks = U.el('div', { class: 'wx-hz-ticks' });
     [0, 90, 180, 365].forEach(function (d) {
       ticks.appendChild(U.el('span', { class: 'wx-hz-tick', text: String(d), style: 'left:' + (d / 365 * 100) + '%' }));
     });
     var chips = U.el('div', { class: 'wx-hz-chips' }), chipEls = [];
-    [[0, '只看已逾期'], [14, '14 天'], [30, '30 天'], [60, '60 天'], [90, '90 天'], [180, '180 天'], [365, '365 天']].forEach(function (x) {
+    [[0, '今天'], [14, '14 天後'], [30, '30 天後'], [60, '60 天後'], [90, '90 天後'], [180, '180 天後'], [365, '365 天後']].forEach(function (x) {
       var b = U.el('button', { class: 'wx-hz-chip', text: x[1] }); b._d = x[0];
       b.addEventListener('click', function () { rng.value = String(x[0]); upd(); });
       chips.appendChild(b); chipEls.push(b);
     });
     wrap.appendChild(U.el('div', { class: 'wx-hz' }, [
-      U.el('div', { class: 'wx-hz-head' }, [U.el('span', { text: '需申請的時間線：到期前 ' }), hzVal,
-        U.el('span', { text: ' 天內（含已逾期）就算「需申請」；拖拉或點下面的刻度看不同範圍' })]),
+      U.el('div', { class: 'wx-hz-head' }, [U.el('span', { text: '時間推進：' }), hzVal, dateLb,
+        U.el('span', { text: ' 天後的狀態（拖拉或點下面的按鈕）。例外／展延過了期限就失去例外管理，會移到「應申請未申請」' })]),
       rng, ticks, chips]));
     var rows = null;
     function set(id, v, drill) {
@@ -2973,40 +2972,43 @@
     function calc() {
       if (!rows) return;
       var today = new Date(); today.setHours(0, 0, 0, 0);
-      var c = { root: 0, need: 0, not: 0, sa: 0, app: 0, appSoon: 0, appFar: 0 };
+      var LEAD = 30;   // 申請提前期：到期前 30 天就該申請（同後端 lead_days 預設）
+      var c = { root: 0, need: 0, not: 0, sa: 0, app: 0, exp: 0 };
       var saRows = [];
       rows.forEach(function (r) {
         c.root++;
         var ap = r.stage === '例外管理中' || r.stage === '首次展延中';
         var dd = r.effective_due ? Math.round((new Date(r.effective_due + 'T00:00:00') - today) / 86400000) : null;
-        var sa = !ap && r.stage === '原始修補期限' && dd != null && dd <= H;
-        if (ap) { c.app++; if (dd != null && dd <= H) c.appSoon++; else c.appFar++; }
+        var sa = false;
+        if (ap) {
+          if (dd != null && dd < H) { sa = true; c.exp++; }   // 到那天例外／展延已到期
+          else c.app++;
+        } else if (r.stage === '原始修補期限' && dd != null && dd - LEAD <= H) sa = true;   // 到那天已過申請時機
         if (sa) { c.sa++; saRows.push(r); }
         if (ap || sa) c.need++; else c.not++;
       });
       var st = dispoStats(saRows);
-      var hp = { horizon: String(H) }, lb = '（到期前 ' + H + ' 天內）';
+      var day = new Date(today.getTime() + H * 86400000);
+      var ds = day.getFullYear() + '-' + ('0' + (day.getMonth() + 1)).slice(-2) + '-' + ('0' + day.getDate()).slice(-2);
+      dateLb.textContent = H ? '（' + ds + '）' : '（今天）';
+      var hp = { horizon: String(H) }, lb = H ? '（推算到 ' + ds + '）' : '';
       set('root', c.root, function () { openFindings('未結案', {}); });
       set('need', c.need, function () { openFindings('需申請' + lb, Object.assign({ apply_universe: 'true' }, hp)); });
-      set('not', c.not, function () { openFindings('暫無需申請（到期超過 ' + H + ' 天）', Object.assign({ not_apply: 'true' }, hp)); });
+      set('not', c.not, function () { openFindings('暫無需申請' + lb, Object.assign({ not_apply: 'true' }, hp)); });
       set('sa', c.sa, function () { openFindings('應申請未申請' + lb, Object.assign({ should_apply: 'true' }, hp)); });
-      set('app', c.app, function () { openFindings('已核准展延／例外（仍待修補）', { applied: 'true' }); });
-      aSoon._v = c.appSoon; aSoon.textContent = H + ' 天內到期 ' + c.appSoon; aSoon.disabled = !c.appSoon;
-      aSoon.title = '例外／展延期限在 ' + H + ' 天內就到（含已過）：要修補，或確認是否再申請';
-      aSoon._drill = function () { openFindings('已核准展延／例外・' + H + ' 天內到期', { applied: 'true', due_max: String(H), horizon: String(H) }); };
-      aFar._v = c.appFar; aFar.textContent = '超過 ' + H + ' 天 ' + c.appFar; aFar.disabled = !c.appFar;
-      aFar._drill = function () { openFindings('已核准展延／例外・期限超過 ' + H + ' 天', { applied: 'true', due_min: String(H + 1), horizon: String(H) }); };
+      set('app', c.app, function () { openFindings('已核准展延／例外' + lb, Object.assign({ applied: 'true' }, hp)); });
+      saNote.textContent = c.exp ? '其中例外／展延已到期 ' + c.exp : '';
       KS.forEach(function (k) {
         set(k, st[k], function () { openFindings('應申請未申請・' + STAT_DEFS[k].label + lb, Object.assign({ should_apply: 'true', _stat: k }, hp)); });
       });
-      NODES.not.title = '離到期還超過 ' + H + ' 天';
-      NODES.need.title = '到期前 ' + H + ' 天內（含已逾期）、或已經是展延／例外';
+      NODES.not.title = '到 ' + ds + ' 還沒進入申請時機（到期前 30 天）';
+      NODES.need.title = '到 ' + ds + ' 需要處理：已過申請時機、或例外／展延（含已到期的）';
     }
     function upd() {
       H = parseInt(rng.value, 10); hzVal.textContent = String(H);
       rng.style.setProperty('--p', (H / 365 * 100) + '%');
       chipEls.forEach(function (b) { b.classList.toggle('on', b._d === H); });
-      _lsSet('wx_horizon', String(H)); calc();
+      _lsSet('wx_proj', String(H)); calc();
     }
     upd();
     rng.addEventListener('input', upd);
@@ -3033,10 +3035,8 @@
       '.n-leaf{background:#fff;border-color:#e3d9ec;color:#4a3d57}.n-leaf .wx-node-n{font-size:22px}' +
       '.n-leaf.n-todo{background:#fff5f4;border-color:#f3c3bd;color:#c0392b}' +
       '.n-leaf.zero{opacity:.55}' +
-      '.wx-app-sub{display:flex;flex-direction:column;gap:6px;margin-top:8px;width:100%}' +
-      '.wx-app-chip{border:1px solid #bcd9ef;background:#fff;color:#1d5f8f;border-radius:8px;padding:5px 8px;font-size:13px;font-weight:700;cursor:pointer}' +
-      '.wx-app-chip.soon{border-color:#f0c27b;background:#fff8ec;color:#b9620e}' +
-      '.wx-app-chip:disabled{opacity:.5;cursor:default}.wx-app-chip:not(:disabled):hover{box-shadow:0 3px 8px -4px rgba(0,0,0,.4)}' +
+      '.wx-node-note{font-size:12.5px;font-weight:700;color:#b9620e;margin-top:2px}.wx-node-note:empty{display:none}' +
+      '.wx-hz-date{color:#0f5f35;margin-right:4px}' +
       '.wx-hz{margin:12px 2px 4px;padding:10px 14px 12px;background:#f4f8f6;border:1px solid #dbe7e0;border-radius:10px}' +
       '.wx-hz-head{font-size:14px;color:#2a3430;margin-bottom:8px}.wx-hz-val{font-size:20px;color:#c0392b;margin:0 2px}' +
       '.wx-hz-range{-webkit-appearance:none;appearance:none;width:100%;height:12px;border-radius:6px;outline:none;cursor:pointer;' +
