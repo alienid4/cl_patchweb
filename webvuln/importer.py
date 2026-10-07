@@ -14,6 +14,15 @@ from .schemas import ImportIn
 
 
 def create_batch(session: Session, data: ImportIn) -> ImportBatch:
+    # 變化紀錄：舊的最新版被換掉前，先把它當下的承辦進度拍下來（「上次展延送審幾筆」要用）
+    from . import changes
+    from .models import ImportBatch as _IB
+    from sqlalchemy import select as _sel
+    import datetime as _dt
+    old = session.execute(_sel(_IB).where(_IB.is_latest.is_(True)).order_by(_IB.id.desc())).scalars().first()
+    old_asof = _dt.datetime.now()
+    if old is not None:
+        changes.capture_progress(session, old)
     # 舊的最新版全部退位
     session.execute(update(ImportBatch).where(ImportBatch.is_latest.is_(True)).values(is_latest=False))
 
@@ -68,4 +77,11 @@ def create_batch(session: Session, data: ImportIn) -> ImportBatch:
     cases.reconcile(session, batch)
     # 管理員改過的負責人（owner_override）在重匯時套回本批 finding（Excel 值被覆蓋，不被洗掉）
     cases.apply_owner_overrides(session, batch)
+    # 跟上一批逐筆比對，寫變化紀錄（失敗不擋匯入；開機補算會再補）
+    try:
+        changes.compute_run(session, batch, old, prev_asof=old_asof, progress_captured=old is not None)
+        session.commit()
+    except Exception as e:  # noqa: BLE001
+        session.rollback()
+        print(f"[changes] 比對失敗（開機會補算）：{e!r}")
     return batch

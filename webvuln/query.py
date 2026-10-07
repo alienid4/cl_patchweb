@@ -388,6 +388,13 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             return all(t in hay for t in terms)
         fs = [f for f in fs if hit(f)]
 
+    row = _row_builder(session, today)
+    return [row(f) for f in fs]
+
+
+def _row_builder(session: Session, today: dt.date, progress_map: Optional[dict] = None):
+    """清單每一列的輸出格式（find 與「與上次匯入比較」共用，欄位一致畫面才吃得下）。
+    progress_map：給了就用它當承辦進度（比較「上次」時用當時拍下的進度），不給就讀目前的承辦疊加層。"""
     # 系統內寫的疊加欄(追蹤備註/預計完成日/處理進度)：依穩定鍵對 Case 帶進每列(非 Excel 原值)
     from .models import Attachment, Case
     from .logic import PROGRESS_VALUES, classify_progress, CLOSE_DONE
@@ -427,7 +434,14 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
             "raw": f.raw or {},   # 原始整列(原欄名→原值)，供「匯出此清單」帶出全部原始欄位
         }
 
-    return [row(f) for f in fs]
+    if progress_map is not None:
+        _base = row
+
+        def row(f: Finding) -> dict:
+            d = _base(f)
+            d["progress"] = progress_map.get("|".join(vuln_key(f)), "")
+            return d
+    return row
 
 
 # 單機版解析器(sheets.js parseCounts)的「計數字串」，如「中*4 低*2」：一列會展開成 4+2 筆紀錄。

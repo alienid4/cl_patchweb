@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import ad, appsettings, attachments, cases, config, export, importer, mailer, query, security
+from . import ad, appsettings, attachments, cases, changes, config, export, importer, mailer, query, security
 from .db import SessionLocal, init_db
 from .models import AuditLog, Finding, MailLog, User, UserSession
 from .schemas import ImportIn, ImportResult
@@ -362,6 +362,62 @@ def api_snapshot(full: bool = False, db: Session = Depends(get_db)):
     return Response(content=query.snapshot_bytes(db, light=not full), media_type="application/json")
 
 
+# ── 與上次匯入比較（變化紀錄，見 changes.py） ──
+@app.get("/api/batches")
+def api_batches(db: Session = Depends(get_db)):
+    """所有匯入批次（新→舊）：比較時選「跟哪一次比」、刪錯檔用。"""
+    return changes.batches_info(db)
+
+
+@app.get("/api/compare")
+def api_compare(prev: int | None = None, department: str | None = None, db: Session = Depends(get_db)):
+    """主管看的數字：上次／本次／差額＋本期變動＋對帳等式。prev 不給＝跟前一批比。"""
+    return changes.compare(db, prev_id=prev, department=department)
+
+
+@app.get("/api/compare/rows")
+def api_compare_rows(prev: int | None = None, department: str | None = None, metric: str | None = None,
+                     side: str = "cur", event: str | None = None, status: str | None = None,
+                     db: Session = Depends(get_db)):
+    """點比較表的數字看清單（欄位跟 /api/findings 一樣，多 change_note＝變了什麼）。"""
+    return changes.compare_rows(db, prev_id=prev, department=department, metric=metric, side=side, event=event)
+
+
+@app.get("/api/findings/{finding_id}/history")
+def api_finding_history(finding_id: int, db: Session = Depends(get_db)):
+    """一筆弱點的歷程（匯入變化＋系統操作，依時間）。"""
+    try:
+        return changes.history(db, finding_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/batches/{batch_id}")
+def api_delete_batch(batch_id: int, request: Request, db: Session = Depends(get_db),
+                     user: User = Depends(require_super)):
+    """刪一批匯入（匯錯檔用）：先備份 DB，再刪這批與它造成的變化紀錄；刪的是最新批就退回前一批。"""
+    import shutil
+    db_path = config.DB_URL[len("sqlite:///"):] if config.DB_URL.startswith("sqlite:///") else None
+    backup = None
+    if db_path and Path(db_path).exists():
+        backup = f"{db_path}.bak-before-delete-batch{batch_id}-{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        db.execute(select(1))   # 確保連線存在
+        shutil.copy2(db_path, backup)
+        for suf in ("-wal", "-shm"):
+            if Path(db_path + suf).exists():
+                shutil.copy2(db_path + suf, backup + suf)
+    try:
+        r = changes.delete_batch(db, batch_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    r["db_backup"] = backup
+    security.log_audit(db, username=user.username, action="delete_batch", target=f"batch:{batch_id}",
+                       detail=f"{r.get('source_file') or ''} {r.get('rows')}筆；備份 {backup}", ip=_client_ip(request))
+    import threading
+    threading.Thread(target=query.warm_snapshot_cache, daemon=True).start()
+    return r
+
+
 @app.get("/api/snapshot-meta")
 def api_snapshot_meta(db: Session = Depends(get_db)):
     """輕量：最新批次識別（匯入時間/檔名/列數），供前端快取判斷『資料換了沒』，免下載整包 snapshot。"""
@@ -536,8 +592,11 @@ def api_bulk_overlay(body: BulkOverlayIn, request: Request, db: Session = Depend
         if not _scope_ok(user, f, db):
             skipped.append({"id": fid, "host": f.host, "error": "無權限"}); continue
         try:
-            cases.set_overlay(db, fid, fields)
+            r1 = cases.set_overlay(db, fid, fields)
             applied += 1
+            security.log_audit(db, username=getattr(user, "username", None), action="set_overlay",
+                               target=f"vuln:{r1['vuln_key']}", detail=str({k: v for k, v in r1.items() if k in fields}),
+                               ip=_client_ip(request))
         except ValueError as e:
             failed.append({"id": fid, "error": str(e)})
     security.log_audit(db, username=getattr(user, "username", None), action="bulk_overlay",

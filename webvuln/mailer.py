@@ -284,6 +284,14 @@ def _weekly_body(rep: dict, dept: str, site_url: str) -> str:
     if ch.get("has_prev"):
         lines.append("本週變化：新增 %d、解決 %d（淨 %+d）" % (
             ch.get("new", 0), ch.get("resolved", 0), ch.get("delta", 0)))
+    cp = rep.get("compare") or {}
+    if cp.get("has_prev"):
+        lines += ["", "與上次匯入比較（%s → 本次）：%s" % ((cp.get("prev") or {}).get("asof", "")[:16].replace("T", " "),
+                                                       cp.get("summary", ""))]
+        for m in cp.get("metrics") or []:
+            if m["key"] in ("unresolved", "overdue", "need_apply", "applied", "todo", "subext"):
+                lines.append("· %s：%s → %d（%s）" % (m["label"].strip(), "—" if m["prev"] is None else m["prev"], m["cur"],
+                                                   "—" if m["delta"] is None else "%+d" % m["delta"]))
     lines += ["", "最需要處理（落後清單前幾筆）："]
     for d in (rep.get("overdue_list") or [])[:8]:
         lines.append("· %s｜%s｜%s｜逾期 %s 天" % (
@@ -353,6 +361,11 @@ def send_weekly(db: Session, cfg: dict, today: Optional[dt.date] = None,
                 continue
             try:
                 rep = query.weekly_report(db, department=dept, today=today)
+                try:   # 與上次匯入比較：主管看數字（失敗就不放，不擋寄信）
+                    from . import changes
+                    rep["compare"] = changes.compare(db, department=dept, today=today)
+                except Exception:  # noqa: BLE001
+                    rep["compare"] = None
                 subject = "%s%s 部門週報（%s）" % (prefix, dept, today.isoformat())
                 body = _weekly_body(rep, dept, site_url)
                 envelope = [email] + ([bcc] if bcc and bcc != email else [])

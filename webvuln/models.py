@@ -212,3 +212,42 @@ class Finding(Base):
     raw: Mapped[dict | None] = mapped_column(JSON)
 
     batch: Mapped["ImportBatch"] = relationship(back_populates="findings")
+
+
+# ── 匯入間的變化紀錄（2026-10-07 使用者：5 天後套新 Excel，要知道變了什麼） ──
+class ChangeRun(Base):
+    """一次「這批 vs 前一批」的比對紀錄：比過了就有一列（冪等用），也記上一批被換掉當下的時間。"""
+    __tablename__ = "change_run"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)      # 這批（新）
+    prev_batch_id: Mapped[int | None] = mapped_column(Integer, index=True)      # 跟哪一批比
+    prev_asof: Mapped[dt.datetime | None] = mapped_column(DateTime)             # 上一批「被換掉當下」＝上次報表的時間點
+    progress_captured: Mapped[bool] = mapped_column(Boolean, default=False)     # 上一批的承辦進度有沒有拍下來（補算的舊批沒有）
+    n_changes: Mapped[int] = mapped_column(Integer, default=0)
+    computed_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.now)
+
+
+class FindingChange(Base):
+    """逐筆逐欄的變化：哪一筆(穩定鍵)、哪個欄位、舊值→新值、哪次匯入。只記會影響追蹤的欄位。"""
+    __tablename__ = "finding_change"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(Integer, index=True)
+    prev_batch_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    vuln_key: Mapped[str] = mapped_column(String(500), index=True)
+    kind: Mapped[str] = mapped_column(String(10))            # field／new（新出現）／gone（從來源消失）
+    field: Mapped[str | None] = mapped_column(String(50))
+    old: Mapped[str | None] = mapped_column(Text)
+    new: Mapped[str | None] = mapped_column(Text)
+    at: Mapped[dt.datetime | None] = mapped_column(DateTime, index=True)   # ＝這批的匯入時間
+
+
+class ProgressSnap(Base):
+    """新批匯入前，把舊批當下的承辦進度拍下來（承辦進度只存最新狀態，不拍就算不出「上次」的送審數）。"""
+    __tablename__ = "progress_snap"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(Integer, index=True)
+    vuln_key: Mapped[str] = mapped_column(String(500))
+    progress: Mapped[str | None] = mapped_column(String(30))

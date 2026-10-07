@@ -319,7 +319,8 @@
       td.title = 'Excel 有填，但備註沒有' + (key === 'exception_due' ? '例外' : '展延') + '的申請紀錄，系統不採用這個日期（請確認原始資料）';
     }
     // 一列固定一行（使用者 2026-10-06）：長文字截斷成「…」，滑鼠移上去看完整；日期、階段等短欄不折行
-    var CLIP = { name: 280, remark: 170, track_note: 170, progress_state: 110 };
+    var CLIP = { name: 280, remark: 170, track_note: 170, progress_state: 110, change_note: 260 };
+    if (key === 'change_note') { td.style.color = '#0f5f35'; td.style.fontWeight = '600'; }
     td.style.whiteSpace = 'nowrap';
     if (CLIP[key]) {
       td.style.maxWidth = CLIP[key] + 'px'; td.style.overflow = 'hidden'; td.style.textOverflow = 'ellipsis'; td.style.textAlign = 'left';
@@ -461,10 +462,19 @@
     UI.openModal(title, box, { footer: footer, wide: true, noBackdropClose: true });   // 寬版＋點外面不關(只 ✕／Esc)
     var rows;
     var _q = Object.assign({ status: '未結案' }, params || {}); var _stat0 = _q._stat; delete _q._stat;   // _stat＝開窗先選好某統計類（不送後端）
-    try { rows = await jget('/api/findings?' + qd(_q)); }
+    var _src = _q._src || '/api/findings'; delete _q._src;   // _src＝改向別的清單來源要資料（如「與上次匯入比較」）
+    try { rows = await jget(_src + '?' + qd(_q)); }
     catch (e) { box.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗' })); return; }
     if (!rows.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '無資料' })); return; }
     var allRows = rows;   // 這個視窗的完整清單；rows 是套用搜尋後「眼前這份」，三種檢視、全選、匯出都吃 rows
+    // 比較清單帶「變了什麼」：三種檢視的明細都在弱點後面多這一欄
+    var hasNote = rows.some(function (r) { return r.change_note; });
+    function withNote(cs) {
+      if (!hasNote) return cs;
+      var i = cs.findIndex(function (c) { return c[0] === 'name'; });
+      cs = cs.slice(); cs.splice(i >= 0 ? i + 1 : 1, 0, ['change_note', '變了什麼']); return cs;
+    }
+    cols = withNote(cols);
     curRows = rows;
     var self = function () { openFindings(title, params); };
     function nPluginOf(rs) { var s = {}; rs.forEach(function (r) { s[(r.plugin_id || '') + '|' + (r.name || '')] = 1; }); return Object.keys(s).length; }
@@ -502,7 +512,7 @@
     var _pp = params || {};
     // 這幾類下鑽依定義就是「到期日還遠」（已申請處置中＝展延/例外期限通常在數月後、暫無需申請、高風險未結不含近期），
     // 疊預設 30 天會整批藏掉（2026-10-07：已申請處置中 69 支點進去 0 筆）→ 不疊預設
-    var _farByDef = _pp.applied || _pp.not_apply || _pp.risk === 'high_only';
+    var _farByDef = _pp.applied || _pp.not_apply || _pp.risk === 'high_only' || _pp._src;   // 比較清單也不疊預設
     if (_pp.due_min == null && _pp.due_max == null && !_pp.band && !_farByDef) { dueOn = { overdue: true, 14: true, 30: true }; }
     var dueBar = U.el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:5px' },
       [U.el('span', { text: '到期（可複選）：', style: 'color:#6b7a73;font-size:14px' })]);
@@ -761,6 +771,7 @@
         ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['remark', '備註(Excel)'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
+      icols = withNote(icols);
       var colspanAll = lead + 2 + 5 + 1;   // 全表欄數（給明細展開列用）：時間2＋承辦5＋附件1
       function numTd(n, extra) { return U.el('td', { text: n ? String(n) : '—', style: (n ? 'font-weight:600' : 'color:#9aa5a0') + (extra || '') }); }
       keys.forEach(function (k) {
@@ -887,6 +898,7 @@
       var icols = [['host', '主機'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['remark', '備註(Excel)'], ['overdue_days', '逾期天數'],
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
+      icols = withNote(icols);
       aggs.forEach(function (a) {
         var grp = a.grp, r0 = a.r0;
         // 一列一行：弱點名稱太長截斷，滑鼠移上去看完整
@@ -1274,7 +1286,25 @@
       });
       table.appendChild(tb); box.appendChild(table);
     }
-    UI.openModal('原始資料 — ' + (row.host || '') + ' / ' + (row.name || row.plugin_id || ''), box);
+    // 這筆的歷程（匯入變化＋系統操作），放在原始資料上面（2026-10-07）
+    if (row && row.id && !row.readonly) {
+      var hb = U.el('div', { style: 'margin-bottom:12px' }, [U.el('div', { text: '歷程', style: 'font-weight:700;color:#0f5f35;margin-bottom:4px' }),
+        U.el('div', { text: '讀取中…', style: 'color:#6b7a73' })]);
+      box.insertBefore(hb, box.firstChild);
+      jget('/api/findings/' + row.id + '/history').then(function (h) {
+        hb.removeChild(hb.lastChild);
+        var t = U.el('table', { class: 'tracking-table', style: 'margin:0' });
+        var tb = U.el('tbody');
+        (h.items || []).forEach(function (it) {
+          tb.appendChild(U.el('tr', {}, [U.el('td', { text: (it.at || '').replace('T', ' '), style: 'white-space:nowrap' }),
+            U.el('td', { text: it.src, style: 'white-space:nowrap;color:' + (it.src === '系統' ? '#1565c0' : '#6b7a73') }),
+            U.el('td', { text: it.text, style: 'text-align:left' })]));
+        });
+        if (!(h.items || []).length) tb.appendChild(U.el('tr', {}, [U.el('td', { text: '沒有紀錄' })]));
+        t.appendChild(tb); hb.appendChild(t);
+      }).catch(function () { hb.lastChild.textContent = '讀取失敗'; });
+    }
+    UI.openModal('原始資料 — ' + (row.host || '') + ' / ' + (row.name || row.plugin_id || ''), box, { stack: true });
   }
   // 一列「操作」欄：固定有 🔍(看原始)，可寫入時再加 ✏️(編輯)
   function opsCell(row, onEditDone) {
@@ -1285,7 +1315,7 @@
     var rawBtn = U.el('button', { class: 'btn btn-sm', text: '🔍', title: '看原始資料', style: 'margin-right:4px' });
     rawBtn.addEventListener('click', function () { showRawModal(row); });
     ops.appendChild(rawBtn);
-    if (canWrite()) {
+    if (canWrite() && !(row && row.readonly)) {   // readonly＝只存在上一批的列（目前資料沒有它），不能編輯
       var eb = U.el('button', { class: 'btn btn-sm', text: '✏️', title: '編輯' });
       eb.addEventListener('click', function () { editOverlay(row, onEditDone); });
       ops.appendChild(eb);
@@ -2665,6 +2695,7 @@
             { label: '高風險未結（不含逾期、近期）', value: s.high_risk_only, danger: true, drill: function () { openFindings('高風險未結（不含已逾期、近期到期）', { risk: 'high_only' }); } },
             { label: '其中高風險且逾期', value: s.high_risk_overdue, danger: true, drill: function () { openFindings('高風險且逾期', { risk: 'high', band: '已逾期' }); } },
           ]);
+          compareSection(c);   // 與上次匯入比較（主管看數字，點數字看明細）
           kpiCards(c, '申請面（需申請＝未申請＋已核准）', [
             { label: '需申請', value: s.apply_universe, drill: function () { openFindings('需申請母體', { apply_universe: 'true' }); } },
             { label: '應申請未申請', value: s.need_apply_count, danger: true, drill: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
@@ -2761,6 +2792,138 @@
 
   // 緊湊 KPI 卡片格：一組小標 + 一排數字磚(數字大、標籤小)，取代一疊 2 欄表，省約 4/5 空間。
   // items=[{label,value,danger,drill}]；danger→紅、drill→可點(綠、hover)。
+  // ── 與上次匯入比較（2026-10-07）：主管看數字；每個數字可點，開的是同一個下鑽視窗（多一欄「變了什麼」）──
+  // 差額顏色：變好綠、變差紅。哪個方向算好看指標性質（未結/逾期變少＝好；核准/送審變多＝好）。
+  var CMP_GOOD_DOWN = { unresolved: 1, overdue: 1, soon: 1, high_only: 1, apply_universe: 1, need_apply: 1, todo: 1 };
+  var CMP_GOOD_UP = { applied: 1, wip: 1, subext: 1, subexc: 1, rescan: 1 };
+  var _cmpPrev = null;   // 使用者選的「跟哪一次比」（null＝前一批）
+  var _lastCompare = null;
+  // 列印版：只放數字（主管看），不放清單
+  function cmpPrintBlock(esc) {
+    var cp = _lastCompare;
+    if (!cp || !cp.has_prev) return '';
+    var rows = cp.metrics.map(function (m) {
+      return '<tr><td style="text-align:left">' + esc(m.label) + '</td><td>' + (m.prev == null ? '未記錄' : m.prev) + '</td><td>' + m.cur
+        + '</td><td>' + (m.delta == null ? '—' : (m.delta > 0 ? '+' : '') + m.delta) + '</td></tr>';
+    }).join('');
+    var ev = cp.events.filter(function (e) { return e.n; }).map(function (e) { return esc(e.label) + ' ' + e.n; }).join('　·　');
+    return '<div class="block"><b>與上次匯入比較（上次＝' + esc((cp.prev.asof || '').replace('T', ' ')) + '）</b><br>' + esc(cp.summary)
+      + '<table><thead><tr><th>項目</th><th>上次</th><th>本次</th><th>差額</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      + (ev ? '<div>本期變動：' + ev + '</div>' : '') + '</div>';
+  }
+  function compareSection(host) {
+    var wrap = U.el('div', { style: 'margin:12px 0 16px;border:1px solid #cfe0d6;border-radius:10px;padding:10px 12px;background:#fbfdfc' });
+    host.appendChild(wrap);
+    function render() {
+      wrap.innerHTML = '';
+      var head = U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px' },
+        [U.el('span', { text: '與上次匯入比較', style: 'font-weight:700;font-size:16px;color:#0f5f35' })]);
+      wrap.appendChild(head);
+      var body = U.el('div', { text: '讀取中…', style: 'color:#6b7a73' }); wrap.appendChild(body);
+      var q = {}; if (_cmpPrev) q.prev = _cmpPrev;
+      jget('/api/compare?' + qd(q)).then(function (cp) {
+        _lastCompare = cp;   // 列印週報時帶這份
+        body.innerHTML = '';
+        if (!cp.has_prev) { body.appendChild(U.el('p', { class: 'empty-hint', text: cp.reason || '無法比較' })); return; }
+        // 選「跟哪一次比」
+        var sel = U.el('select', { style: 'padding:3px 8px;border:1px solid #cdd5dd;border-radius:6px;font-size:13.5px' });
+        (cp.batches || []).filter(function (b) { return !b.is_latest; }).forEach(function (b) {
+          var o = U.el('option', { value: String(b.id), text: (b.imported_at || '').replace('T', ' ') + '　' + (b.source_file || '') + '（' + b.row_count + ' 列）' });
+          if (cp.prev && b.id === cp.prev.id) o.selected = true;
+          sel.appendChild(o);
+        });
+        sel.addEventListener('change', function () { _cmpPrev = sel.value; render(); });
+        head.appendChild(U.el('span', { text: '跟', style: 'color:#6b7a73;font-size:13.5px' })); head.appendChild(sel);
+        head.appendChild(U.el('span', { text: '比；上次＝那批被換掉當下（' + ((cp.prev.asof || '').replace('T', ' ')) + '）的狀態，本次＝現在', style: 'color:#6b7a73;font-size:13px' }));
+        if (isSuper()) {
+          var mg = U.el('button', { class: 'btn btn-sm', text: '匯入批次管理', style: 'margin-left:auto' });
+          mg.addEventListener('click', function () { openBatchManager(render); });
+          head.appendChild(mg);
+        }
+        body.appendChild(U.el('div', { text: cp.summary, style: 'font-weight:700;font-size:15px;margin:2px 0 8px;color:#2a3430' }));
+        var lay = U.el('div', { style: 'display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start' });
+        body.appendChild(lay);
+        // 數字表
+        var t = U.el('table', { class: 'tracking-table', style: 'width:auto;min-width:420px;margin:0' });
+        t.appendChild(U.el('thead', {}, [U.el('tr', {}, ['項目', '上次', '本次', '差額'].map(function (h) { return U.el('th', { text: h }); }))]));
+        var tb = U.el('tbody');
+        function numCell(txt, onClick, style) {
+          var td = U.el('td', { text: txt, style: 'font-weight:700;font-size:15px;' + (style || '') });
+          if (onClick) { td.style.cursor = 'pointer'; td.style.textDecoration = 'underline dotted'; td.title = '點我看清單'; td.addEventListener('click', onClick); }
+          return td;
+        }
+        function open(label, extra) {
+          var pm = Object.assign({ _src: '/api/compare/rows' }, extra); if (_cmpPrev) pm.prev = _cmpPrev;
+          openFindings(label, pm);
+        }
+        cp.metrics.forEach(function (m) {
+          var sub = /^　/.test(m.label);
+          var unk = m.prev == null;
+          var dcol = '#6b7a73';
+          if (!unk && m.delta) {
+            var good = CMP_GOOD_DOWN[m.key] ? m.delta < 0 : (CMP_GOOD_UP[m.key] ? m.delta > 0 : null);
+            dcol = good == null ? '#6b7a73' : (good ? '#1a7f4b' : '#c0392b');
+          }
+          tb.appendChild(U.el('tr', {}, [
+            U.el('td', { text: m.label, style: 'text-align:left;' + (sub ? 'color:#55625c' : 'font-weight:600') }),
+            unk ? U.el('td', { text: '未記錄', title: '這批是補算的舊資料，當時的承辦進度沒有拍下來', style: 'color:#9aa5a0' })
+              : numCell(String(m.prev), m.prev ? function () { open(m.label.trim() + '（上次）', { metric: m.key, side: 'prev' }); } : null),
+            numCell(String(m.cur), m.cur ? function () { open(m.label.trim() + '（本次）', { metric: m.key, side: 'cur' }); } : null),
+            unk ? U.el('td', { text: '—', style: 'color:#9aa5a0' })
+              : numCell((m.delta > 0 ? '+' : '') + m.delta, function () { open(m.label.trim() + '（進出明細）', { metric: m.key, side: 'both' }); }, 'color:' + dcol),
+          ]));
+        });
+        t.appendChild(tb); lay.appendChild(t);
+        // 本期變動
+        var evBox = U.el('div', { style: 'flex:1 1 280px;min-width:260px' });
+        evBox.appendChild(U.el('div', { text: '本期變動（點數字看是哪幾筆）', style: 'font-weight:700;color:#0f5f35;margin-bottom:6px' }));
+        var TONE = { good: '#1a7f4b', bad: '#c0392b', info: '#55625c' };
+        cp.events.forEach(function (e) {
+          evBox.appendChild(U.el('div', { style: 'display:flex;justify-content:space-between;gap:10px;padding:4px 8px;border-bottom:1px solid #edf2ef' }, [
+            U.el('span', { text: e.label }),
+            numCell(String(e.n), e.n ? function () { open(e.label, { event: e.key }); } : null, 'color:' + (e.n ? TONE[e.tone] : '#9aa5a0'))]));
+        });
+        lay.appendChild(evBox);
+        // 對帳等式
+        var eq = cp.equation;
+        body.appendChild(U.el('div', { text: '對帳：' + eq.text + (eq.ok ? '　✓ 等於本次未結 ' + eq.cur_open : '　✗ 對不上（本次未結 ' + eq.cur_open + '），請回報'),
+          style: 'margin-top:8px;font-size:13px;color:' + (eq.ok ? '#1a7f4b' : '#c0392b') }));
+        if (!cp.progress_recorded) body.appendChild(U.el('div', { class: 'empty-hint', text: '「上次」的承辦進度未記錄：這批是補算的舊資料。從下一次匯入起會自動記錄。' }));
+      }).catch(function () { body.textContent = '讀取失敗'; });
+    }
+    render();
+  }
+
+  // 匯入批次管理（Super Admin）：列出每次匯入，可刪匯錯的那批（刪前伺服器會先備份 DB）
+  function openBatchManager(onDone) {
+    var box = U.el('div', { text: '讀取中…' });
+    UI.openModal('匯入批次管理', box, { stack: true });
+    jget('/api/batches').then(function (bs) {
+      box.innerHTML = '';
+      box.appendChild(U.el('p', { class: 'empty-hint', text: '匯錯檔可以刪掉那一批：連同它造成的變化紀錄一起刪；刪的是最新批，就回到前一批。刪之前伺服器會自動備份資料庫。承辦填的進度、備註不受影響。' }));
+      var t = U.el('table', { class: 'tracking-table' });
+      t.appendChild(U.el('thead', {}, [U.el('tr', {}, ['匯入時間', '檔名', '列數', '', ''].map(function (h) { return U.el('th', { text: h }); }))]));
+      var tb = U.el('tbody');
+      bs.forEach(function (b) {
+        var del = U.el('button', { class: 'btn btn-sm', text: '刪除這批', style: 'color:#c0392b' });
+        if (bs.length < 2) del.disabled = true;
+        del.addEventListener('click', async function () {
+          var ok = window.prompt('確定刪除 ' + (b.imported_at || '').replace('T', ' ') + ' 匯入的「' + (b.source_file || '') + '」？要刪請輸入：刪除');
+          if (ok !== '刪除') return;
+          var r = await fetch('/api/batches/' + b.id, { method: 'DELETE' });
+          var j = await r.json().catch(function () { return {}; });
+          if (!r.ok) { UI.toast('刪除失敗：' + (j.detail || r.status), 'error'); return; }
+          UI.toast('已刪除；資料庫備份在 ' + (j.db_backup || '（無）'), 'success');
+          UI.closeModal(); if (onDone) onDone();
+        });
+        tb.appendChild(U.el('tr', {}, [U.el('td', { text: (b.imported_at || '').replace('T', ' ') }), U.el('td', { text: b.source_file || '' }),
+          U.el('td', { text: String(b.row_count) }), U.el('td', { text: b.is_latest ? '目前使用中' : '', style: 'color:#1a7f4b;font-weight:700' }),
+          U.el('td', {}, [del])]));
+      });
+      t.appendChild(tb); box.appendChild(t);
+    }).catch(function () { box.textContent = '讀取失敗'; });
+  }
+
   // 申請面分解樹：每一層相加＝上一層，每個數字可點下鑽；最底層「應申請未申請」依承辦進度拆
   // （52 筆展延送審＝已送出、只是 Excel 還沒更新；真正沒動的是「尚未修補」那格，只有它用紅字）
   function applyTree(host, s, notApply) {
@@ -3033,6 +3196,7 @@
           + kv('上批未結', s.change.prev) + kv('本批未結', s.change.now)
           + kv('淨變化', (s.change.delta > 0 ? '+' : '') + s.change.delta)
           + kv('本週新增', s.change.new) + kv('本週解決', s.change.resolved) + '</div>') : '')
+      + cmpPrintBlock(esc)
       + '<div class="block"><b>本期概況（未結案）</b><br>'
       + kv('未結案', s.unresolved) + kv('逾期', s.overdue) + kv('如期', s.on_track)
       + kv('近期到期', s.soon) + kv('高風險未結(不含逾期、近期)', s.high_risk_only) + kv('其中高風險且逾期', s.high_risk_overdue) + '</div>'

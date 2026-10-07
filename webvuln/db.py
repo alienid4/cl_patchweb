@@ -77,6 +77,22 @@ def init_db(target_engine: Engine | None = None) -> None:
     Base.metadata.create_all(eng)
     _ensure_columns(eng)
     _migrate_rowkey(eng)
+    _backfill_changes(eng)
+
+
+def _backfill_changes(eng: Engine) -> None:
+    """變化紀錄補算：還沒跟前一批比對過的批次補一次（冪等）。失敗不影響開機。"""
+    from . import changes
+    s = Session(bind=eng, autoflush=False, expire_on_commit=False)
+    try:
+        n = changes.backfill(s)
+        if n:
+            print(f"[changes] 補算 {n} 批的變化紀錄")
+    except Exception as e:  # noqa: BLE001
+        s.rollback()
+        print(f"[changes] !! 補算失敗：{e!r}")
+    finally:
+        s.close()
 
 
 def _migrate_rowkey(eng: Engine) -> None:
