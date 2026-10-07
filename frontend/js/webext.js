@@ -1859,6 +1859,22 @@
     try { s = await jget('/api/reconcile?' + qd()); }
     catch (e) { host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無資料，請先匯入。' })); return; }
     var sum = null; try { sum = await jget('/api/summary?' + qd()); } catch (e) { }
+    // 總覽（瀏覽器端照原始列算）vs 週報（伺服器算）：四個數字要一樣（使用者 2026-10-06：數字要對得上才有說服力）
+    try {
+      var rep = await jget('/api/report?' + qd());
+      var st = global.App && global.App.getState && global.App.getState();
+      var shs = (st && st.sheets) || [];
+      var sh = curSheet(); if (sh) shs = shs.filter(function (x) { return x.name === sh; });
+      if (shs.length && global.Summary && global.Summary.overall) {
+        var ov = global.Summary.overall(shs, curDept() || '__all__').totals;
+        [['未結案', ov.open, rep.unresolved], ['已逾期', ov.overdue, rep.overdue],
+         ['近期到期（30 天內）', ov.soon, rep.soon], ['高風險未結（不含逾期、近期）', ov.high, rep.high_risk_only]].forEach(function (x) {
+          var ok = x[1] === x[2];
+          s.checks.push({ name: '總覽 ＝ 主管週報：' + x[0], a_label: '總覽', a: x[1], b_label: '主管週報', b: x[2], ok: ok });
+          if (!ok) s.all_ok = false;
+        });
+      }
+    } catch (e) { }
     // 大橫幅：全綠或有問題
     var banner = U.el('div', { style: 'padding:12px 16px;border-radius:8px;font-size:16px;font-weight:700;margin:4px 0 12px;'
       + (s.all_ok ? 'background:#e8f5e9;color:#1a7f4b;border:1px solid #1a7f4b' : 'background:#fdecea;color:#c0392b;border:1px solid #c0392b') },
