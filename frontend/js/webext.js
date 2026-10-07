@@ -499,7 +499,10 @@
     // 預設看 30 天內（含已逾期）——使用者 2026-10-06：主要目的是抓快到期的。
     // 但下鑽本身已帶到期範圍（到期倒數分桶、30/60/90 累計、逾期等）就不再疊預設，否則那一桶會被藏掉。
     var _pp = params || {};
-    if (_pp.due_min == null && _pp.due_max == null && !_pp.band) { dueOn = { overdue: true, 14: true, 30: true }; }
+    // 這幾類下鑽依定義就是「到期日還遠」（已申請處置中＝展延/例外期限通常在數月後、暫無需申請、高風險未結不含近期），
+    // 疊預設 30 天會整批藏掉（2026-10-07：已申請處置中 69 支點進去 0 筆）→ 不疊預設
+    var _farByDef = _pp.applied || _pp.not_apply || _pp.risk === 'high_only';
+    if (_pp.due_min == null && _pp.due_max == null && !_pp.band && !_farByDef) { dueOn = { overdue: true, 14: true, 30: true }; }
     var dueBar = U.el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:5px' },
       [U.el('span', { text: '到期（可複選）：', style: 'color:#6b7a73;font-size:14px' })]);
     var bAll = U.el('button', { class: 'subtab-btn', text: '全部', style: 'padding:3px 12px;font-size:14px' });
@@ -970,6 +973,8 @@
       else (mode === 'byowner' ? drawOwner : mode === 'byplugin' ? drawPlugin : drawHost)();
       updCount();
     }
+    // 保險：預設的到期篩選若把這份清單整批濾光（有資料卻 0 筆），自動改看全部，不讓人以為沒資料
+    if (Object.keys(dueOn).length && allRows.length && !allRows.some(passDue)) { dueOn = {}; paintDue(); }
     applyFilter();   // 先套預設的到期篩選再畫
     draw();
   }
