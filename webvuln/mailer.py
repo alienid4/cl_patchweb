@@ -276,7 +276,7 @@ def _weekly_body(rep: dict, dept: str, site_url: str) -> str:
         "",
         "未結案：%d　逾期：%d　高風險且逾期：%d" % (
             rep.get("unresolved", 0), rep.get("overdue", 0), rep.get("high_risk_overdue", 0)),
-        "應申請未申請：%d　已申請處置中：%d" % (
+        "應申請未申請：%d　已核准展延／例外：%d" % (
             rep.get("need_apply_count", 0), rep.get("applied_count", 0)),
         "預計完成未回報：%d　已逾自訂完成日：%d" % (
             tg.get("no_target", 0), tg.get("target_overdue", 0)),

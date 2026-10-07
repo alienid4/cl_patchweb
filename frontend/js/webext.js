@@ -494,7 +494,7 @@
     //   已逾期(<0)｜14 天內(0–14)｜30 天內(15–30)｜60 天內(31–60)｜90(61–90)｜120(91–120)｜180(121–180)｜360 天內(181–360)（使用者 2026-10-06 加後四段）
     //   各段獨立：點哪段＝只選那段，再點＝取消；要累加就多點幾段；「全部」＝清掉所有選擇
     var DUE_SEG = [['overdue', '已逾期', null, -1], [14, '14 天內', 0, 14], [30, '30 天內', 15, 30], [60, '60 天內', 31, 60],
-      [90, '90 天內', 61, 90], [120, '120 天內', 91, 120], [180, '180 天內', 121, 180], [360, '360 天內', 181, 360]];
+      [90, '90 天內', 61, 90], [120, '120 天內', 91, 120], [180, '180 天內', 121, 180], [360, '360 天內', 181, 360], [9999, '360 天以上', 361, 99999]];
     var dueOn = {};          // 段 key → true
     // 預設看 30 天內（含已逾期）——使用者 2026-10-06：主要目的是抓快到期的。
     // 但下鑽本身已帶到期範圍（到期倒數分桶、30/60/90 累計、逾期等）就不再疊預設，否則那一桶會被藏掉。
@@ -2664,10 +2664,10 @@
             { label: '高風險未結（不含逾期、近期）', value: s.high_risk_only, danger: true, drill: function () { openFindings('高風險未結（不含已逾期、近期到期）', { risk: 'high_only' }); } },
             { label: '其中高風險且逾期', value: s.high_risk_overdue, danger: true, drill: function () { openFindings('高風險且逾期', { risk: 'high', band: '已逾期' }); } },
           ]);
-          kpiCards(c, '申請面（需申請＝未申請＋已申請）', [
+          kpiCards(c, '申請面（需申請＝未申請＋已核准）', [
             { label: '需申請', value: s.apply_universe, drill: function () { openFindings('需申請母體', { apply_universe: 'true' }); } },
             { label: '應申請未申請', value: s.need_apply_count, danger: true, drill: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
-            { label: '已申請處置中', value: s.applied_count, drill: function () { openFindings('已申請處置中', { applied: 'true' }); } },
+            { label: '已核准展延／例外（期限內，仍待修補）', value: s.applied_count, drill: function () { openFindings('已核准展延／例外（期限內，仍待修補）', { applied: 'true' }); } },
             { label: '未回報預計完成日', value: s.target.no_target, danger: true, drill: function () { openFindings('未回報預計完成日', { no_target: 'true' }); } },
             { label: '待追查', value: pg.flagged || 0, danger: true, drill: function () { openFindings('待追查（聲稱申請或完成，來源未反映）', { flagged: 'true' }); } },
           ]);
@@ -2677,9 +2677,9 @@
             { label: '需申請', value: s.apply_universe, color: '#1a7f4b', onClick: function () { openFindings('需申請母體', { apply_universe: 'true' }); } },
             { label: '暫無需申請', value: notApply, color: '#b0bec5', onClick: function () { openFindings('暫無需申請（期限內）', { not_apply: 'true' }); } },
           ]);
-          stackedBar(c, '需申請 ' + s.apply_universe + '　＝　未申請 ＋ 已申請', s.apply_universe, [
+          stackedBar(c, '需申請 ' + s.apply_universe + '　＝　未申請 ＋ 已核准', s.apply_universe, [
             { label: '應申請未申請', value: s.need_apply_count, color: '#c0392b', onClick: function () { openFindings('應申請未申請', { should_apply: 'true' }); } },
-            { label: '已申請處置中', value: s.applied_count, color: '#1a7f4b', onClick: function () { openFindings('已申請處置中', { applied: 'true' }); } },
+            { label: '已核准展延／例外', value: s.applied_count, color: '#1a7f4b', onClick: function () { openFindings('已核准展延／例外（期限內，仍待修補）', { applied: 'true' }); } },
           ]);
 
           // ③ 視覺：嚴重度圓餅 + 到期倒數長條（皆可點下鑽）
@@ -2988,7 +2988,7 @@
       + kv('未結案', s.unresolved) + kv('逾期', s.overdue) + kv('如期', s.on_track)
       + kv('近期到期', s.soon) + kv('高風險未結(不含逾期、近期)', s.high_risk_only) + kv('其中高風險且逾期', s.high_risk_overdue) + '</div>'
       + '<div class="block"><b>申請進度</b><br>'
-      + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已申請處置中', s.applied_count) + '</div>'
+      + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已核准展延／例外', s.applied_count) + '</div>'
       + '<div class="block"><b>預計完成彙總</b><br>'
       + kv('已回報預計日', s.target.with_target) + kv('未回報', s.target.no_target)
       + kv('已過預計日', s.target.target_overdue) + kv('預計30天內完成', s.target.target_soon) + '</div>'
@@ -3038,7 +3038,7 @@
       + kv('未結案', s.unresolved) + kv('逾期', s.overdue) + kv('如期', s.on_track)
       + kv('近期到期', s.soon) + kv('高風險未結(不含逾期、近期)', s.high_risk_only) + kv('其中高風險且逾期', s.high_risk_overdue) + '</div>'
       + '<div class="block"><b>申請進度</b><br>'
-      + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已申請處置中', s.applied_count) + '</div>'
+      + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已核准展延／例外', s.applied_count) + '</div>'
       + '<h3>近一季未結趨勢（每次匯入）</h3>'
       + (trendRows ? ('<table><thead><tr><th>日期</th><th>未結</th><th>其中逾期</th></tr></thead><tbody>' + trendRows + '</tbody></table>') : '<p class="muted">尚無足夠歷史。</p>')
       + '<h3>本期新結案' + (close ? '（' + esc(close.new_closed) + '）' : '') + '</h3>'
