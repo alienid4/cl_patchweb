@@ -212,7 +212,8 @@
   function canWrite() { return !!(me.open_write || me.authenticated); }
   function isSuper() { return !!me.is_super; }   // AD/權限設定、SMTP、資料管理只給 Super Admin
   function isAdminRole() { return !!(me.is_super || me.role === 'dept_admin'); }   // super 或 部門窗口(可發送報告)
-  async function jget(u) { var r = await fetch(u); if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); }
+  async function jget(u) { var r = await fetch(u, { cache: 'no-store' });   // 資料一律現抓，不吃瀏覽器快取（2026-10-12 匯入後看到舊數字）
+    if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); }
   // 讀「左側目前選的部門」（沿用原本 #my-dept-select），承辦管線各面板都要吃它
   // 週報上方可另外指定部門／工作表（記在這台瀏覽器）。部門沒指定時沿用左側選單；左側選單一換就以左側為準。
   function _lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
