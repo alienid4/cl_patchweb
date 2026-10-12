@@ -180,6 +180,9 @@
         var b = await rp.json();
         showDataFile(file.name);   // 上傳新檔→右上角版本即時更新
         global.UI.toast('已存到伺服器（' + b.row_count + ' 筆）', 'success');
+        // 匯入完把開著的週報／承辦頁重抓一次（2026-10-12：匯入後頁籤還掛著舊數字 106/53/69、分解表已是新的 227，新舊混在一起）
+        _lastCompare = null;
+        refreshGov();
       } else if ((rp.status === 401 || rp.status === 403) && global.UI && global.UI.toast) {
         // 關掉免登入後，要先登入(承辦/管理員)才能把資料存進伺服器
         global.UI.toast('本機已顯示，但未存到伺服器：請先登入（承辦／管理員）再匯入', 'error');
