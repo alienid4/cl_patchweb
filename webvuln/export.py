@@ -139,3 +139,62 @@ def to_bytes(wb: Workbook) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+# ── 清單「完整匯出」：勾選／眼前那幾筆，原檔欄序、型別還原，可直接整段貼回原 Excel（2026-10-12） ──
+_DATE_RE = re.compile(r"^\s*(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[ T]00:00(?::00)?)?\s*$")
+_INT_RE = re.compile(r"^\s*-?[1-9]\d{0,14}\s*$|^\s*0\s*$")
+CASE_COLS = [("progress", "承辦_處理進度"), ("progress_state", "承辦_對帳狀態"),
+             ("target_date", "承辦_預計完成日"), ("track_note", "承辦_追蹤備註")]
+
+
+def _typed(v):
+    """原值是字串時還原型別：日期字串→真日期、純數字→整數（前導 0 的保留文字，免得編號被吃掉）。"""
+    if not isinstance(v, str):
+        return v
+    m = _DATE_RE.match(v)
+    if m:
+        try:
+            return dt.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return v
+    if _INT_RE.match(v):
+        return int(v)
+    return v
+
+
+def build_rows_workbook(session: Session, ids: list, case_info: Optional[dict] = None) -> tuple[Workbook, str]:
+    """指定的 finding（id）→ 每張來源表一頁，欄序同原檔；原檔欄之後接承辦欄。"""
+    from openpyxl.styles import Alignment, PatternFill
+    case_info = case_info or {}
+    fs = session.execute(select(Finding).where(Finding.id.in_(list(ids) or [-1])).order_by(Finding.id)).scalars().all()
+    wb = Workbook()
+    wb.remove(wb.active)
+    used: set = set()
+    by_sheet: dict = {}
+    for f in fs:
+        by_sheet.setdefault(f.sheet_key or "未分類", []).append(f)
+    no_wrap = Alignment(wrap_text=False, vertical="top")
+    case_fill = PatternFill("solid", fgColor="E2F0D9")
+    for sheet_key, rows in by_sheet.items():
+        cols = _cols_for(session, rows[0].batch_id, sheet_key, rows)
+        ws = wb.create_sheet(_safe_sheet_name(sheet_key, used))
+        ws.append(list(cols) + [h for _, h in CASE_COLS])
+        for i, c in enumerate(ws[1]):
+            c.font = Font(bold=True)
+            if i >= len(cols):
+                c.fill = case_fill
+        for f in rows:
+            raw = f.raw or {}
+            ci = case_info.get(f.id) or {}
+            vals = [_typed(raw.get(col)) for col in cols] + [ci.get(k) for k, _ in CASE_COLS]
+            ws.append(vals)
+            for c in ws[ws.max_row]:
+                c.alignment = no_wrap
+                if isinstance(c.value, dt.datetime):
+                    c.number_format = "yyyy/m/d"
+        for i, col in enumerate(list(cols) + [h for _, h in CASE_COLS], start=1):
+            ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = min(max(len(str(col)) * 2 + 2, 10), 24)
+    if not wb.sheetnames:
+        wb.create_sheet("無資料")
+    return wb, "弱點清單_完整_%s.xlsx" % dt.date.today().strftime("%Y%m%d")

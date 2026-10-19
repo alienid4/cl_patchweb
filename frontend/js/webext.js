@@ -260,22 +260,40 @@
     var v = r ? r[key] : null;
     // 處理進度存的值是「等複掃」，畫面／匯出顯示「結案申請中」（使用者 2026-10-06 改名，存值不動、舊資料免轉換）
     if (key === 'progress' && v === '等複掃') return '結案申請中';
+    // 送審中（2026-10-19）：一律標「等核准」，絕不顯示成已核准；超過送審逾時門檻加「⚠ 已 N 天」
+    if (key === 'progress' && SUBMIT_SET.indexOf(v) >= 0) {
+      return v + '（等核准）' + ((r.progress_state === '送審逾時' && r.submit_days != null) ? '⚠ 已 ' + r.submit_days + ' 天' : '');
+    }
     if (key === 'overdue_days') return (v != null && v > 0) ? String(v) : '—';
     return v == null ? '' : String(v);
   }
 
   // ⚠ 待補進度：追蹤備註有寫、處理進度沒設（2026-10-06：寫了「修補完畢」卻忘了設等複掃，狀態沒轉卻以為轉了）
-  var PROGRESS_SET = ['處理中', '要申請展延', '要申請例外', '等複掃'];
+  // 送審中（等核准）（2026-10-19）：承辦已送展延／例外申請、資安還沒核准（Excel 還沒更新）
+  var SUBMIT_SET = ['展延送審中', '例外送審中'];
+  var PROGRESS_SET = ['處理中', '要申請展延', '要申請例外', '等複掃'].concat(SUBMIT_SET);
   function noteNoProgress(r) { return !!(r && String(r.track_note || '').trim() && PROGRESS_SET.indexOf(r.progress) < 0); }
+  function isSubmitProg(r) { return !!r && SUBMIT_SET.indexOf(r.progress) >= 0; }
+  // 送審中的進度格：琥珀色（跟已核准的綠色分開，一眼看出還在等）；送審逾時加深
+  function paintSubmit(td, r) {
+    if (!isSubmitProg(r)) return td;
+    var stale = r.progress_state === '送審逾時';
+    td.style.color = stale ? '#a04a00' : '#b9770e'; td.style.fontWeight = '600';
+    td.style.background = stale ? '#ffe9cc' : '#fff6e5';
+    td.title = '承辦已送審，資安尚未核准（Excel 還沒更新）' + (r.submit_days != null ? '；已送審 ' + r.submit_days + ' 天' : '') + (stale ? '，已超過送審逾時門檻，請追' : '');
+    return td;
+  }
 
   // 一組弱點的處置統計（下鑽頂端與「依負責人」共用，同一套定義）。兩個維度分開看：
   //   ① Excel 官方階段：展延＝首次展延中；例外＝例外管理中（其餘是原始修補期限）
   //   ② 承辦處理進度（四類加起來＝總筆數）：尚未修補＝沒回報（維持原來狀態）；修補中＝處理中；
-  //      已送審＝要申請展延／例外；結案申請中＝等複掃（使用者 2026-10-06 改名；存的值仍是「等複掃」）
+  //      要申請＝要申請展延／例外；送審中（等核准）＝展延送審中／例外送審中（2026-10-19）；
+  //      結案申請中＝等複掃（使用者 2026-10-06 改名；存的值仍是「等複掃」）
   function dispoStats(rs) {
-    var st = { total: rs.length, overdue: 0, notdue: 0, orig: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, subext: 0, subexc: 0, rescan: 0, notewarn: 0 };
+    var st = { total: rs.length, overdue: 0, notdue: 0, orig: 0, ext: 0, exc: 0, todo: 0, wip: 0, sub: 0, subext: 0, subexc: 0, pend: 0, rescan: 0, notewarn: 0, pendstale: 0 };
     rs.forEach(function (r) {
       if (noteNoProgress(r)) st.notewarn++;   // 提醒用旗標，不屬於三組互斥
+      if (STAT_DEFS.pendstale.test(r)) st.pendstale++;   // 送審逾時（提醒用旗標，2026-10-19）
       // 時間（互斥，相加＝總）：逾期＝已過真正到期日；未逾期＝其餘（還在期限內／無到期日）
       if (r.overdue_days != null && r.overdue_days > 0) st.overdue++;
       else st.notdue++;
@@ -290,6 +308,7 @@
         st.sub++;
         if (r.progress === '要申請展延') st.subext++; else st.subexc++;
       }
+      else if (isSubmitProg(r)) st.pend++;
       else st.todo++;
     });
     return st;
@@ -303,14 +322,19 @@
     orig: { label: '原始修補', grp: 'stage', test: function (r) { return r.stage !== '首次展延中' && r.stage !== '例外管理中'; } },
     ext: { label: '展延', grp: 'stage', test: function (r) { return r.stage === '首次展延中'; } },
     exc: { label: '例外', grp: 'stage', test: function (r) { return r.stage === '例外管理中'; } },
-    todo: { label: '尚未修補', grp: 'prog', test: function (r) { return r.progress !== '處理中' && r.progress !== '等複掃' && r.progress !== '要申請展延' && r.progress !== '要申請例外'; } },
+    todo: { label: '尚未修補', grp: 'prog', test: function (r) { return r.progress !== '處理中' && r.progress !== '等複掃' && r.progress !== '要申請展延' && r.progress !== '要申請例外' && !isSubmitProg(r); } },
     wip: { label: '修補中', grp: 'prog', test: function (r) { return r.progress === '處理中'; } },
-    sub: { label: '送審中', grp: 'prog', test: function (r) { return r.progress === '要申請展延' || r.progress === '要申請例外'; } },
+    sub: { label: '要申請展延／例外', grp: 'prog', test: function (r) { return r.progress === '要申請展延' || r.progress === '要申請例外'; } },
     rescan: { label: '結案申請中', grp: 'prog', test: function (r) { return r.progress === '等複掃'; } },
-    subext: { label: '展延送審', grp: 'prog', test: function (r) { return r.progress === '要申請展延'; } },
-    subexc: { label: '例外送審', grp: 'prog', test: function (r) { return r.progress === '要申請例外'; } },
+    // 2026-10-19：原標「展延送審／例外送審」改回「要申請展延／例外」，避免跟真正的「送審中（等核准）」搞混
+    subext: { label: '要申請展延', grp: 'prog', test: function (r) { return r.progress === '要申請展延'; } },
+    subexc: { label: '要申請例外', grp: 'prog', test: function (r) { return r.progress === '要申請例外'; } },
+    pend: { label: '送審中（等核准）', grp: 'prog', test: isSubmitProg },
     notewarn: { label: '⚠ 待補進度', grp: 'warn', test: noteNoProgress },
+    pendstale: { label: '⚠ 送審逾時', grp: 'warn', test: function (r) { return isSubmitProg(r) && r.progress_state === '送審逾時'; } },
   };
+  // 承辦進度互斥各類（相加＝總）；依負責人／依弱點表的欄、統計膠囊都用這份（2026-10-19 加送審中）
+  var PROG_COL_KEYS = ['todo', 'wip', 'subext', 'subexc', 'pend', 'rescan'];
 
   // 表格儲存格：Excel 有填但備註沒有申請紀錄的展延上限／例外核准期限＝不算數，標灰並說明
   // （使用者 2026-10-05：看得出是原始資料的問題，不會誤以為已經展延）
@@ -340,6 +364,10 @@
     if (key === 'progress' && noteNoProgress(r)) {
       td.textContent = '⚠ 未設'; td.style.color = '#b9770e'; td.style.fontWeight = '600';
       td.title = '追蹤備註有寫（' + String(r.track_note).slice(0, 40) + '），但處理進度沒設——狀態還是「尚未修補」。點 ✏️ 補上（做完了就設「結案申請中」）';
+    }
+    if (key === 'progress') paintSubmit(td, r);
+    if (key === 'progress_state' && (r.progress_state === '等核准' || r.progress_state === '送審逾時')) {
+      td.style.color = r.progress_state === '送審逾時' ? '#a04a00' : '#b9770e'; td.style.fontWeight = '600';
     }
     return td;
   }
@@ -446,7 +474,7 @@
   }
 
   // 下鑽：開視窗顯示 /api/findings 篩出的明細（可排序、可匯出此清單）
-  async function openFindings(title, params) {
+  async function openFindings(title, params, keep) {   // keep＝重開時保留的畫面狀態（存檔後刷新不要把人踢回原點）
     var box = U.el('div');
     var cols = [['host', '主機'], ['owner', '負責人'], ['severity', '嚴重度'], ['name', '弱點'],
       ['plugin_id', 'Plugin'], ['remediation_due', '原始期限'], ['first_extension_due', '展延上限'], ['exception_due', '例外核准期限'], ['effective_due', '到期日'], ['remark', '備註(Excel)'], ['overdue_days', '逾期天數'],
@@ -480,7 +508,12 @@
     }
     cols = withNote(cols);
     curRows = rows;
-    var self = function () { openFindings(title, params); };
+    // 存檔／批次套用後的刷新：保留搜尋字、到期篩選、檢視方式、統計下鑽、捲動位置（2026-10-12 使用者：容易跳出）
+    var self = function () {
+      var mb = document.getElementById('modal-body');
+      openFindings(title, params, { q: qInput.value, dueOn: Object.assign({}, dueOn), mode: mode, statKey: statKey,
+        scroll: mb ? mb.scrollTop : 0 });
+    };
     function nPluginOf(rs) { var s = {}; rs.forEach(function (r) { s[(r.plugin_id || '') + '|' + (r.name || '')] = 1; }); return Object.keys(s).length; }
     ensureDrillMaxStyle();
     var _mEl = document.querySelector('#modal-overlay .modal'); if (_mEl) _mEl.classList.add('wx-drillmax');   // 下鑽放到接近滿版
@@ -753,21 +786,23 @@
       var keys = Object.keys(groups).sort(function (a, b) { return groups[b].length - groups[a].length; });
       var BLH = ';border-left:2px solid #1a7f4b', BLB = ';border-left:2px solid #e3ebe7', BLT = ';border-left:2px solid #ccd9d1';
       var lead = (writable ? 1 : 0) + 3;   // 選?＋負責人＋部門＋總筆數
+      // 承辦進度欄（互斥，相加＝總筆數）；欄位順序、可點下鑽的格位置都從這份清單算，不再寫死欄號（2026-10-19 加送審中）
+      var OWNER_PROG = PROG_COL_KEYS;
       var table = U.el('table', { class: 'tracking-table' });
       // 第一列：分組標題（時間／處置階段／承辦進度）
       var GH = ';color:#fff;font-weight:700;font-size:13px;background:#0f5f35';   // 分組標題：白字＋深綠底（彩字在綠底上看不到）
       var ghr = U.el('tr', {}, [
         U.el('th', { colspan: String(lead), style: GH.slice(1) }),
         U.el('th', { text: '時間（互斥）', colspan: '2', style: GH.slice(1) + ';border-left:2px solid #fff' }),
-        U.el('th', { text: '承辦進度（互斥）', colspan: '5', style: GH.slice(1) + ';border-left:2px solid #fff' }),
+        U.el('th', { text: '承辦進度（互斥）', colspan: String(OWNER_PROG.length), style: GH.slice(1) + ';border-left:2px solid #fff' }),
         U.el('th', { style: GH.slice(1) }),
       ]);
       // 第二列：欄名
       function th(t, bl) { return U.el('th', { text: t, style: bl || '' }); }
       var hr = U.el('tr', {}, (writable ? [th('選')] : []).concat([
         th('負責人'), th('部門'), th('總筆數'),
-        th('逾期', BLH.slice(1)), th('未逾期'),
-        th('尚未修補', BLH.slice(1)), th('修補中'), th('展延送審'), th('例外送審'), th('結案申請中'),
+        th('逾期', BLH.slice(1)), th('未逾期')]).concat(
+        OWNER_PROG.map(function (k, i) { return th(STAT_DEFS[k].label, i === 0 ? BLH.slice(1) : ''); })).concat([
         th('附件')]));
       table.appendChild(U.el('thead', {}, [ghr, hr]));
       var tb = U.el('tbody');
@@ -776,7 +811,7 @@
         ['stage', '處置階段'], ['progress', '處理進度'], ['progress_state', '對帳狀態'],
         ['target_date', '預計完成日'], ['track_note', '追蹤備註']];
       icols = withNote(icols);
-      var colspanAll = lead + 2 + 5 + 1;   // 全表欄數（給明細展開列用）：時間2＋承辦5＋附件1
+      var colspanAll = lead + 2 + OWNER_PROG.length + 1;   // 全表欄數（給明細展開列用）：時間2＋承辦N＋附件1
       function numTd(n, extra) { return U.el('td', { text: n ? String(n) : '—', style: (n ? 'font-weight:600' : 'color:#9aa5a0') + (extra || '') }); }
       keys.forEach(function (k) {
         var grp = groups[k], r0 = grp[0];
@@ -786,21 +821,23 @@
         var nameTd = U.el('td', { text: '▸ ' + k, style: 'font-weight:600;color:#1a7f4b;cursor:pointer;text-align:left;min-width:120px' });
         var cells = [];
         if (writable) cells.push(U.el('td', {}, [groupCb(grp.map(function (x) { return x.id; }))]));
+        var wire = {};   // 統計鍵 → 該格（可點下鑽）；直接記格子，不靠欄號
+        wire.overdue = U.el('td', { text: od ? String(od) : '—', style: (od ? 'color:#c0392b;font-weight:600' : 'color:#9aa5a0') + BLB });
+        wire.notdue = numTd(ds.notdue);
+        OWNER_PROG.forEach(function (pk) {
+          wire[pk] = pk === 'todo'
+            ? U.el('td', { text: ds.todo ? String(ds.todo) : '—', style: (ds.todo ? 'font-weight:600;color:#b9770e' : 'color:#9aa5a0') + BLB })
+            : numTd(ds[pk], pk === 'pend' && ds.pend ? ';color:#b9770e' : '');
+        });
         cells = cells.concat([nameTd,
           U.el('td', { text: r0.department || '' }),
           U.el('td', { text: String(grp.length), style: 'font-weight:700' }),
-          U.el('td', { text: od ? String(od) : '—', style: (od ? 'color:#c0392b;font-weight:600' : 'color:#9aa5a0') + BLB }),
-          numTd(ds.notdue),
-          U.el('td', { text: ds.todo ? String(ds.todo) : '—', style: (ds.todo ? 'font-weight:600;color:#b9770e' : 'color:#9aa5a0') + BLB }),
-          numTd(ds.wip), numTd(ds.subext), numTd(ds.subexc), numTd(ds.rescan),
+          wire.overdue, wire.notdue]).concat(OWNER_PROG.map(function (pk) { return wire[pk]; })).concat([
           U.el('td', { text: att ? ('📎' + att) : '' })]);
         var head = U.el('tr', { style: 'cursor:pointer' }, cells);
         var fd = filterableDetail(grp, icols, colspanAll, function (open) { nameTd.textContent = (open ? '▾ ' : '▸ ') + k; });
         // 數字格可點＝展開時只看那一類（使用者 2026-10-06：點 31 就只看那 31 筆）
-        var off = writable ? 1 : 0;
-        [['overdue', 3], ['notdue', 4], ['todo', 5], ['wip', 6], ['subext', 7], ['subexc', 8], ['rescan', 9]].forEach(function (p) {
-          fd.wireCell(cells[off + p[1]], p[0]);
-        });
+        Object.keys(wire).forEach(function (sk) { fd.wireCell(wire[sk], sk); });
         head.addEventListener('click', fd.toggleAll);
         if (autoExpand()) fd.open(null);
         head.classList.add('wx-pgu'); head._detail = fd.detail;
@@ -816,8 +853,8 @@
         U.el('td', { text: '總計', style: 'font-weight:700' }),
         U.el('td', {}),
         U.el('td', { text: String(T.total), style: 'font-weight:700' }),
-        totTd(T.overdue, BLT, true), totTd(T.notdue),
-        totTd(T.todo, BLT), totTd(T.wip), totTd(T.subext), totTd(T.subexc), totTd(T.rescan),
+        totTd(T.overdue, BLT, true), totTd(T.notdue)]).concat(
+        OWNER_PROG.map(function (pk, i) { return totTd(T[pk], i === 0 ? BLT : ''); })).concat([
         U.el('td', { text: attT ? ('📎' + attT) : '', style: 'font-weight:700' })]);
       tb.appendChild(U.el('tr', { style: 'background:#f0f6f3;border-top:2px solid #1a7f4b' }, totCells));
       table.appendChild(tb); listBox.appendChild(table); listBox.appendChild(pager(table));
@@ -859,7 +896,7 @@
           stage: r0.stage || '', plugin: r0.plugin_id || '', ds: dispoStats(grp) };
       });
       // 承辦進度各類筆數攤平到聚合值上，表頭可直接點來排序
-      var PROG_KEYS = ['todo', 'wip', 'subext', 'subexc', 'rescan'];
+      var PROG_KEYS = PROG_COL_KEYS;
       aggs.forEach(function (a) { PROG_KEYS.forEach(function (k) { a[k] = a.ds[k]; }); });
       aggs.sort(function (a, b) {
         var kf = _pSort.key, va = a[kf], vb = b[kf];
@@ -869,8 +906,8 @@
       var table = U.el('table', { class: 'tracking-table' });
       // 可排序表頭：[顯示字, 排序鍵]；點擊切換升降序
       var HEADS = [['弱點', 'name'], ['Plugin', 'plugin'], ['嚴重度', 'sev'], ['台數', 'count'],
-        ['原始期限', 'origMin'], ['到期日', 'effMin'], ['處置階段', 'stage'], ['其中逾期', 'od'],
-        ['尚未修補', 'todo'], ['修補中', 'wip'], ['展延送審', 'subext'], ['例外送審', 'subexc'], ['結案申請中', 'rescan']];
+        ['原始期限', 'origMin'], ['到期日', 'effMin'], ['處置階段', 'stage'], ['其中逾期', 'od']].concat(
+        PROG_KEYS.map(function (k) { return [STAT_DEFS[k].label, k]; }));
       var NUM_SORT = ['count', 'sev', 'od'].concat(PROG_KEYS);   // 數字欄預設多→少
       var BLH = 'border-left:2px solid #1a7f4b', BLB = ';border-left:2px solid #e3ebe7';
       // 第一列分組標題（跟「依負責人」同一套：承辦進度互斥，五欄相加＝台數）
@@ -893,9 +930,12 @@
       });
       table.appendChild(U.el('thead', {}, [ghr, htr]));
       function numTd(n, extra) { return U.el('td', { text: n ? String(n) : '—', style: (n ? 'font-weight:600' : 'color:#9aa5a0') + (extra || '') }); }
-      function progTds(ds) {
-        return [U.el('td', { text: ds.todo ? String(ds.todo) : '—', style: (ds.todo ? 'font-weight:600;color:#b9770e' : 'color:#9aa5a0') + BLB }),
-          numTd(ds.wip), numTd(ds.subext), numTd(ds.subexc), numTd(ds.rescan)];
+      function progTds(ds) {   // 跟 PROG_KEYS 同順序
+        return PROG_KEYS.map(function (pk) {
+          return pk === 'todo'
+            ? U.el('td', { text: ds.todo ? String(ds.todo) : '—', style: (ds.todo ? 'font-weight:600;color:#b9770e' : 'color:#9aa5a0') + BLB })
+            : numTd(ds[pk], pk === 'pend' && ds.pend ? ';color:#b9770e' : '');
+        });
       }
       var pColspan = HEADS.length + (writable ? 1 : 0);
       var tb = U.el('tbody');
@@ -909,21 +949,22 @@
         var nameTd = U.el('td', { text: '▸ ' + a.name, title: a.name, style: 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px;font-weight:600;color:#1a7f4b;cursor:pointer;min-width:240px;text-align:left' });
         var pcells = [];
         if (writable) pcells.push(U.el('td', {}, [groupCb(grp.map(function (x) { return x.id; }))]));
+        var odTd = U.el('td', { text: a.od ? String(a.od) : '—', style: a.od ? 'color:#c0392b;font-weight:600' : '' });
+        var ptds = progTds(a.ds);
         pcells = pcells.concat([nameTd,
           U.el('td', { text: a.plugin }), U.el('td', { text: r0.severity || '' }),
           U.el('td', { text: String(a.count), style: 'font-weight:700' }),
           U.el('td', { text: a.origTxt }), U.el('td', { text: a.effTxt }), U.el('td', { text: a.stage }),
-          U.el('td', { text: a.od ? String(a.od) : '—', style: a.od ? 'color:#c0392b;font-weight:600' : '' })].concat(progTds(a.ds)));
+          odTd].concat(ptds));
         pcells.forEach(function (td) { td.style.whiteSpace = 'nowrap'; });   // 日期、階段不折行
         var head = U.el('tr', { style: 'cursor:pointer' }, pcells);
         // 展開：這個弱點影響的主機；展開時名稱整段顯示（折行），收合回一行截斷（使用者 2026-10-06：點了要看得到全名）
         function nameState(open) { nameTd.textContent = (open ? '▾ ' : '▸ ') + a.name; nameTd.style.whiteSpace = open ? 'normal' : 'nowrap'; }
         var fd = filterableDetail(grp, icols, pColspan, nameState);
         // 其中逾期＋承辦進度五欄可點＝只看那一類
-        var off = writable ? 1 : 0;
-        [['overdue', 7], ['todo', 8], ['wip', 9], ['subext', 10], ['subexc', 11], ['rescan', 12]].forEach(function (p) {
-          fd.wireCell(pcells[off + p[1]], p[0]);
-        });
+        // 直接拿格子接，不靠欄號（2026-10-19：加了送審中一欄，寫死的欄號會整排錯位）
+        fd.wireCell(odTd, 'overdue');
+        PROG_KEYS.forEach(function (pk, i) { fd.wireCell(ptds[i], pk); });
         head.addEventListener('click', fd.toggleAll);
         if (autoExpand()) fd.open(null);
         head.classList.add('wx-pgu'); head._detail = fd.detail;
@@ -947,8 +988,8 @@
     // 統計分組顯示（時間旗標／處置階段互斥／承辦進度互斥），每個數字可點＝下鑽只看那類
     var STAT_GROUPS = [
       { title: '時間（互斥）', color: '#a3342d', keys: ['overdue', 'notdue'] },
-      { title: '承辦進度（互斥）', color: '#1a7f4b', keys: ['todo', 'wip', 'subext', 'subexc', 'rescan'] },
-      { title: '提醒', color: '#b9770e', keys: ['notewarn'], hideZero: true },   // 備註有寫、進度沒設（另一把尺，不跟上面相加）
+      { title: '承辦進度（互斥）', color: '#1a7f4b', keys: PROG_COL_KEYS },
+      { title: '提醒', color: '#b9770e', keys: ['notewarn', 'pendstale'], hideZero: true },   // 備註有寫、進度沒設；送審逾時（另一把尺，不跟上面相加）
     ];
     function renderStats(st) {
       statsEl.innerHTML = '';
@@ -965,7 +1006,7 @@
           var chip = U.el('span', { title: '點我只看「' + STAT_DEFS[key].label + '」（再點取消）',
             style: 'display:inline-flex;gap:4px;align-items:baseline;padding:3px 10px;border:1px solid ' + (active ? g.color : '#dfe8e3') + ';border-radius:999px;cursor:pointer;background:' + (active ? g.color : '#f7faf8') }, [
             U.el('span', { text: STAT_DEFS[key].label, style: 'font-size:13.5px;color:' + (active ? '#fff' : '#6b7a73') }),
-            U.el('b', { text: String(st[key]), style: 'font-size:15px;color:' + (active ? '#fff' : (key === 'overdue' ? '#c0392b' : key === 'notewarn' ? '#b9770e' : '#2a3430')) })]);
+            U.el('b', { text: String(st[key]), style: 'font-size:15px;color:' + (active ? '#fff' : (key === 'overdue' ? '#c0392b' : (key === 'notewarn' || key === 'pendstale') ? '#b9770e' : '#2a3430')) })]);
           chip.addEventListener('click', function () { statKey = (statKey === key) ? null : key; draw(); });
           statsEl.appendChild(chip);
         });
@@ -992,12 +1033,21 @@
     }
     // 保險：預設的到期篩選若把這份清單整批濾光（有資料卻 0 筆），自動改看全部，不讓人以為沒資料
     if (Object.keys(dueOn).length && allRows.length && !allRows.some(passDue)) { dueOn = {}; paintDue(); }
+    if (keep) {   // 刷新：還原剛才的畫面
+      dueOn = keep.dueOn || {}; paintDue();
+      if (keep.q) { qInput.value = keep.q; fitQ(); }
+      if (keep.statKey && STAT_DEFS[keep.statKey]) statKey = keep.statKey;
+      if (keep.mode) { mode = keep.mode; [bO, bP, bH].forEach(function (b) { b.classList.remove('active'); });
+        ({ byowner: bO, byplugin: bP, byhost: bH }[mode] || bO).classList.add('active'); }
+    }
     applyFilter();   // 先套預設的到期篩選再畫
     draw();
+    if (keep && keep.scroll) { var _mb = document.getElementById('modal-body'); if (_mb) _mb.scrollTop = keep.scroll; }
   }
 
   var PROGRESS_OPTS = [['', '（不變）'], ['處理中', '處理中'], ['要申請展延', '要申請展延'],
-    ['要申請例外', '要申請例外'], ['等複掃', '結案申請中'], ['__clear__', '清除進度']];
+    ['要申請例外', '要申請例外'], ['展延送審中', '展延送審中（等核准）'], ['例外送審中', '例外送審中（等核准）'],
+    ['等複掃', '結案申請中'], ['__clear__', '清除進度']];
 
   // 批次改狀態：對已勾選 N 筆套同一組疊加欄（負責人／部門／進度／預計完成日／備註）。詳細預覽後才套。
   function openBatchStatus(ids, onDone) {
@@ -1029,7 +1079,12 @@
       var changes = [];
       if (fOwner.use.checked) { body.set_owner = true; body.owner = fOwner.el.value.trim(); changes.push('負責人 → ' + (body.owner || '（清除）')); }
       if (fDept.use.checked) { body.set_department = true; body.department = fDept.el.value.trim(); changes.push('部門 → ' + (body.department || '（清除）')); }
-      if (fProg.use.checked) { body.set_progress = true; body.progress = progSel.value === '__clear__' ? '' : progSel.value; changes.push('處理進度 → ' + (body.progress || '（清除）')); }
+      // 下拉停在「（不變）」＝不改（2026-10-19：原本勾了就送空字串，等於把進度清掉）；只有「清除進度」才清
+      if (fProg.use.checked && progSel.value) {
+        body.set_progress = true; body.progress = progSel.value === '__clear__' ? '' : progSel.value;
+        var _po = PROGRESS_OPTS.filter(function (o) { return o[0] === progSel.value; })[0];
+        changes.push('處理進度 → ' + (body.progress ? (_po ? _po[1] : body.progress) : '（清除）'));
+      }
       if (fTarget.use.checked) { body.set_target = true; body.target_date = fTarget.el.value; changes.push('預計完成日 → ' + (body.target_date || '（清除）')); }
       if (fNote.use.checked) { body.set_note = true; body.note = fNote.el.value; changes.push('追蹤備註 → ' + (body.note || '（清除）')); }
       return { body: body, changes: changes };
@@ -1176,6 +1231,8 @@
       U.el('option', { value: '處理中', text: '處理中（修補中）' }),
       U.el('option', { value: '要申請展延', text: '要申請展延（第一次做不完）' }),
       U.el('option', { value: '要申請例外', text: '要申請例外（展延後還做不完）' }),
+      U.el('option', { value: '展延送審中', text: '展延送審中（等核准）（已送資安、Excel 還沒更新）' }),
+      U.el('option', { value: '例外送審中', text: '例外送審中（等核准）（已送資安、Excel 還沒更新）' }),
       U.el('option', { value: '等複掃', text: '結案申請中（承辦回報做完、等資安複掃確認結案）' }),
     ]);
     progress.value = row.progress || '';
@@ -1194,13 +1251,20 @@
     ]);
     // 申請佐證文件（展延／例外的 WBS、理由說明…）
     var attHint = U.el('p', { class: 'empty-hint', style: 'color:#c0392b;margin:0 0 4px' });
-    function updAttHint() { attHint.textContent = (progress.value === '要申請展延' || progress.value === '要申請例外') ? '⚠ 要申請展延／例外：請附上 WBS 或展延理由說明等佐證文件。' : ''; }
+    function updAttHint() {
+      var v = progress.value;
+      attHint.textContent = (v === '要申請展延' || v === '要申請例外') ? '⚠ 要申請展延／例外：請附上 WBS 或展延理由說明等佐證文件。'
+        : (SUBMIT_SET.indexOf(v) >= 0) ? '⚠ 送審中（等核准）：資安核准前到期日不變、仍算未結／逾期；請附上已送出的申請單或 iForm 截圖。資安 Excel 更新後系統會自動解除。' : '';
+    }
     progress.addEventListener('change', updAttHint); updAttHint();
     // 防呆：這筆已在首次展延中又選「要申請展延」→ 展延只能一次，下一步應申請例外（使用者 2026-10-06）
+    // 送審中比照要申請（2026-10-19）：展延送審中≈要申請展延、例外送審中≈要申請例外
     var stageHint = U.el('div', { style: 'display:none;margin:-6px 0 12px;padding:8px 10px;border:1px solid #f0c27b;background:#fff8ec;border-radius:6px;font-size:13.5px;text-align:left' });
     function stageConflict() {
-      if (progress.value === '要申請展延' && row.stage === '首次展延中') return 'ext';
-      if ((progress.value === '要申請展延' || progress.value === '要申請例外') && row.stage === '例外管理中') return 'exc';
+      var v = progress.value;
+      var isExt = v === '要申請展延' || v === '展延送審中', isExc = v === '要申請例外' || v === '例外送審中';
+      if (isExt && row.stage === '首次展延中') return 'ext';
+      if ((isExt || isExc) && row.stage === '例外管理中') return 'exc';
       return '';
     }
     function updStageHint() {
@@ -1208,9 +1272,10 @@
       if (!c) { stageHint.style.display = 'none'; return; }
       stageHint.style.display = 'block';
       if (c === 'ext') {
+        var toExc = progress.value === '展延送審中' ? '例外送審中' : '要申請例外';
         stageHint.appendChild(U.el('span', { text: '⚠ 這筆已在「首次展延中」（Excel 已有展延紀錄）。展延只能一次，下一步應申請例外。 ', style: 'color:#9a5b00;font-weight:600' }));
-        var fix = U.el('button', { class: 'btn btn-primary btn-sm', text: '改成「要申請例外」' });
-        fix.addEventListener('click', function () { progress.value = '要申請例外'; updAttHint(); updStageHint(); });
+        var fix = U.el('button', { class: 'btn btn-primary btn-sm', text: '改成「' + toExc + '」' });
+        fix.addEventListener('click', function () { progress.value = toExc; updAttHint(); updStageHint(); });
         stageHint.appendChild(fix);
       } else {
         stageHint.appendChild(U.el('span', { text: '⚠ 這筆已在「例外管理中」（Excel 已有例外紀錄），通常不需要再申請。確定的話照常存檔即可。', style: 'color:#9a5b00;font-weight:600' }));
@@ -1251,7 +1316,7 @@
       }
       if (stageConflict() === 'ext' && !_stageAck) {
         _stageAck = true; updStageHint(); stageHint.scrollIntoView({ block: 'nearest' });
-        UI.toast('這筆已在展延中，建議改成「要申請例外」；確定要照原樣存，再按一次存檔', 'error');
+        UI.toast('這筆已在展延中，建議改成「' + (progress.value === '展延送審中' ? '例外送審中' : '要申請例外') + '」；確定要照原樣存，再按一次存檔', 'error');
         return;
       }
       if (String(note.value || '').trim() && !progress.value) { showWarn(); return; }
@@ -2507,9 +2572,15 @@
     box.appendChild(U.el('div', { style: 'margin:8px 0 6px;font-weight:700;color:#1a7f4b' }, [U.el('span', { text: '登入有效時數' })]));
     var ttl = U.el('input', { type: 'number', min: '1', max: '720', value: String(cfg.session_ttl_hours || 12) }); ttl.style.cssText = FS;
     box.appendChild(U.el('div', { style: 'display:flex;gap:10px;align-items:center' }, [ttl, U.el('span', { class: 'empty-hint', style: 'margin:0', text: '小時（改完只影響「新登入」；1～720）' })]));
+    // 送審逾時門檻（2026-10-19）：送審中（等核准）超過幾天資安還沒核准，就標「送審逾時」並列入待追查
+    box.appendChild(U.el('div', { style: 'margin:14px 0 6px;font-weight:700;color:#1a7f4b' }, [U.el('span', { text: '送審逾時天數' })]));
+    var stale = U.el('input', { type: 'number', min: '1', max: '180', value: String(cfg.submit_stale_days || 14) }); stale.style.cssText = FS;
+    box.appendChild(U.el('div', { style: 'display:flex;gap:10px;align-items:center' }, [stale, U.el('span', { class: 'empty-hint', style: 'margin:0', text: '天（送審中超過這麼多天資安仍未核准 → 標「送審逾時」、列入待追查；1～180，預設 14）' })]));
     var save = U.el('button', { class: 'btn btn-primary btn-sm', text: '儲存', style: 'margin-top:8px' });
     save.addEventListener('click', async function () {
-      var r = await fetch('/api/general-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_ttl_hours: parseInt(ttl.value, 10) || 12 }) });
+      var r = await fetch('/api/general-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_ttl_hours: parseInt(ttl.value, 10) || 12, submit_stale_days: parseInt(stale.value, 10) || 14 }) });
+      if (r.ok) { var j = await r.json().catch(function () { return null; }); if (j) { ttl.value = String(j.session_ttl_hours); stale.value = String(j.submit_stale_days); } }
       UI.toast(r.ok ? '已儲存' : '儲存失敗', r.ok ? 'success' : 'error');
     });
     box.appendChild(save);
@@ -2704,6 +2775,10 @@
           ]);
           // 需申請／應申請未申請／已核准 已在最上面的分解表，這裡只留表上沒有的
           kpiCards(c, '申請追蹤', [
+            // 送審中（等核准）（2026-10-19）：承辦已送、資安還沒核准；送審逾時＝超過門檻天數仍沒核准
+            { label: '送審中（等核准）', value: s.submitted_count || 0, drill: function () { openFindings('送審中（等核准）', { submitted: 'true' }); } },
+            { label: '其中送審逾時（超過 ' + (s.submit_stale_days || 14) + ' 天）', value: s.submitted_stale_count || 0, danger: true,
+              drill: function () { openFindings('送審逾時（送審超過 ' + (s.submit_stale_days || 14) + ' 天，資安仍未核准）', { submitted: 'true', _stat: 'pendstale' }); } },
             { label: '未回報預計完成日', value: s.target.no_target, danger: true, drill: function () { openFindings('未回報預計完成日', { no_target: 'true' }); } },
             { label: '待追查', value: pg.flagged || 0, danger: true, drill: function () { openFindings('待追查（聲稱申請或完成，來源未反映）', { flagged: 'true' }); } },
             // 原「處理進度」那排併進來（2026-10-07：展延送審等四格跟分解表重複，拿掉）
@@ -2756,8 +2831,14 @@
       { label: '應申請未申請（' + s.need_apply_list.length + '）', render: function (c) {
           listTab(c, '應申請未申請清單', s.need_apply_list);
       } },
-      { label: '要申請·送審中（' + (s.apply_intent_list || []).length + '）', render: function (c) {
-          listTab(c, '要申請·送審中（已標註申請，來源尚未反映）', s.apply_intent_list || []);
+      { label: '要申請（' + (s.apply_intent_list || []).length + '）', render: function (c) {
+          listTab(c, '要申請展延／例外（已標註要申請，來源尚未反映）', s.apply_intent_list || []);
+      } },
+      // 送審中（等核准）（2026-10-19）：承辦已送資安、Excel 還沒更新；送審逾時的排前面
+      { label: '送審中（等核准）（' + (s.submitted_list || []).length + '）', render: function (c) {
+          c.appendChild(U.el('p', { class: 'empty-hint', text: '承辦已送出展延／例外申請，資安還沒核准（Excel 未更新）。到期日不變、仍算未結／逾期；資安 Excel 更新後匯入時自動解除。送審超過 '
+            + (s.submit_stale_days || 14) + ' 天標「送審逾時」（目前 ' + (s.submitted_stale_count || 0) + ' 筆），並列入待追查。' }));
+          listTab(c, '送審中（等核准）', s.submitted_list || []);
       } },
       { label: '待追查（' + (s.flagged_list || []).length + '）', render: function (c) {
           listTab(c, '待追查清單（聲稱申請或完成，來源未反映）', s.flagged_list || []);
@@ -2943,9 +3024,13 @@
     node('not', '暫無需申請（期限內）', 'n-not', 'not');
     node('sa', '應申請未申請', 'n-sa', 'sa');
     node('app', '已核准展延／例外', 'n-app', 'app', '資安已核准、到那天期限還沒到；仍待修補');
+    // 送審中（等核准）（2026-10-19）：承辦已送資安、Excel 還沒更新；不是已核准，到期日不變
+    node('sub', '送審中（等核准）', 'n-sub', 'sub', '承辦已送出展延／例外申請，資安還沒核准（Excel 未更新）；到期日不變、仍算未結');
+    var subNote = U.el('div', { class: 'wx-node-note' }); NODES.sub.appendChild(subNote);
     // 應申請未申請底下註明「其中例外／展延已到期」：時間推過例外期限，就失去例外管理
     var saNote = U.el('div', { class: 'wx-node-note' }); NODES.sa.appendChild(saNote);
-    var KS = ['todo', 'wip', 'subext', 'subexc', 'rescan'];
+    // 應申請未申請的承辦進度細分（送審中的列已不在應申請未申請，所以沒有 pend 這格）
+    var KS = PROG_COL_KEYS.filter(function (k) { return k !== 'pend'; });
     KS.forEach(function (k, i) { node(k, STAT_DEFS[k].label, 'n-leaf' + (k === 'todo' ? ' n-todo' : ''), 'p' + i); });
     // 拉霸：0–365 天（使用者 2026-10-07 概念圖），拖拉即時重算上面的分解數字
     var rng = U.el('input', { type: 'range', min: '0', max: '365', step: '1', value: String(H), class: 'wx-hz-range' });
@@ -2977,19 +3062,24 @@
       if (!rows) return;
       var today = new Date(); today.setHours(0, 0, 0, 0);
       var LEAD = 30;   // 申請提前期：到期前 30 天就該申請（同後端 lead_days 預設）
-      var c = { root: 0, need: 0, not: 0, sa: 0, app: 0, exp: 0 };
+      var c = { root: 0, need: 0, not: 0, sa: 0, app: 0, exp: 0, sub: 0, stale: 0 };
       var saRows = [];
       rows.forEach(function (r) {
         c.root++;
         var ap = r.stage === '例外管理中' || r.stage === '首次展延中';
         var dd = r.effective_due ? Math.round((new Date(r.effective_due + 'T00:00:00') - today) / 86400000) : null;
-        var sa = false;
+        var sa = false, apv = false;
         if (ap) {
-          if (dd != null && dd < H) { sa = true; c.exp++; }   // 到那天例外／展延已到期
-          else c.app++;
+          if (dd != null && dd < H) sa = true;   // 到那天例外／展延已到期
+          else { apv = true; c.app++; }
         } else if (r.stage === '原始修補期限' && dd != null && dd - LEAD <= H) sa = true;   // 到那天已過申請時機
-        if (sa) { c.sa++; saRows.push(r); }
-        if (ap || sa) c.need++; else c.not++;
+        // 送審中（等核准）：標了送審中、且到那天不是有效的已核准 → 自己一類，不算應申請未申請
+        // （含核准已過期、承辦已送續申請的列；同後端 query.apply_bucket，2026-10-19）。
+        // 所以應申請未申請(saRows)裡不會有送審中的列，底下五個葉子相加＝應申請未申請。
+        var sub = !apv && isSubmitProg(r);
+        if (sub) { c.sub++; if (r.progress_state === '送審逾時') c.stale++; }
+        else if (sa) { c.sa++; saRows.push(r); if (ap) c.exp++; }
+        if (apv || sa || sub) c.need++; else c.not++;
       });
       var st = dispoStats(saRows);
       var day = new Date(today.getTime() + H * 86400000);
@@ -3001,12 +3091,14 @@
       set('not', c.not, function () { openFindings('暫無需申請' + lb, Object.assign({ not_apply: 'true' }, hp)); });
       set('sa', c.sa, function () { openFindings('應申請未申請' + lb, Object.assign({ should_apply: 'true' }, hp)); });
       set('app', c.app, function () { openFindings('已核准展延／例外' + lb, Object.assign({ applied: 'true' }, hp)); });
+      set('sub', c.sub, function () { openFindings('送審中（等核准）' + lb, Object.assign({ submitted: 'true' }, hp)); });
+      subNote.textContent = c.stale ? '其中送審逾時 ' + c.stale : '';
       saNote.textContent = c.exp ? '其中例外／展延已到期 ' + c.exp : '';
       KS.forEach(function (k) {
         set(k, st[k], function () { openFindings('應申請未申請・' + STAT_DEFS[k].label + lb, Object.assign({ should_apply: 'true', _stat: k }, hp)); });
       });
       NODES.not.title = '到 ' + ds + ' 還沒進入申請時機（到期前 30 天）';
-      NODES.need.title = '到 ' + ds + ' 需要處理：已過申請時機、或例外／展延（含已到期的）';
+      NODES.need.title = '到 ' + ds + ' 需要處理：已過申請時機、送審中（等核准）、或例外／展延（含已到期的）';
     }
     function upd() {
       H = parseInt(rng.value, 10); hzVal.textContent = String(H);
@@ -3025,8 +3117,8 @@
     st.textContent =
       '.wx-tree-wrap{margin:6px 0 16px}' +
       '.wx-tree-cap{font-weight:700;color:#0f5f35;font-size:15px;margin:0 0 8px;padding-left:8px;border-left:4px solid #1a7f4b}' +
-      '.wx-tree{display:grid;gap:8px;grid-template-columns:repeat(5,minmax(90px,1fr)) minmax(150px,1.3fr) minmax(150px,1.3fr);' +
-      'grid-template-areas:"root root root root root root root" "need need need need need need not" "sa sa sa sa sa app not" "p0 p1 p2 p3 p4 app not"}' +
+      '.wx-tree{display:grid;gap:8px;grid-template-columns:repeat(5,minmax(84px,1fr)) minmax(130px,1.2fr) minmax(130px,1.2fr) minmax(130px,1.2fr);' +
+      'grid-template-areas:"root root root root root root root root" "need need need need need need need not" "sa sa sa sa sa sub app not" "p0 p1 p2 p3 p4 sub app not"}' +
       '.wx-node{border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;' +
       'border:1px solid transparent;transition:transform .12s,box-shadow .12s}' +
       '.wx-node.clk{cursor:pointer}.wx-node.clk:hover{transform:translateY(-2px);box-shadow:0 6px 14px -6px rgba(0,0,0,.35)}' +
@@ -3036,6 +3128,7 @@
       '.n-not{background:#eef1f3;border-color:#d3dade;color:#55625c}' +
       '.n-sa{background:#fdecea;border-color:#f3c3bd;color:#a3342d}' +
       '.n-app{background:#e6f2fb;border-color:#bcd9ef;color:#1d5f8f}' +
+      '.n-sub{background:#fff4e0;border-color:#f0c27b;color:#9a5b00}' +   // 送審中（等核准）：琥珀色，跟已核准(藍)分開
       '.n-leaf{background:#fff;border-color:#e3d9ec;color:#4a3d57}.n-leaf .wx-node-n{font-size:22px}' +
       '.n-leaf.n-todo{background:#fff5f4;border-color:#f3c3bd;color:#c0392b}' +
       '.n-leaf.zero{opacity:.55}' +
@@ -3053,7 +3146,7 @@
       '.wx-hz-chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}' +
       '.wx-hz-chip{border:1px solid #cfdcd5;background:#fff;color:#2a3430;border-radius:999px;padding:3px 12px;font-size:13px;cursor:pointer}' +
       '.wx-hz-chip:hover{border-color:#1a7f4b;color:#0f5f35}.wx-hz-chip.on{background:#c45a1c;border-color:#c45a1c;color:#fff;font-weight:700}' +
-      '@media (max-width:760px){.wx-tree{grid-template-columns:repeat(5,1fr);grid-template-areas:"root root root root root" "need need need need need" "sa sa sa sa sa" "p0 p1 p2 p3 p4" "app app app not not"}}';
+      '@media (max-width:1200px){.wx-tree{grid-template-columns:repeat(5,1fr);grid-template-areas:"root root root root root" "need need need need need" "sa sa sa sa sa" "p0 p1 p2 p3 p4" "sub sub app app app" "not not not not not"}}';
     document.head.appendChild(st);
   }
 
@@ -3135,8 +3228,20 @@
         fn(rows);
       };
     }
-    var full = U.el('button', { class: 'btn btn-secondary btn-sm', text: '完整匯出 (CSV)', title: '原始 Excel 全部欄位' });
-    full.addEventListener('click', guard(function (rows) { exportRawCSV(rows, title + '_完整'); }));
+    // 完整匯出改出 xlsx（2026-10-12：CSV 貼回原檔會走樣）：原檔欄序、日期／數字型別還原、不換行，承辦欄接最後
+    var full = U.el('button', { class: 'btn btn-secondary btn-sm', text: '完整匯出 (Excel)', title: '原始 Excel 全部欄位，可整段貼回原檔' });
+    full.addEventListener('click', guard(async function (rows) {
+      var ids = rows.map(function (r) { return r.id; }).filter(function (x) { return x != null; });
+      try {
+        var r = await fetch('/api/export/rows', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: ids, title: (title || '弱點清單') + '_完整' }) });
+        if (!r.ok) throw new Error(r.status);
+        var blob = await r.blob(); var url = URL.createObjectURL(blob);
+        var a = U.el('a', { href: url, download: (title || '弱點清單').replace(/[\\/:*?"<>|]/g, '_') + '_完整.xlsx' });
+        document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+        if (UI && UI.toast) UI.toast('已匯出 ' + ids.length + ' 筆（Excel）', 'success');
+      } catch (e) { exportRawCSV(rows, title + '_完整'); }   // 伺服器匯出失敗就退回 CSV
+    }));
     var simple = U.el('button', { class: 'btn btn-secondary btn-sm', text: '簡易匯出 (CSV)', title: '只匯常用幾欄' });
     simple.addEventListener('click', guard(function (rows) { exportRowsCSV(SIMPLE_FINDING_COLS, rows, title + '_簡易'); }));
     // 標記成「清單匯出」：全站統一匯出(wireUnifiedExport)看到這個標記就放行，不改成下載整份原封 Excel
@@ -3231,7 +3336,7 @@
         U.el('td', { text: r.severity || '' }), U.el('td', { text: r.host || '' }),
         U.el('td', { text: r.effective_due || '—' }),
         U.el('td', { text: (r.overdue_days != null && r.overdue_days > 0) ? String(r.overdue_days) : '—' }),
-        U.el('td', { text: cellVal(r, 'progress') }), U.el('td', { text: r.progress_state || '' }),
+        paintSubmit(U.el('td', { text: cellVal(r, 'progress') }), r), U.el('td', { text: r.progress_state || '' }),
         U.el('td', { text: td }), U.el('td', { text: r.track_note || '' }),
       ];
       if (showDept) tds.push(U.el('td', { text: r.department || '' }));
@@ -3285,16 +3390,20 @@
       + kv('未結案', s.unresolved) + kv('逾期', s.overdue) + kv('如期', s.on_track)
       + kv('近期到期', s.soon) + kv('高風險未結(不含逾期、近期)', s.high_risk_only) + kv('其中高風險且逾期', s.high_risk_overdue) + '</div>'
       + '<div class="block"><b>申請進度</b><br>'
-      + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已核准展延／例外', s.applied_count) + '</div>'
+      + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count)
+      + kv('送審中（等核准）', s.submitted_count || 0) + kv('其中送審逾時', s.submitted_stale_count || 0)
+      + kv('已核准展延／例外', s.applied_count) + '</div>'
       + '<div class="block"><b>預計完成彙總</b><br>'
       + kv('已回報預計日', s.target.with_target) + kv('未回報', s.target.no_target)
       + kv('已過預計日', s.target.target_overdue) + kv('預計30天內完成', s.target.target_soon) + '</div>'
       + '<div class="block"><b>處理進度分佈（管理人標註）</b><br>'
       + kv('要申請展延', (s.progress || {}).apply_ext || 0) + kv('要申請例外', (s.progress || {}).apply_exc || 0)
+      + kv('展延送審中（等核准）', (s.progress || {}).submit_ext || 0) + kv('例外送審中（等核准）', (s.progress || {}).submit_exc || 0)
       + kv('處理中', (s.progress || {}).wip || 0) + kv('結案申請中', (s.progress || {}).rescan || 0)
       + kv('待追查', (s.progress || {}).flagged || 0) + '</div>'
       + tbl('應申請未申請清單', s.need_apply_list)
-      + tbl('要申請·送審中（來源尚未反映）', s.apply_intent_list || [])
+      + tbl('要申請展延／例外（來源尚未反映）', s.apply_intent_list || [])
+      + tbl('送審中（等核准）（已送資安，Excel 尚未更新）', s.submitted_list || [])
       + tbl('待追查（聲稱申請或完成，來源未反映）', s.flagged_list || [])
       + tbl('逾期清單', s.overdue_list)
       + '<p class="muted" style="margin-top:16px">結論以資安 Excel 為準；「處理進度」為管理人追蹤標註。</p>'
@@ -3335,7 +3444,9 @@
       + kv('未結案', s.unresolved) + kv('逾期', s.overdue) + kv('如期', s.on_track)
       + kv('近期到期', s.soon) + kv('高風險未結(不含逾期、近期)', s.high_risk_only) + kv('其中高風險且逾期', s.high_risk_overdue) + '</div>'
       + '<div class="block"><b>申請進度</b><br>'
-      + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count) + kv('已核准展延／例外', s.applied_count) + '</div>'
+      + kv('需申請母體', s.apply_universe) + kv('應申請未申請', s.need_apply_count)
+      + kv('送審中（等核准）', s.submitted_count || 0) + kv('其中送審逾時', s.submitted_stale_count || 0)
+      + kv('已核准展延／例外', s.applied_count) + '</div>'
       + '<h3>近一季未結趨勢（每次匯入）</h3>'
       + (trendRows ? ('<table><thead><tr><th>日期</th><th>未結</th><th>其中逾期</th></tr></thead><tbody>' + trendRows + '</tbody></table>') : '<p class="muted">尚無足夠歷史。</p>')
       + '<h3>本期新結案' + (close ? '（' + esc(close.new_closed) + '）' : '') + '</h3>'

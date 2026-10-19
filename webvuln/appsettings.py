@@ -86,9 +86,23 @@ EMAIL_DEFAULTS: dict[str, Any] = {
 
 # 一般系統設定（Super Admin 畫面可調、存 DB、免重部署）。
 #   session_ttl_hours  登入 session 有效時數（預設 12；改這裡只影響「新登入」）
+#   submit_stale_days  送審中（等核准）超過幾天算「送審逾時」（預設 14；1～180）（2026-10-19）
 GENERAL_DEFAULTS: dict[str, Any] = {
     "session_ttl_hours": 12,
+    "submit_stale_days": 14,
 }
+
+# 各數值設定的合理範圍（防誤填 0 或天文數字）
+_GENERAL_RANGES = {"session_ttl_hours": (1, 720), "submit_stale_days": (1, 180)}
+
+
+def _clamp_general(cfg: dict) -> dict:
+    for k, (lo, hi) in _GENERAL_RANGES.items():
+        try:
+            cfg[k] = max(lo, min(hi, int(cfg[k])))
+        except (TypeError, ValueError):
+            cfg[k] = GENERAL_DEFAULTS[k]
+    return cfg
 
 
 def get_json(session: Session, key: str, default: Any = None) -> Any:
@@ -158,13 +172,8 @@ def get_general_config(session: Session) -> dict:
     saved = get_json(session, "general", {}) or {}
     if isinstance(saved, dict):
         cfg.update({k: saved[k] for k in saved if k in GENERAL_DEFAULTS})
-    try:
-        cfg["session_ttl_hours"] = int(cfg["session_ttl_hours"])
-    except (TypeError, ValueError):
-        cfg["session_ttl_hours"] = GENERAL_DEFAULTS["session_ttl_hours"]
-    # 合理範圍 1~720 小時（防誤填 0 或天文數字）
-    cfg["session_ttl_hours"] = max(1, min(720, cfg["session_ttl_hours"]))
-    return cfg
+    # 合理範圍：session 1~720 小時、送審逾時 1~180 天
+    return _clamp_general(cfg)
 
 
 def set_general_config(session: Session, patch: dict) -> dict:
@@ -172,11 +181,7 @@ def set_general_config(session: Session, patch: dict) -> dict:
     for k, v in (patch or {}).items():
         if k in GENERAL_DEFAULTS:
             cfg[k] = v
-    clean = {k: cfg[k] for k in GENERAL_DEFAULTS}
-    try:
-        clean["session_ttl_hours"] = max(1, min(720, int(clean["session_ttl_hours"])))
-    except (TypeError, ValueError):
-        clean["session_ttl_hours"] = GENERAL_DEFAULTS["session_ttl_hours"]
+    clean = _clamp_general({k: cfg[k] for k in GENERAL_DEFAULTS})
     set_json(session, "general", clean)
     return clean
 

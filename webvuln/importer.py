@@ -77,6 +77,8 @@ def create_batch(session: Session, data: ImportIn) -> ImportBatch:
     cases.reconcile(session, batch)
     # 管理員改過的負責人（owner_override）在重匯時套回本批 finding（Excel 值被覆蓋，不被洗掉）
     cases.apply_owner_overrides(session, batch)
+    # 送審中（等核准）自動解除：資安已核准(階段已反映)或已結案的，清掉標記並留紀錄（2026-10-19）
+    cases.auto_resolve_submitted(session, batch)
     # 跟上一批逐筆比對，寫變化紀錄（失敗不擋匯入；開機補算會再補）
     try:
         changes.compute_run(session, batch, old, prev_asof=old_asof, progress_captured=old is not None)

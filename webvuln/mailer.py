@@ -276,8 +276,8 @@ def _weekly_body(rep: dict, dept: str, site_url: str) -> str:
         "",
         "未結案：%d　逾期：%d　高風險且逾期：%d" % (
             rep.get("unresolved", 0), rep.get("overdue", 0), rep.get("high_risk_overdue", 0)),
-        "應申請未申請：%d　已核准展延／例外：%d" % (
-            rep.get("need_apply_count", 0), rep.get("applied_count", 0)),
+        "應申請未申請：%d　送審中（等核准）：%d　已核准展延／例外：%d" % (
+            rep.get("need_apply_count", 0), rep.get("submitted_count", 0), rep.get("applied_count", 0)),
         "預計完成未回報：%d　已逾自訂完成日：%d" % (
             tg.get("no_target", 0), tg.get("target_overdue", 0)),
     ]
@@ -289,7 +289,7 @@ def _weekly_body(rep: dict, dept: str, site_url: str) -> str:
         lines += ["", "與上次匯入比較（%s → 本次）：%s" % ((cp.get("prev") or {}).get("asof", "")[:16].replace("T", " "),
                                                        cp.get("summary", ""))]
         for m in cp.get("metrics") or []:
-            if m["key"] in ("unresolved", "overdue", "need_apply", "applied", "todo", "subext"):
+            if m["key"] in ("unresolved", "overdue", "need_apply", "submitted", "applied", "todo", "subext"):
                 lines.append("· %s：%s → %d（%s）" % (m["label"].strip(), "—" if m["prev"] is None else m["prev"], m["cur"],
                                                    "—" if m["delta"] is None else "%+d" % m["delta"]))
     lines += ["", "最需要處理（落後清單前幾筆）："]

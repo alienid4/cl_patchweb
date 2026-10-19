@@ -165,10 +165,69 @@ def action_line(f: Finding, today: dt.date) -> dt.date | None:
 
 
 def should_apply(f: Finding, today: dt.date) -> bool:
-    """應提申請未提：未結案、還在原始修補期限(＝尚未申請的代理)、已過行動線。"""
+    """應提申請的資格：未結案、還在原始修補期限(＝尚未申請的代理)、已過行動線。
+    （純資格判斷；「應申請未申請」還要扣掉承辦已標送審中的，見 submitted_map / is_submitted。2026-10-19）"""
     al = action_line(f, today)
     return (f.close_status == CLOSE_OPEN and f.stage == STAGE_ORIGINAL
             and al is not None and al <= today)
+
+
+def submitted_map(session: Session) -> dict:
+    """承辦標了「展延送審中／例外送審中」的 {vuln_key 字串: 進度}（2026-10-19）。"""
+    from .models import Case
+    from .logic import PROGRESS_SUBMITTED
+    return {c.vuln_key: c.status for c in session.execute(
+        select(Case).where(Case.status.in_(PROGRESS_SUBMITTED))).scalars().all()}
+
+
+def is_submitted(f: Finding, smap: dict) -> bool:
+    """有標送審中（展延送審中／例外送審中）且未結案。歸哪一類一律走 apply_bucket（已核准優先）。"""
+    from .logic import PROGRESS_SUBMITTED
+    return f.close_status == CLOSE_OPEN and smap.get("|".join(vuln_key(f)), "") in PROGRESS_SUBMITTED
+
+
+# 需申請三類（互斥）＋暫無需申請：週報、下鑽、與上次比較、首頁摘要、排行、分解樹(前端 applyTree 同一套)都用這一支。
+BUCKET_NEED, BUCKET_SUB, BUCKET_APP = "need", "sub", "app"
+
+
+def approval_expired(f: Finding, T: dt.date) -> bool:
+    """例外／展延到 T 那天已過期（使用者 2026-10-07：過了期限就失去例外管理，要處理）。"""
+    return (f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
+            and f.effective_due is not None and f.effective_due < T)
+
+
+def apply_bucket(f: Finding, today: dt.date, smap: dict, T: Optional[dt.date] = None) -> Optional[str]:
+    """一筆未結弱點在 T 那天（預設今天）落在哪一類（2026-10-19 統一口徑）：
+      app  已核准：例外／展延到 T 還沒過期（有核准就算，送審中的標記不搶）
+      sub  送審中（等核准）：承辦標了展延送審中／例外送審中，且不是有效的已核准
+           （含原本的核准已過期、承辦已送續申請的列）
+      need 應申請未申請：原始期限且到 T 已過行動線，或例外／展延到 T 已過期；且沒標送審中
+      None 暫無需申請（或已結案）
+    不改到期日、不改階段；送審中只是承辦疊加層的標記。"""
+    if f.close_status != CLOSE_OPEN:
+        return None
+    T = T or today
+    ap = f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
+    if ap and not approval_expired(f, T):
+        return BUCKET_APP
+    if is_submitted(f, smap):
+        return BUCKET_SUB
+    if ap:
+        return BUCKET_NEED                       # 例外／展延到那天已過期
+    al = action_line(f, today)
+    if f.stage == STAGE_ORIGINAL and al is not None and al <= T:
+        return BUCKET_NEED
+    return None
+
+
+def submit_stale_days(session: Session) -> int:
+    """送審中超過幾天算「送審逾時」（系統設定 submit_stale_days，預設 14）。"""
+    from . import appsettings
+    try:
+        return int(appsettings.get_general_config(session)["submit_stale_days"])
+    except Exception:  # noqa: BLE001
+        from .logic import SUBMIT_STALE_DAYS_DEFAULT
+        return SUBMIT_STALE_DAYS_DEFAULT
 
 
 def _band(f: Finding, today: dt.date) -> str:
@@ -239,6 +298,7 @@ def summary(session: Session, department: Optional[str] = None,
     total = len(open_) + len(done)
     b = latest_batch(session)
     imported = b.imported_at if b else None
+    _smap = submitted_map(session)
     return {
         "department": department or "全部",
         "unresolved": len(open_),
@@ -250,8 +310,8 @@ def summary(session: Session, department: Optional[str] = None,
         "bands": bands,          # 互斥；相加＝unresolved（對帳）
         "due_buckets": due,      # 到期倒數桶(互斥)：overdue/d30/d31_60/d61_90/d90plus/no_due
         "severity": sev,
-        # 行動線：應提申請未提
-        "should_apply": sum(1 for f in open_ if should_apply(f, today)),
+        # 行動線：應提申請未提（扣掉承辦已標送審中的，2026-10-19）
+        "should_apply": sum(1 for f in open_ if apply_bucket(f, today, _smap) == BUCKET_NEED),
         "lead_days": lead_days(None),   # 預設提前期天數
         # 缺口（會被漏掉的洞）
         "gaps": {
@@ -297,7 +357,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
          band: Optional[str] = None, keyword: Optional[str] = None,
          sheet_key: Optional[str] = None, stage: Optional[str] = None,
          only_should_apply: bool = False, applied: bool = False, apply_intent: bool = False,
-         progress: Optional[str] = None,
+         progress: Optional[str] = None, submitted: bool = False,
          no_owner: bool = False, no_due: bool = False,
          risk: Optional[str] = None, apply_universe: bool = False, not_apply: bool = False,
          no_target: bool = False, flagged: bool = False, reported: bool = False,
@@ -307,25 +367,22 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
          today: Optional[dt.date] = None) -> list[dict]:
     """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
     only_should_apply/no_owner/no_due 為缺口/行動線清單；applied=已申請處置中(例外/展延，官方)；
-    apply_intent=管理人標「要申請展延/例外」(送審中，尚未在 Excel 反映)。"""
+    apply_intent=管理人標「要申請展延/例外」(尚未在 Excel 反映)；
+    submitted=承辦標「展延送審中／例外送審中」且資安還沒核准(送審中・等核准，2026-10-19)。
+    需申請三類互斥：應申請未申請(_need)／送審中(_sub)／已核准(_apv)，其餘＝暫無需申請。"""
     today = today or dt.date.today()
     fs = _latest_findings(session, department)
     # horizon＝週報分解表的拉霸（2026-10-07 使用者更正）：時間推進 N 天，看「那一天」的狀態。
     #   應申請未申請＝那天已過行動線的原始期限 ＋ 例外／展延到那天已到期的（失去例外管理，要處理）
-    #   已核准＝例外／展延到那天還沒到期的。horizon=0 就是今天，跟 should_apply 一致。
-    _ap = lambda f: f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
-    if horizon is None:
-        _sa = lambda f: should_apply(f, today)
-        _apv = _ap
-    else:
-        _T = today + dt.timedelta(days=horizon)
-        def _sa(f):
-            if f.close_status != CLOSE_OPEN or not f.effective_due:
-                return False
-            if _ap(f):
-                return f.effective_due < _T          # 例外／展延到那天已到期
-            return f.stage == STAGE_ORIGINAL and action_line(f, today) <= _T
-        _apv = lambda f: _ap(f) and not (f.effective_due and f.effective_due < _T)
+    #   已核准＝例外／展延到那天還沒到期的。
+    # 不給 horizon＝今天，跟 horizon=0 完全一樣（2026-10-19 統一：今天已過期的例外／展延也不算已核准）。
+    # 送審中（等核准）（2026-10-19）：分類一律走 apply_bucket（已核准優先 → 送審中 → 應申請未申請）。
+    _T = today + dt.timedelta(days=horizon or 0)
+    _smap = submitted_map(session)
+    _bk = lambda f: apply_bucket(f, today, _smap, _T)
+    _apv = lambda f: _bk(f) == BUCKET_APP
+    _sub = lambda f: _bk(f) == BUCKET_SUB
+    _need = lambda f: _bk(f) == BUCKET_NEED
 
     if status and status != "全部":
         fs = [f for f in fs if f.close_status == status]
@@ -337,7 +394,7 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if f.sheet_key == sheet_key]
     if stage:
         fs = [f for f in fs if f.stage == stage]
-    if applied:  # 已核准：備註有申請紀錄→階段已成 例外/展延(備註閘門)；有 horizon 時只留到那天還沒到期的
+    if applied:  # 已核准：備註有申請紀錄→階段已成 例外/展延(備註閘門)，且到那天(預設今天)還沒到期
         fs = [f for f in fs if _apv(f)]
     if apply_intent:  # 管理人標「要申請展延/例外」(不論官方階段，含尚未反映的送審中)
         from .models import Case as _C
@@ -352,8 +409,10 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if "|".join(vuln_key(f)) in _pk]
     if band:
         fs = [f for f in fs if _band(f, today) == band]
-    if only_should_apply:
-        fs = [f for f in fs if _sa(f)]
+    if only_should_apply:   # 應申請未申請＝有資格、但承辦還沒標送審中
+        fs = [f for f in fs if _need(f)]
+    if submitted:           # 送審中（等核准）
+        fs = [f for f in fs if _sub(f)]
     if no_owner:
         fs = [f for f in fs if not (f.owner or "").strip()]
     if no_due:
@@ -363,8 +422,8 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         fs = [f for f in fs if f.severity in HIGH_RISK]
     elif risk == "high_only":   # 高風險未結（不含已逾期、近期到期），與總覽三卡互斥同口徑
         fs = [f for f in fs if _is_high_only(f, today)]
-    _in_universe = lambda f: _sa(f) or _apv(f)
-    if apply_universe:   # 需申請母體 = 應申請未申請 + 已申請處置中
+    _in_universe = lambda f: _bk(f) is not None
+    if apply_universe:   # 需申請母體 = 應申請未申請 + 送審中 + 已核准
         fs = [f for f in fs if _in_universe(f)]
     if not_apply:        # 還不急 = 未結但不在申請母體(原始階段、未過行動線)
         fs = [f for f in fs if not _in_universe(f)]
@@ -377,12 +436,14 @@ def find(session: Session, department: Optional[str] = None, status: str = CLOSE
         from .models import Case as _Cf
         from .logic import classify_progress, FLAGGED_STATES, PROGRESS_VALUES, CLOSE_DONE as _CD
         _b2 = latest_batch(session); _imp2 = _b2.imported_at if _b2 else None
+        _sd2 = submit_stale_days(session)
         _cm = {c.vuln_key: c for c in session.execute(select(_Cf)).scalars().all()}
         def _flag(f):
             c = _cm.get("|".join(vuln_key(f)))
             p = c.status if (c and c.status in PROGRESS_VALUES) else ""
             return classify_progress(p, f.close_status == _CD, f.stage,
-                                     (c.status_changed_at if c else None), _imp2) in FLAGGED_STATES
+                                     (c.status_changed_at if c else None), _imp2, _sd2,
+                                     approval_expired=approval_expired(f, today)) in FLAGGED_STATES
         fs = [f for f in fs if _flag(f)]
     if note_no_progress:   # ⚠ 待補進度：追蹤備註有寫、處理進度沒設（常見：寫了「修補完畢」卻忘了設等複掃）
         from .models import Case as _Cn
@@ -414,7 +475,7 @@ def _row_builder(session: Session, today: dt.date, progress_map: Optional[dict] 
     progress_map：給了就用它當承辦進度（比較「上次」時用當時拍下的進度），不給就讀目前的承辦疊加層。"""
     # 系統內寫的疊加欄(追蹤備註/預計完成日/處理進度)：依穩定鍵對 Case 帶進每列(非 Excel 原值)
     from .models import Attachment, Case
-    from .logic import PROGRESS_VALUES, classify_progress, CLOSE_DONE
+    from .logic import PROGRESS_VALUES, PROGRESS_SUBMITTED, classify_progress, submit_age_days, CLOSE_DONE
     ov = {c.vuln_key: c for c in session.execute(
         select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None))
                            | (Case.status.in_(PROGRESS_VALUES)))).scalars().all()}
@@ -424,12 +485,16 @@ def _row_builder(session: Session, today: dt.date, progress_map: Optional[dict] 
         att_count[vk] = att_count.get(vk, 0) + 1
     _b = latest_batch(session)
     _imp = _b.imported_at if _b else None
+    _sd = submit_stale_days(session)
+    _smap = {k: c.status for k, c in ov.items() if c.status in PROGRESS_SUBMITTED}
 
     def row(f: Finding) -> dict:
         c = ov.get("|".join(vuln_key(f)))   # Case.vuln_key 是字串(| 接)
         progress = (c.status if (c and c.status in PROGRESS_VALUES) else "")
         pstate = classify_progress(progress, f.close_status == CLOSE_DONE, f.stage,
-                                   (c.status_changed_at if c else None), _imp)
+                                   (c.status_changed_at if c else None), _imp, _sd,
+                                   approval_expired=approval_expired(f, today))
+        _bucket = apply_bucket(f, today, _smap)   # 跟清單同一支判斷，列旗標才不會跟清單對不上
         return {
             "id": f.id, "sheet_key": f.sheet_key, "plugin_id": f.plugin_id, "name": f.name,
             "host": display_host(f), "severity": f.severity, "department": f.department, "owner": f.owner,
@@ -441,12 +506,15 @@ def _row_builder(session: Session, today: dt.date, progress_map: Optional[dict] 
             "ext_applied": _applied_ext(f.remark), "exc_applied": _applied_exc(f.remark),
             "overdue_days": overdue_days(f.effective_due, today),
             "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
-            "should_apply": should_apply(f, today),
+            "should_apply": _bucket == BUCKET_NEED,   # 應申請未申請（同 ?should_apply=true；不含送審中、含已過期的例外／展延）
+            "submitted": _bucket == BUCKET_SUB,       # 送審中（等核准）（同 ?submitted=true）
+            # 送審中標了幾天（送審逾時判斷用；畫面顯示「已 N 天」）
+            "submit_days": (submit_age_days(c.status_changed_at) if (c and progress in PROGRESS_SUBMITTED) else None),
             "stage": f.stage, "close_status": f.close_status, "remark": f.remark,
             "track_note": c.track_note if c else None,
             "target_date": (c.target_date.isoformat() if (c and c.target_date) else None),
-            "progress": progress,          # 管理人手動標(處理中/要申請展延/要申請例外/等複掃/'')
-            "progress_state": pstate,      # 進度對帳(等複掃→複掃三態；要申請→申請三態；否則 None)
+            "progress": progress,          # 管理人手動標(處理中/要申請展延/要申請例外/等複掃/展延送審中/例外送審中/'')
+            "progress_state": pstate,      # 進度對帳(等複掃→複掃三態；要申請→申請三態；送審中→等核准/送審逾時/已反映；否則 None)
             "att_count": att_count.get("|".join(vuln_key(f)), 0),   # 申請佐證文件數(📎)
             "raw": f.raw or {},   # 原始整列(原欄名→原值)，供「匯出此清單」帶出全部原始欄位
         }
@@ -771,6 +839,7 @@ def owner_summary(session: Session, department: Optional[str] = None,
 
 def _ranking(session: Session, key_fn, department: Optional[str], today: dt.date) -> list[dict]:
     fs = _latest_findings(session, department)
+    _smap = submitted_map(session)
     agg: dict = defaultdict(lambda: {"unresolved": 0, "overdue": 0, "should_apply": 0,
                                      "high_risk": 0, "closed": 0})
     for f in fs:
@@ -779,7 +848,7 @@ def _ranking(session: Session, key_fn, department: Optional[str], today: dt.date
             a["unresolved"] += 1
             if _is_overdue(f, today):
                 a["overdue"] += 1
-            if should_apply(f, today):
+            if apply_bucket(f, today, _smap) == BUCKET_NEED:
                 a["should_apply"] += 1
             if f.severity in HIGH_RISK:
                 a["high_risk"] += 1
@@ -944,7 +1013,9 @@ def weekly_report(session: Session, department: Optional[str] = None,
     # 疊加欄(預計完成日/追蹤備註/處理進度)對照
     from .models import Case
     from .logic import (PROGRESS_VALUES, PROGRESS_WIP, PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC,
-                        PROGRESS_RESCAN, classify_progress, FLAGGED_STATES, CLOSE_DONE)
+                        PROGRESS_RESCAN, PROGRESS_SUBMIT_EXT, PROGRESS_SUBMIT_EXC, PROGRESS_SUBMITTED,
+                        SUBMIT_STALE, classify_progress, submit_age_days, FLAGGED_STATES, CLOSE_DONE)
+    _sd = submit_stale_days(session)
     ov = {c.vuln_key: c for c in session.execute(
         select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None))
                            | (Case.status.in_(PROGRESS_VALUES)))).scalars().all()}
@@ -965,11 +1036,13 @@ def weekly_report(session: Session, department: Optional[str] = None,
         td = c.target_date if c else None
         prog = c.status if (c and c.status in PROGRESS_VALUES) else ""
         pstate = classify_progress(prog, f.close_status == CLOSE_DONE, f.stage,
-                                   (c.status_changed_at if c else None), imported)
+                                   (c.status_changed_at if c else None), imported, _sd,
+                                   approval_expired=approval_expired(f, today))
         return {
             "id": f.id, "host": display_host(f), "owner": f.owner, "department": f.department,
             "severity": f.severity, "name": f.name, "plugin_id": f.plugin_id,
             "stage": f.stage, "progress": prog, "progress_state": pstate,
+            "submit_days": (submit_age_days(c.status_changed_at) if (c and prog in PROGRESS_SUBMITTED) else None),
             "effective_due": f.effective_due.isoformat() if f.effective_due else None,
             "overdue_days": overdue_days(f.effective_due, today),
             "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
@@ -979,8 +1052,13 @@ def weekly_report(session: Session, department: Optional[str] = None,
             "raw": f.raw or {},   # 原始整列，供「匯出此清單」帶出全部原始欄位
         }
 
-    need_apply = [f for f in open_ if should_apply(f, today)]
-    applied = [f for f in open_ if f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)]
+    # 需申請三類互斥（2026-10-19）：應申請未申請／送審中（等核准）／已核准；其餘＝暫無需申請
+    # 已核准＝例外／展延今天還沒過期（2026-10-19 起：已過期的不算已核准，同分解樹 H=0）
+    _smap = {k: c.status for k, c in ov.items() if c.status in PROGRESS_SUBMITTED}
+    _bkt = {f.id: apply_bucket(f, today, _smap) for f in open_}
+    applied = [f for f in open_ if _bkt[f.id] == BUCKET_APP]
+    submitted = [f for f in open_ if _bkt[f.id] == BUCKET_SUB]
+    need_apply = [f for f in open_ if _bkt[f.id] == BUCKET_NEED]
     overdue = [f for f in open_ if _is_overdue(f, today)]
     on_track = [f for f in open_ if not _is_overdue(f, today)]
 
@@ -1030,8 +1108,8 @@ def weekly_report(session: Session, department: Optional[str] = None,
              "d90" if d <= 90 else "d120" if d <= 120 else "d180" if d <= 180 else "d360" if d <= 360 else "d360plus")
         due_fine[k] += 1
 
-    # 需申請母體＝應申請未申請 + 已申請(都曾需要申請決策)
-    universe = need_apply + applied
+    # 需申請母體＝應申請未申請 + 送審中（等核准） + 已核准(都曾需要申請決策)
+    universe = need_apply + submitted + applied
     with_target = [f for f in universe if _target(f)]
     no_target = [f for f in universe if not _target(f)]
     target_overdue = [f for f in with_target if _target(f) < today]
@@ -1039,7 +1117,8 @@ def weekly_report(session: Session, department: Optional[str] = None,
                    if 0 <= (_target(f) - today).days <= SOON_DAYS]
 
     # 處理進度分佈(管理人手動標的)：各類計數 + 需追查(⚠️待查/可疑)總數
-    pcount = {PROGRESS_WIP: 0, PROGRESS_APPLY_EXT: 0, PROGRESS_APPLY_EXC: 0, PROGRESS_RESCAN: 0}
+    pcount = {PROGRESS_WIP: 0, PROGRESS_APPLY_EXT: 0, PROGRESS_APPLY_EXC: 0, PROGRESS_RESCAN: 0,
+              PROGRESS_SUBMIT_EXT: 0, PROGRESS_SUBMIT_EXC: 0}
     flagged = 0
     for f in open_:
         c = _c(f)
@@ -1047,13 +1126,17 @@ def weekly_report(session: Session, department: Optional[str] = None,
         if p in pcount:
             pcount[p] += 1
         st = classify_progress(p, f.close_status == CLOSE_DONE, f.stage,
-                               (c.status_changed_at if c else None), imported)
+                               (c.status_changed_at if c else None), imported, _sd,
+                               approval_expired=approval_expired(f, today))
         if st in FLAGGED_STATES:
             flagged += 1
 
     # 要申請·送審中清單(管理人標了要申請展延/例外的)；需追查清單(⚠️的，主管要盯)
     apply_intent = [f for f in open_ if _progress(f) in (PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC)]
     flagged_rows = [d for d in (_detail(f) for f in open_) if d["progress_state"] in FLAGGED_STATES]
+    # 送審中（等核准）清單；其中送審逾時(超過 submit_stale_days 天資安仍未核准)另計
+    submitted_rows = [_detail(f) for f in submitted]
+    submitted_stale = sum(1 for d in submitted_rows if d["progress_state"] == SUBMIT_STALE)
 
     return {
         "department": department or "全部",
@@ -1074,9 +1157,12 @@ def weekly_report(session: Session, department: Optional[str] = None,
         "change": change,                          # 本週變化(週對週):prev/now/delta/new/resolved
 
         # 申請面
-        "need_apply_count": len(need_apply),      # 應申請未申請(要催)
+        "need_apply_count": len(need_apply),      # 應申請未申請(要催；不含已標送審中)
+        "submitted_count": len(submitted),        # 送審中（等核准）：承辦已送、資安未核准
+        "submitted_stale_count": submitted_stale,  # 其中送審逾時
+        "submit_stale_days": _sd,                 # 送審逾時門檻(天)
         "applied_count": len(applied),            # 已申請處置中
-        "apply_universe": len(universe),          # 需申請母體
+        "apply_universe": len(universe),          # 需申請母體＝應申請未申請＋送審中＋已核准
         "stages": stages,                         # 處置落點：原始/首次展延/例外管理各計數與到期區間
         "severity": sev_dist,                     # 嚴重度分佈(未結案)：供圓餅
         "due_buckets": due_buckets,
@@ -1087,6 +1173,10 @@ def weekly_report(session: Session, department: Optional[str] = None,
             "apply_ext": pcount[PROGRESS_APPLY_EXT],
             "apply_exc": pcount[PROGRESS_APPLY_EXC],
             "rescan": pcount[PROGRESS_RESCAN],
+            "submit_ext": pcount[PROGRESS_SUBMIT_EXT],   # 標展延送審中(含已反映、尚未自動解除的)
+            "submit_exc": pcount[PROGRESS_SUBMIT_EXC],
+            "submitted": len(submitted),                  # 送審中（等核准）＝submitted_count
+            "submitted_stale": submitted_stale,
             "flagged": flagged,
             "reported": sum(1 for f in open_ if _is_reported(_c(f))),
             "note_no_progress": sum(1 for f in open_ if _note_no_progress(_c(f))),   # ⚠ 備註有寫、進度未設   # 已回報(進度/預計完成日/備註任一)
@@ -1105,6 +1195,8 @@ def weekly_report(session: Session, department: Optional[str] = None,
         "overdue_list": sorted(
             (_detail(f) for f in overdue),
             key=lambda r: -(r["overdue_days"] or 0)),
+        "submitted_list": sorted(
+            submitted_rows, key=lambda r: (-(r["submit_days"] or 0), (r["overdue_days"] is None), -(r["overdue_days"] or 0))),
         "apply_intent_list": sorted(
             (_detail(f) for f in apply_intent),
             key=lambda r: ((r["overdue_days"] is None), -(r["overdue_days"] or 0))),

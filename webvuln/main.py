@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import ad, appsettings, attachments, cases, changes, config, export, importer, mailer, query, security
+from . import ad, appsettings, attachments, cases, changes, config, export, importer, logic, mailer, query, security
 from .db import SessionLocal, init_db
 from .models import AuditLog, Finding, MailLog, User, UserSession
 from .schemas import ImportIn, ImportResult
@@ -307,6 +307,7 @@ def api_findings(
     applied: bool = False,
     apply_intent: bool = False,
     progress: str | None = None,
+    submitted: bool = False,
     no_owner: bool = False,
     no_due: bool = False,
     risk: str | None = None,
@@ -325,7 +326,8 @@ def api_findings(
     return query.find(db, department=department, status=status, owner=owner,
                       severity=severity, band=band, keyword=keyword, sheet_key=sheet_key,
                       stage=stage, only_should_apply=should_apply, applied=applied,
-                      apply_intent=apply_intent, progress=progress, no_owner=no_owner, no_due=no_due,
+                      apply_intent=apply_intent, progress=progress, submitted=submitted,
+                      no_owner=no_owner, no_due=no_due,
                       risk=risk, apply_universe=apply_universe, not_apply=not_apply, horizon=horizon,
                       no_target=no_target, flagged=flagged, reported=reported, note_no_progress=note_no_progress,
                       due_min=due_min, due_max=due_max, lead=lead)
@@ -599,6 +601,7 @@ def api_bulk_overlay(body: BulkOverlayIn, request: Request, db: Session = Depend
                                target=f"vuln:{r1['vuln_key']}", detail=str({k: v for k, v in r1.items() if k in fields}),
                                ip=_client_ip(request))
         except ValueError as e:
+            db.rollback()   # 失敗的這筆什麼都不留（2026-10-19）
             failed.append({"id": fid, "error": str(e)})
     security.log_audit(db, username=getattr(user, "username", None), action="bulk_overlay",
                        target=f"count:{applied}", detail="fields=%s skipped=%d failed=%d" % (
@@ -947,7 +950,7 @@ def api_set_general_settings(body: dict, request: Request, db: Session = Depends
                              user: User = Depends(require_super)):
     cfg = appsettings.set_general_config(db, body or {})
     security.log_audit(db, username=getattr(user, "username", None), action="general_settings",
-                       detail="session_ttl_hours=%s" % cfg.get("session_ttl_hours"),
+                       detail="session_ttl_hours=%s submit_stale_days=%s" % (cfg.get("session_ttl_hours"), cfg.get("submit_stale_days")),
                        ip=_client_ip(request))
     return cfg
 
@@ -1134,6 +1137,36 @@ def api_export(batch_id: int | None = None, department: str | None = None,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": disp},
     )
+
+
+class ExportRowsIn(BaseModel):
+    ids: list[int]
+    title: str | None = None
+
+
+@app.post("/api/export/rows")
+def api_export_rows(body: ExportRowsIn, db: Session = Depends(get_db)):
+    """清單完整匯出（xlsx）：原檔欄序、日期／數字型別還原、不換行，承辦欄接在最後，可整段貼回原 Excel。"""
+    if not body.ids:
+        raise HTTPException(status_code=400, detail="沒有要匯出的資料")
+    if len(body.ids) > 20000:
+        raise HTTPException(status_code=400, detail="一次最多 20000 筆")
+    allowed = {f.id for f in db.execute(select(Finding).where(Finding.id.in_(body.ids))).scalars().all()
+               if query._in_view(f)}   # 登入範圍外的不匯
+    info = {}
+    rb = query._row_builder(db, dt.date.today())
+    for f in db.execute(select(Finding).where(Finding.id.in_(list(allowed)))).scalars().all():
+        d = rb(f)
+        info[f.id] = {"progress": logic.progress_display(d["progress"]) or None,
+                      "progress_state": d["progress_state"], "target_date": d["target_date"], "track_note": d["track_note"]}
+    wb, filename = export.build_rows_workbook(db, [i for i in body.ids if i in allowed], info)
+    if body.title:
+        import re as _re
+        filename = _re.sub(r'[\\/:*?"<>|]', "_", body.title)[:80] + ".xlsx"
+    disp = f"attachment; filename*=UTF-8''{quote(filename)}"
+    return Response(content=export.to_bytes(wb),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": disp})
 
 
 # 靜態前端掛在最後（/api/* 先比對到，其餘落到這裡）

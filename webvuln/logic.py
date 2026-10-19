@@ -28,7 +28,24 @@ PROGRESS_WIP = "處理中"
 PROGRESS_APPLY_EXT = "要申請展延"  # 第一次做不完，要走展延
 PROGRESS_APPLY_EXC = "要申請例外"  # 展延後還做不完，要走例外
 PROGRESS_RESCAN = "等複掃"        # 承辦回報已做完、等資安複掃確認
-PROGRESS_VALUES = (PROGRESS_WIP, PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC, PROGRESS_RESCAN)
+# 送審中（等資安核准）（2026-10-19）：承辦已把展延／例外申請送給資安，但資安還沒更新 Excel。
+# 只是承辦疊加層的標記：不改到期日、不改處置階段、仍算未結／逾期；只讓它離開「應申請未申請」、
+# 改算在「送審中（等核准）」。資安核准反映到 Excel 後，匯入時自動解除（見 cases.auto_resolve_submitted）。
+PROGRESS_SUBMIT_EXT = "展延送審中"
+PROGRESS_SUBMIT_EXC = "例外送審中"
+PROGRESS_SUBMITTED = (PROGRESS_SUBMIT_EXT, PROGRESS_SUBMIT_EXC)
+PROGRESS_VALUES = (PROGRESS_WIP, PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC, PROGRESS_RESCAN,
+                   PROGRESS_SUBMIT_EXT, PROGRESS_SUBMIT_EXC)
+# 畫面／匯出顯示用名稱（存值不動）：等複掃→結案申請中（2026-10-06）；送審中一律標「等核准」，絕不顯示成已核准
+PROGRESS_DISPLAY = {
+    PROGRESS_RESCAN: "結案申請中",
+    PROGRESS_SUBMIT_EXT: "展延送審中（等核准）",
+    PROGRESS_SUBMIT_EXC: "例外送審中（等核准）",
+}
+
+
+def progress_display(p) -> str:
+    return PROGRESS_DISPLAY.get(p or "", p or "")
 
 # 複掃對帳三態（結論一律以 Excel 為主；標註只是過程參考）：
 RESCAN_CONFIRMED = "已確認結案"   # 標等複掃 且 來源(Excel)已結 → 功成身退
@@ -67,15 +84,59 @@ def classify_apply(progress, stage, marked_at, latest_imported_at):
     return APPLY_PENDING if marked_at <= latest_imported_at else APPLY_SUBMITTING
 
 
-def classify_progress(progress, source_closed, stage, marked_at, latest_imported_at):
-    """綜合：等複掃走 classify_rescan，要申請展延/例外走 classify_apply，其餘 None。"""
+def submit_reflected(progress, stage) -> bool:
+    """送審中的申請，資安 Excel 的處置階段是否已顯示核准（展延送審中→展延或例外；例外送審中→例外）。"""
+    if progress == PROGRESS_SUBMIT_EXT:
+        return stage in (STAGE_EXTENSION, STAGE_EXCEPTION)
+    if progress == PROGRESS_SUBMIT_EXC:
+        return stage == STAGE_EXCEPTION
+    return False
+
+
+def submit_pending(progress, stage) -> bool:
+    """標了送審中、且資安 Excel 還沒反映核准（＝真的在等核准）。"""
+    return progress in PROGRESS_SUBMITTED and not submit_reflected(progress, stage)
+
+
+# 送審中對帳三態（2026-10-19）
+SUBMIT_WAITING = "等核准"         # 已送審、資安還沒核准（正常在途）
+SUBMIT_STALE = "送審逾時"         # 送審超過 N 天（系統設定 submit_stale_days，預設 14）仍未核准 → 要追
+SUBMIT_STALE_DAYS_DEFAULT = 14
+
+
+def submit_age_days(marked_at, now=None) -> Optional[int]:
+    if marked_at is None:
+        return None
+    now = now or dt.datetime.now()
+    return (now - marked_at).days
+
+
+def classify_submit(progress, stage, marked_at, stale_days=None, now=None, approval_expired=False):
+    """對『展延送審中／例外送審中』做對帳：已反映(資安核准且還沒過期)／送審逾時／等核准；非送審中回 None。
+    approval_expired＝這筆的例外／展延今天已過期：那個核准已失效，承辦送的是續申請，照樣等核准。"""
+    if progress not in PROGRESS_SUBMITTED:
+        return None
+    if submit_reflected(progress, stage) and not approval_expired:
+        return APPLY_REFLECTED
+    n = SUBMIT_STALE_DAYS_DEFAULT if stale_days is None else stale_days
+    if marked_at is not None and ((now or dt.datetime.now()) - marked_at) > dt.timedelta(days=n):
+        return SUBMIT_STALE
+    return SUBMIT_WAITING
+
+
+def classify_progress(progress, source_closed, stage, marked_at, latest_imported_at,
+                      stale_days=None, now=None, approval_expired=False):
+    """綜合：等複掃走 classify_rescan，要申請展延/例外走 classify_apply，送審中走 classify_submit，其餘 None。"""
     if progress == PROGRESS_RESCAN:
         return classify_rescan(progress, source_closed, marked_at, latest_imported_at)
+    if progress in PROGRESS_SUBMITTED:
+        return classify_submit(progress, stage, marked_at, stale_days, now, approval_expired)
     return classify_apply(progress, stage, marked_at, latest_imported_at)
 
 
-# 需人工追查的「⚠️」狀態(可疑/待查)——主管週報用來點出風險
-FLAGGED_STATES = (RESCAN_SUSPECT, APPLY_PENDING)
+# 需人工追查的「⚠️」狀態(可疑/待查/送審逾時)——主管週報用來點出風險
+# 送審逾時也列入待追查（2026-10-19）：送出去太久資安沒動靜，跟「說要申請卻沒反映」一樣要有人去追。
+FLAGGED_STATES = (RESCAN_SUSPECT, APPLY_PENDING, SUBMIT_STALE)
 
 
 def parse_iso_date(value) -> Optional[dt.date]:

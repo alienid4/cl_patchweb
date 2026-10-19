@@ -90,6 +90,51 @@ def apply_owner_overrides(session: Session, batch: ImportBatch) -> int:
     return n
 
 
+AUTO_RESOLVE_ACTION = "auto_resolve_submit"
+
+
+def auto_resolve_submitted(session: Session, batch: ImportBatch) -> int:
+    """匯入新批後，自動解除已有結論的「送審中」（2026-10-19）。冪等：解除過的就不是送審中，不會再處理。
+      - 展延送審中：Excel 處置階段變成 首次展延中／例外管理中 → 資安已核准，清掉標記
+      - 例外送審中：Excel 處置階段變成 例外管理中 → 資安已核准，清掉標記
+      - 已結案：結案就不需要等核准，清掉標記
+    到期日／階段一律照 Excel（匯入時已算好），所以清掉後這筆自然落到「已核准」並用資安的日期。
+    每筆解除都寫一筆操作紀錄（username＝系統），這一筆的歷程看得到。回傳解除筆數。"""
+    from .models import AuditLog
+    cs = session.execute(select(Case).where(Case.status.in_(logic.PROGRESS_SUBMITTED))).scalars().all()
+    if not cs:
+        return 0
+    first: dict = {}
+    for f in session.execute(select(Finding).where(Finding.batch_id == batch.id)
+                             .order_by(Finding.id)).scalars().all():
+        first.setdefault(key_str(f), f)   # 同鍵多列取第一列（同 reconcile：一鍵一案）
+    now = dt.datetime.now()
+    n = 0
+    for c in cs:
+        f = first.get(c.vuln_key)
+        if f is None:
+            continue   # 這批沒有這筆（來源消失）→ 標記留著，不猜
+        closed = f.close_status == logic.CLOSE_DONE
+        # 核准要「還有效」才算（2026-10-19）：例外／展延今天已過期＝核准已失效，承辦送的是續申請，標記留著
+        valid = f.effective_due is None or f.effective_due >= now.date()
+        if not closed and not (logic.submit_reflected(c.status, f.stage) and valid):
+            continue
+        old = c.status
+        if closed:
+            detail = {"progress": f"{old}→（已結案，自動解除）", "close_status": f.close_status}
+        else:
+            detail = {"progress": f"{old}→（資安已核准，自動解除）", "stage": f.stage,
+                      "due": f.effective_due.isoformat() if f.effective_due else ""}
+        c.status = logic.PROGRESS_NONE
+        c.status_changed_at = now
+        session.add(AuditLog(username="系統", action=AUTO_RESOLVE_ACTION, target=f"vuln:{c.vuln_key}",
+                             detail=str(detail), at=now))
+        n += 1
+    if n:
+        session.commit()
+    return n
+
+
 def _get_or_create_case(session: Session, f0: Finding) -> Case:
     c = session.execute(select(Case).where(Case.vuln_key == key_str(f0))).scalars().first()
     if c is None:
@@ -109,6 +154,12 @@ def set_overlay(session: Session, finding_id: int, fields: dict) -> dict:
     f0 = session.get(Finding, finding_id)
     if f0 is None:
         raise ValueError("弱點不存在")
+    # 先驗證、再動任何欄位（2026-10-19）：驗不過就整筆不改，批次迴圈接著 commit 也不會把別的欄位偷偷寫進去
+    new_prog = None
+    if "progress" in fields:
+        new_prog = (fields["progress"] or "").strip()
+        if new_prog and new_prog not in logic.PROGRESS_VALUES:
+            raise ValueError("處理進度不認得：%s" % new_prog)
     vk = key_str(f0)
     c = _get_or_create_case(session, f0)
     out = {"vuln_key": vk, "updated": 0}
@@ -140,9 +191,13 @@ def set_overlay(session: Session, finding_id: int, fields: dict) -> dict:
         c.target_date = logic.parse_iso_date(fields["target_date"])
         out["target_date"] = c.target_date.isoformat() if c.target_date else None
     if "progress" in fields:
-        # 管理人手動處理進度(處理中/等複掃/清空)；更新標記時間供複掃三態對帳
-        c.status = (fields["progress"] or "").strip()
-        c.status_changed_at = dt.datetime.now()
+        # 管理人手動處理進度(處理中/等複掃/送審中/清空)；更新標記時間供複掃三態／送審逾時對帳
+        new = new_prog   # 已在最前面驗證過
+        # 進度沒變就不動標記時間（2026-10-19）：編輯視窗每次存檔都會帶進度，
+        # 只改備註就重設時間，「送審逾時」永遠不會到。
+        if new != (c.status or "") or c.status_changed_at is None:
+            c.status_changed_at = dt.datetime.now()
+        c.status = new
         out["progress"] = c.status
     session.commit()
     return out

@@ -20,7 +20,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from . import query
-from .logic import CLOSE_OPEN, PROGRESS_VALUES, STAGE_EXCEPTION, STAGE_EXTENSION, STAGE_ORIGINAL
+from .logic import (CLOSE_OPEN, PROGRESS_VALUES, STAGE_EXCEPTION, STAGE_EXTENSION, STAGE_ORIGINAL,
+                    progress_display)
 from .models import ChangeRun, Finding, FindingChange, ImportBatch, ProgressSnap
 
 # 只記會影響追蹤的欄位（Plugin Output 之類每次掃描都會變，記了只是雜訊）
@@ -209,16 +210,19 @@ def _in_scope(f: Finding, department: Optional[str]) -> bool:
 
 
 def _progress_cat(prog: str) -> str:
+    # 送審中的列一律算「送審中（等核准）」，不會進應申請未申請，所以這裡不用對應（2026-10-19，同 query.apply_bucket）
     return {"處理中": "wip", "等複掃": "rescan", "要申請展延": "subext", "要申請例外": "subexc"}.get(prog or "", "todo")
 
 
 METRICS = [
     ("unresolved", "未結"), ("overdue", "已逾期"), ("soon", "近期到期（30 天內）"),
     ("high_only", "高風險未結（不含逾期、近期）"), ("apply_universe", "需申請"),
-    ("need_apply", "應申請未申請"), ("applied", "已核准展延／例外"), ("not_apply", "暫無需申請（期限內）"),
-    ("todo", "　尚未修補"), ("wip", "　修補中"), ("subext", "　展延送審"), ("subexc", "　例外送審"), ("rescan", "　結案申請中"),
+    ("need_apply", "應申請未申請"), ("applied", "已核准展延／例外"), ("submitted", "送審中（等核准）"),
+    ("not_apply", "暫無需申請（期限內）"),
+    ("todo", "　尚未修補"), ("wip", "　修補中"), ("subext", "　要申請展延"), ("subexc", "　要申請例外"), ("rescan", "　結案申請中"),
 ]
-PROGRESS_METRICS = ("todo", "wip", "subext", "subexc", "rescan")
+# 要靠承辦進度才算得出的指標：上一批沒拍到進度時顯示「未記錄」（送審中也是承辦標的，2026-10-19）
+PROGRESS_METRICS = ("todo", "wip", "subext", "subexc", "rescan", "submitted")
 
 
 def _metric_sets(fs: list, asof: dt.date, prog: Optional[dict]) -> dict:
@@ -235,14 +239,17 @@ def _metric_sets(fs: list, asof: dt.date, prog: Optional[dict]) -> dict:
             out["soon"].add(f.id)
         if query._is_high_only(f, asof):
             out["high_only"].add(f.id)
-        sa = query.should_apply(f, asof)
-        ap = f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
-        if sa or ap:
+        # 需申請三類（2026-10-19）：跟週報／下鑽同一支 query.apply_bucket（已過期的例外／展延不算已核准）
+        bk = query.apply_bucket(f, asof, prog or {})
+        ap, sub, sa = bk == query.BUCKET_APP, bk == query.BUCKET_SUB, bk == query.BUCKET_NEED
+        if sa or ap or sub:
             out["apply_universe"].add(f.id)
         else:
             out["not_apply"].add(f.id)
         if ap:
             out["applied"].add(f.id)
+        if sub:
+            out["submitted"].add(f.id)
         if sa:
             out["need_apply"].add(f.id)
             if prog is not None:
@@ -493,7 +500,9 @@ def history(session: Session, finding_id: int) -> dict:
 
 
 _AUDIT_LABEL = {"progress": "處理進度", "note": "追蹤備註", "target_date": "預計完成日", "owner": "負責人",
-                "department": "部門", "track_note": "追蹤備註"}
+                "department": "部門", "track_note": "追蹤備註",
+                # 送審中自動解除（cases.auto_resolve_submitted，2026-10-19）
+                "stage": "處置階段", "due": "到期日", "close_status": "結案狀態"}
 
 
 def _audit_text(detail: Optional[str]) -> str:
@@ -503,8 +512,16 @@ def _audit_text(detail: Optional[str]) -> str:
         d = ast.literal_eval(detail or "")
         if isinstance(d, dict):
             def show(v):
-                return "結案申請中" if v == "等複掃" else ("（清空）" if v in (None, "") else str(v))
-            return "；".join(f"{_AUDIT_LABEL.get(k, k)} → {show(v)}" for k, v in d.items())
+                return "（清空）" if v in (None, "") else progress_display(str(v))
+
+            def part(k, v):
+                lb = _AUDIT_LABEL.get(k, k)
+                # 自動解除寫成「舊值→（說明）」：顯示「處理進度：展延送審中（等核准） → （資安已核准，自動解除）」
+                if isinstance(v, str) and "→" in v:
+                    a, b = v.split("→", 1)
+                    return f"{lb}：{show(a)} → {b}"
+                return f"{lb} → {show(v)}"
+            return "；".join(part(k, v) for k, v in d.items())
     except (ValueError, SyntaxError):
         pass
     return detail or ""
