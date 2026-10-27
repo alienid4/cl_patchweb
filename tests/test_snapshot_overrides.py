@@ -72,3 +72,14 @@ def test_horizon_param(client):
     assert hosts({"should_apply": "true", "horizon": 90}) == ["h0", "h1", "h2", "hx"]  # 第 90 天：例外(85 天)已到期
     assert hosts({"applied": "true", "horizon": 90}) == []
     assert hosts({"not_apply": "true", "horizon": 90}) == ["h3"]
+
+
+def test_trend_and_change_follow_sheet_scope(client):
+    """趨勢線／本期變化要跟著選的工作表（2026-10-27 公司機：卡片逾期 54、趨勢線 55）。"""
+    fs = [dict(sheet_key=sk, plugin_id=str(i), name="v", host=f"h{i}", severity="High", department="A", owner="x",
+               remediation_due="2026-01-01", close_status="未結案") for i, sk in enumerate(["s1", "s1", "s2"])]
+    assert client.post("/api/import", json={"source_file": "t.xlsx", "findings": fs}).status_code == 200
+    tr = client.get("/api/trend", params={"department": "A", "sheet": "s1"}).json()
+    rep = client.get("/api/report", params={"department": "A", "sheet": "s1"}).json()
+    assert (tr[-1]["open"], tr[-1]["overdue"]) == (rep["unresolved"], rep["overdue"]) == (2, 2)
+    assert client.get("/api/trend", params={"department": "A"}).json()[-1]["open"] == 3

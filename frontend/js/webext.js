@@ -2544,7 +2544,7 @@
     var cols = [['sent_at', '時間'], ['sender', '操作者'], ['owner', '負責人'], ['to', '收件人'], ['mode', '方式'], ['status', '狀態'], ['count', '筆數'], ['error', '錯誤']];
     table.appendChild(U.el('thead', {}, [U.el('tr', {}, cols.map(function (c) { return U.el('th', { text: c[1] }); }))]));
     var tb = U.el('tbody');
-    var modeLabel = { send: '寄本人', fallback: '轉窗口', skip: '略過', weekly: '每週' };
+    var modeLabel = { send: '寄本人', fallback: '轉窗口', skip: '略過', weekly: '每週', inventory: '自動·盤點週報', dunning: '自動·到期催辦', test: '測試（改寄）' };
     rows.forEach(function (m) {
       var tr = U.el('tr', { class: (m.status === 'failed' ? 'row-overdue' : '') });
       cols.forEach(function (c) {
@@ -2560,6 +2560,320 @@
     table.appendChild(tb); makeSortable(table);
     box.appendChild(U.el('div', { class: 'table-scroll' }, [table]));
     UI.openModal('發信紀錄（' + rows.length + ' 筆）', box, { sticky: true, wide: true });
+  }
+
+  // ---- 每週自動寄信排程（Super Admin；2026-10-27）：設定／預覽／紀錄 三個頁籤，不做一頁到底 ----
+  // 以前的「每週一 08:00 自動寄」其實沒有任何排程在跑；現在由伺服器內建排程負責，這裡是它的控制台。
+  var AM_WEEKDAYS = ['週一', '週二', '週三', '週四', '週五', '週六', '週日'];
+  var AM_STATUS = { sent: '本週已寄出', test: '本週已用測試模式寄出', running: '本週寄送中', missed: '本週漏寄', error: '本週寄送出錯（未寄出）',
+    retry: '本週寄不出，補寄截止前每 10 分鐘自動重試', interrupted: '本週寄送中斷（未自動重寄，請看發信紀錄）' };
+  var AM_TRIGGER = { schedule: '排程', run_now: '立即寄出', test_run: '完整測試' };
+  async function amSend(method, url, body) {
+    var r = await fetch(url, { method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    var j = await r.json().catch(function () { return {}; });
+    if (!r.ok) { var e = new Error(j.detail || ('HTTP ' + r.status)); e.status = r.status; throw e; }
+    return j;
+  }
+  function amEmails(text) { return String(text || '').split(/[,;\s]+/).map(function (x) { return x.trim(); }).filter(Boolean); }
+  function amBadEmails(list) { return list.filter(function (x) { return !/^[^@\s,;<>"']+@[^@\s,;<>"']+\.[^@\s,;<>"']+$/.test(x); }); }
+  function amTable(cols, rows, onRow) {   // cols=[[標題, fn(row)→文字或節點]]；可排序
+    var t = U.el('table', { class: 'tracking-table' });
+    t.appendChild(U.el('thead', {}, [U.el('tr', {}, cols.map(function (c) { return U.el('th', { text: c[0] }); }))]));
+    var tb = U.el('tbody');
+    rows.forEach(function (r, i) {
+      var tr = U.el('tr');
+      cols.forEach(function (c) {
+        var v = c[1](r, i); var td = U.el('td', { style: 'white-space:normal;text-align:left' });
+        if (v && v.nodeType) td.appendChild(v); else td.textContent = v == null ? '' : String(v);
+        tr.appendChild(td);
+      });
+      if (onRow) onRow(tr, r);
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb); makeSortable(t);
+    return U.el('div', { class: 'table-scroll' }, [t]);
+  }
+  function amLink(text, fn) {
+    var a = U.el('span', { text: String(text), title: '點我看明細', style: 'color:#1a7f4b;font-weight:700;text-decoration:underline;cursor:pointer' });
+    a.addEventListener('click', fn); return a;
+  }
+
+  async function openAutoMail() {
+    var data;
+    try { data = await jget('/api/auto-mail'); }
+    catch (e) { UI.toast('讀取失敗（需最高權限）', 'error'); return; }
+    var box = U.el('div');
+    UI.openModal('自動寄信排程（Super Admin）', box, { sticky: true, wide: true });
+    function myTestAddr() { var s = data.settings || {}; return (s.test_addresses && s.test_addresses.length) ? s.test_addresses.join(', ') : (data.my_email || ''); }
+    function redraw(d) { if (d) data = d; box.innerHTML = ''; build(); }
+    var bannerHost = U.el('div');
+    function refreshBanner() { bannerHost.innerHTML = ''; bannerHost.appendChild(banner()); }
+
+    function banner() {
+      var s = data.settings || {}; var wrap = U.el('div');
+      var line = '伺服器現在時間：' + (data.server_now || '').replace('T', ' ') + '（' + (data.server_tz || '') + '）　·　' +
+        (s.enabled ? ('下次寄送：' + (data.next_run ? data.next_run.replace('T', ' ') : '—')) : '排程未開啟') +
+        (data.this_week_status ? '　·　' + (AM_STATUS[data.this_week_status] || data.this_week_status) : '') +
+        '';
+      wrap.appendChild(U.el('div', { class: 'scope-info', style: 'text-align:left' }, [U.el('span', { text: line })]));
+      if (s.paused_week) {   // 暫停中：看得到是哪一週，一鍵取消（2026-10-27 獨立測試回饋）
+        var unp = U.el('button', { class: 'btn btn-secondary btn-sm', text: '取消暫停', style: 'margin-left:10px' });
+        unp.addEventListener('click', async function () {
+          try { var d = await amSend('POST', '/api/auto-mail/pause-week', { week: '' }); UI.toast('已取消暫停', 'success'); redraw(d); }
+          catch (e) { UI.toast(e.message, 'error'); }
+        });
+        wrap.appendChild(U.el('div', { class: 'scope-info', style: 'text-align:left;font-weight:700' }, [U.el('span', { text: '已暫停 ' + s.paused_week + '（這一週不自動寄信）' }), unp]));
+      }
+      if (s.test_mode) {
+        wrap.appendChild(U.el('div', { class: 'scope-info', style: 'text-align:left;background:#fff4e5;border:1px solid #f0a33a;color:#8a4b00;font-weight:700' },
+          [U.el('span', { text: '⚠ 測試模式開啟中：排程寄送的每一封都只會寄到 ' + (s.test_addresses || []).join('、') + '，正式收件人不會收到。確認沒問題後記得關閉。' })]));
+      }
+      var er = data.email_ready || {};
+      if (!er.configured || !er.from_default || !er.enabled) {
+        wrap.appendChild(U.el('div', { class: 'scope-info', style: 'text-align:left;color:#c0392b' },
+          [U.el('span', { text: '寄信尚未就緒：請先到「Email／SMTP 設定」' + (!er.configured ? '填 SMTP 主機、' : '') + (!er.from_default ? '填系統預設寄件人、' : '') + (!er.enabled ? '勾啟用、' : '') + '再回來。' })]));
+      }
+      return wrap;
+    }
+
+    // ── 設定 ──
+    function renderSettings(host) {
+      var s = data.settings || {};
+      var FS = 'padding:6px 8px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px;font-family:inherit';
+      function row(label, el, hint) {
+        host.appendChild(U.el('div', { style: 'display:flex;gap:10px;align-items:center;margin:6px 0;flex-wrap:wrap' }, [
+          U.el('span', { text: label, style: 'min-width:8em;font-weight:600' }), el].concat(hint ? [U.el('span', { class: 'empty-hint', style: 'margin:0', text: hint })] : [])));
+        return el;
+      }
+      var en = U.el('input', { type: 'checkbox' }); en.checked = !!s.enabled;
+      host.appendChild(U.el('label', { style: 'display:flex;gap:8px;align-items:center;margin:8px 0;font-weight:700;font-size:15px' }, [en, U.el('span', { text: '啟用每週自動寄信（總開關）' })]));
+      var wd = U.el('select'); wd.style.cssText = FS;
+      AM_WEEKDAYS.forEach(function (n, i) { var o = U.el('option', { value: String(i), text: n }); if (i === (s.weekday || 0)) o.selected = true; wd.appendChild(o); });
+      row('每週幾', wd, '假日照寄');
+      var tm = row('寄送時間', U.el('input', { type: 'time', value: s.time || '08:00' }), '伺服器時間');
+      tm.style.cssText = FS;
+      var cu = row('補寄截止', U.el('input', { type: 'time', value: s.catchup_until || '12:00' }), '寄送時間服務沒開、在這之前開起來仍會補寄；過了就記「漏寄」');
+      cu.style.cssText = FS;
+      var dd = row('催辦天數', U.el('input', { type: 'number', min: '1', max: '365', value: String(s.dunning_days || 60) }), '天內到期（含已逾期）未修補的，寄給負責人');
+      dd.style.cssText = FS + ';width:90px';
+
+      // 測試模式
+      var tmode = U.el('input', { type: 'checkbox' }); tmode.checked = !!s.test_mode;
+      var taddr = U.el('textarea', { rows: '2', placeholder: '測試收件信箱，可多個（逗號或換行分隔）' });
+      taddr.value = myTestAddr(); taddr.style.cssText = FS + ';width:100%;max-width:520px';
+      var warn = U.el('div', { class: 'scope-info', style: 'text-align:left;background:#fff4e5;border:1px solid #f0a33a;color:#8a4b00;font-weight:700;margin:4px 0' },
+        [U.el('span', { text: '⚠ 測試模式開啟後，排程寄送的每一封都改寄到上面的信箱（信件開頭會註明正式收件人與 CC），正式收件人收不到。' })]);
+      function syncWarn() { warn.style.display = tmode.checked ? '' : 'none'; }
+      tmode.addEventListener('change', syncWarn); syncWarn();
+      host.appendChild(U.el('div', { style: 'margin:12px 0 4px;padding:10px;border:1px dashed #f0a33a;border-radius:8px' }, [
+        U.el('label', { style: 'display:flex;gap:8px;align-items:center;font-weight:700' }, [tmode, U.el('span', { text: '測試模式（全部改寄到：）' })]),
+        taddr, warn]));
+
+      // 部門表
+      host.appendChild(U.el('div', { style: 'margin:14px 0 4px;font-weight:700;color:#1a7f4b' }, [U.el('span', { text: '寄哪些部門（每個部門各自設 CC，兩種信都套）' })]));
+      var saved = {}; (s.departments || []).forEach(function (d) { saved[d.department] = d; });
+      var names = (data.departments || []).slice();
+      Object.keys(saved).forEach(function (n) { if (names.indexOf(n) < 0) names.push(n); });
+      var inputs = [];
+      function mark(cb) { var sp = U.el('span', { style: 'display:none' }); function f() { sp.textContent = cb.checked ? '1' : '0'; } cb.addEventListener('change', f); f(); return U.el('span', {}, [cb, sp]); }
+      var tbl = amTable([
+        ['項次', function (n, i) { return i + 1; }],
+        ['寄送', function (n, i) { return mark(inputs[i].on); }],
+        ['部門', function (n) { return n + ((data.departments || []).indexOf(n) < 0 ? '（最新匯入已無此部門）' : ''); }],
+        ['CC（多個用逗號或換行）', function (n, i) { return inputs[i].cc; }],
+        ['盤點週報', function (n, i) { return mark(inputs[i].inv); }],
+        ['到期催辦', function (n, i) { return mark(inputs[i].dun); }],
+      ], names.map(function (n) {
+        var d = saved[n] || {};
+        var on = U.el('input', { type: 'checkbox' }); on.checked = !!d.enabled;
+        var cc = U.el('textarea', { rows: '1', placeholder: '選填' }); cc.value = (d.cc || []).join(', '); cc.style.cssText = FS + ';width:100%;min-width:220px';
+        var inv = U.el('input', { type: 'checkbox' }); inv.checked = d.send_inventory !== false;
+        var dun = U.el('input', { type: 'checkbox' }); dun.checked = d.send_dunning !== false;
+        inputs.push({ name: n, on: on, cc: cc, inv: inv, dun: dun });
+        return n;
+      }));
+      host.appendChild(tbl);
+      if (!names.length) host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無部門（請先匯入彙總表）。' }));
+
+      var out = U.el('span', { style: 'margin-left:10px;font-size:13px' });
+      var save = U.el('button', { class: 'btn btn-primary', text: '儲存' });
+      save.addEventListener('click', async function () {
+        var deps = []; var bad = [];
+        inputs.forEach(function (x) {
+          var cc = amEmails(x.cc.value); bad = bad.concat(amBadEmails(cc));
+          if (x.on.checked || saved[x.name] || cc.length) deps.push({ department: x.name, enabled: x.on.checked, cc: cc, send_inventory: x.inv.checked, send_dunning: x.dun.checked });
+        });
+        var ta = amEmails(taddr.value); bad = bad.concat(amBadEmails(ta));
+        if (bad.length) { UI.toast('信箱格式不正確：' + bad.slice(0, 3).join('、'), 'error'); return; }
+        if (tmode.checked && !ta.length) { UI.toast('測試模式需填測試收件信箱', 'error'); return; }
+        save.disabled = true; out.textContent = '儲存中…'; out.style.color = '#666';
+        try {
+          var d = await amSend('PUT', '/api/auto-mail', { enabled: en.checked, weekday: parseInt(wd.value, 10), time: tm.value || '08:00',
+            catchup_until: cu.value || '12:00', dunning_days: parseInt(dd.value, 10) || 60, departments: deps,
+            test_mode: tmode.checked, test_addresses: ta });
+          UI.toast('已儲存自動寄信設定', 'success'); redraw(d);
+        } catch (e) { out.textContent = '⚠️ ' + e.message; out.style.color = '#c0392b'; save.disabled = false; }
+      });
+      var curWeek = data.current_week; var paused = (s.paused_week === curWeek);
+      var pause = U.el('button', { class: 'btn btn-secondary', text: paused ? '取消暫停本週' : '暫停本週（' + curWeek + '）' });
+      pause.addEventListener('click', async function () {
+        if (!paused && !confirm('本週（' + curWeek + '）不自動寄信？下週照常。')) return;
+        try { var d = await amSend('POST', '/api/auto-mail/pause-week', { week: paused ? '' : curWeek }); UI.toast(paused ? '已取消暫停' : '本週已暫停', 'success'); redraw(d); }
+        catch (e) { UI.toast(e.message, 'error'); }
+      });
+      host.appendChild(U.el('div', { style: 'display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap' }, [save, pause, out]));
+    }
+
+    // ── 預覽 ──
+    async function renderPreview(host) {
+      host.appendChild(U.el('p', { class: 'empty-hint', text: '計算中…' }));
+      var pv;
+      try { pv = await amSend('POST', '/api/auto-mail/preview', {}); }
+      catch (e) { host.innerHTML = ''; host.appendChild(U.el('p', { class: 'empty-hint', text: '讀取失敗：' + e.message })); return; }
+      host.innerHTML = '';
+      var tt = pv.totals || {}; var jobs = pv.jobs || [];
+      host.appendChild(U.el('div', { class: 'scope-info', style: 'text-align:left;font-weight:600' }, [U.el('span', { text:
+        '下次會寄出 ' + (tt.mails || 0) + ' 封（盤點週報 ' + (tt.inventory || 0) + '、到期催辦 ' + (tt.dunning || 0) + '）' +
+        (tt.skipped ? '，另有 ' + tt.skipped + ' 封查無收件人會略過' : '') +
+        (pv.test_mode ? '　·　⚠ 測試模式：全部改寄 ' + (pv.test_addresses || []).join('、') : '') })]));
+
+      var tools = U.el('div', { style: 'display:flex;gap:10px;flex-wrap:wrap;margin:8px 0' });
+      var bSample = U.el('button', { class: 'btn btn-secondary', text: '先寄一份給我（測試）' });
+      var bFull = U.el('button', { class: 'btn btn-secondary', text: '完整測試寄送（全部改寄到我，' + (tt.mails || 0) + ' 封）' });
+      var bNow = U.el('button', { class: 'btn btn-primary', text: '立即寄出一次' });
+      tools.appendChild(bSample); tools.appendChild(bFull); tools.appendChild(bNow); host.appendChild(tools);
+      var out = U.el('div', { style: 'margin:6px 0' }); host.appendChild(out);
+      function showResult(j, title) {
+        out.innerHTML = '';
+        out.appendChild(U.el('div', { class: 'scope-info', style: 'text-align:left;font-weight:600;color:' + (j.failed || j.error ? '#c0392b' : '#1a7f4b') }, [U.el('span', { text:
+          title + '：寄出 ' + (j.sent || 0) + '　失敗 ' + (j.failed || 0) + '　略過 ' + (j.skipped || 0) + (j.error ? '　' + j.error : '') + (j.note ? '　' + j.note : '') })]));
+        if ((j.details || []).length) out.appendChild(amTable([
+          ['項次', function (d, i) { return i + 1; }], ['部門', function (d) { return d.department; }],
+          ['種類', function (d) { return d.kind === 'inventory' ? '盤點週報' : '到期催辦'; }], ['對象', function (d) { return d.label; }],
+          ['寄到', function (d) { return d.to; }], ['結果', function (d) { return d.status === 'ok' ? '成功' : d.status === 'skip' ? '略過' : '失敗'; }],
+          ['說明', function (d) { return d.error || ''; }]], j.details));
+      }
+      // 測試收件人：自己填，可多個；預設帶本人信箱
+      function askAddr(title, extra, onGo) {
+        var fb = U.el('div');
+        var ta = U.el('textarea', { rows: '2', style: 'width:100%;padding:6px 8px;border:1px solid #cdd5dd;border-radius:6px;font-family:inherit' });
+        ta.value = myTestAddr();
+        fb.appendChild(U.el('label', { text: '測試收件信箱（可多個，逗號或換行分隔）', style: 'font-weight:600;display:block;margin-bottom:4px' }));
+        fb.appendChild(ta);
+        var sel = null;
+        if (extra === 'dept') {
+          sel = U.el('select', { style: 'margin-top:8px;padding:6px 8px;border:1px solid #cdd5dd;border-radius:6px' });
+          var en = ((data.settings || {}).departments || []).filter(function (d) { return d.enabled; }).map(function (d) { return d.department; });
+          var all = en.concat((data.departments || []).filter(function (n) { return en.indexOf(n) < 0; }));
+          all.forEach(function (n) { sel.appendChild(U.el('option', { value: n, text: n })); });
+          fb.appendChild(U.el('label', { text: '用哪個部門的資料當範例', style: 'font-weight:600;display:block;margin-top:10px' }));
+          fb.appendChild(sel);
+        } else if (extra) { fb.appendChild(U.el('p', { class: 'empty-hint', text: extra })); }
+        var go = U.el('button', { class: 'btn btn-primary', text: '寄出' });
+        go.addEventListener('click', async function () {
+          var list = amEmails(ta.value); var bad = amBadEmails(list);
+          if (!list.length) { UI.toast('請填測試收件信箱', 'error'); return; }
+          if (bad.length) { UI.toast('信箱格式不正確：' + bad.slice(0, 3).join('、'), 'error'); return; }
+          if (sel && !sel.value) { UI.toast('請選部門', 'error'); return; }
+          go.disabled = true; go.textContent = '寄送中…';
+          try { await onGo(list, sel && sel.value); UI.closeModal(); }
+          catch (e) { UI.toast(e.message, 'error'); go.disabled = false; go.textContent = '寄出'; }
+        });
+        UI.openModal(title, fb, { footer: go, stack: true, sticky: true });
+      }
+      bSample.addEventListener('click', function () {
+        askAddr('先寄一份給我（測試）', 'dept', async function (list, dept) {
+          var j = await amSend('POST', '/api/auto-mail/test', { to: list, department: dept });
+          showResult(j, '範例測試（' + dept + '）'); UI.toast('已寄出測試信 ' + (j.sent || 0) + ' 封', j.failed ? 'error' : 'success');
+        });
+      });
+      bFull.addEventListener('click', function () {
+        askAddr('完整測試寄送', '會把正式的 ' + (tt.mails || 0) + ' 封全部改寄到這些信箱（主旨加 [測試]、開頭註明正式收件人與 CC）。不會佔用本週，週一正式寄送照常。', async function (list) {
+          var j = await amSend('POST', '/api/auto-mail/test-run', { to: list });
+          showResult(j, '完整測試寄送'); UI.toast('測試寄出 ' + (j.sent || 0) + ' 封', j.failed ? 'error' : 'success');
+        });
+      });
+      bNow.addEventListener('click', async function () {
+        var msg = (pv.test_mode ? '【測試模式】' + (tt.mails || 0) + ' 封全部改寄到 ' + (pv.test_addresses || []).join('、') :
+          '確認現在正式寄出 ' + (tt.mails || 0) + ' 封？（盤點週報 ' + (tt.inventory || 0) + '、到期催辦 ' + (tt.dunning || 0) + '）') +
+          '\n寄出後本週排程就不會再寄。';
+        if (!confirm(msg)) return;
+        bNow.disabled = true; bNow.textContent = '寄送中…';
+        try {
+          var j;
+          try { j = await amSend('POST', '/api/auto-mail/run-now', { confirm: true }); }
+          catch (e) {
+            if (e.status !== 409 || !confirm(e.message + '\n\n確定要「強制」再寄一次？')) throw e;
+            j = await amSend('POST', '/api/auto-mail/run-now', { confirm: true, force: true });
+          }
+          showResult(j, '立即寄出'); UI.toast('寄出 ' + (j.sent || 0) + ' 封', j.failed ? 'error' : 'success');
+          data = await jget('/api/auto-mail'); refreshBanner();   // 本週狀態／下次寄送跟著更新
+        } catch (e) { UI.toast(e.message, 'error'); }
+        finally { bNow.disabled = false; bNow.textContent = '立即寄出一次'; }
+      });
+
+      if (!jobs.length) { host.appendChild(U.el('p', { class: 'empty-hint', text: '目前沒有要寄的信（請到「設定」勾選部門）。' })); return; }
+      function drill(j) {
+        var b = U.el('div');
+        b.appendChild(U.el('p', { class: 'empty-hint', text: '收件人：' + ((j.to || []).join('、') || '（無，' + (j.reason || '略過') + '）') + '　·　CC：' + ((j.cc || []).join('、') || '（無）') }));
+        if (j.kind === 'inventory') {
+          b.appendChild(amTable([['項次', function (m, i) { return i + 1; }], ['項目', function (m) { return m[0]; }], ['數量', function (m) { return m[1]; }]], j.metrics || []));
+        } else {
+          b.appendChild(amTable([['項次', function (it, i) { return i + 1; }], ['主機', function (it) { return it.host; }], ['弱點', function (it) { return it.name; }],
+            ['嚴重度', function (it) { return it.severity; }], ['到期日', function (it) { return it.effective_due; }],
+            ['逾期／剩餘', function (it) { return it.due_text; }], ['處理進度', function (it) { return it.progress_text; }]], j.items || []));
+        }
+        b.appendChild(U.el('div', { style: 'font-weight:700;margin:12px 0 4px' }, [U.el('span', { text: '信件內容：' + j.subject })]));
+        b.appendChild(U.el('pre', { style: 'white-space:pre-wrap;background:#f6f8f7;padding:10px;border-radius:6px;font-family:inherit;font-size:13px', text: j.body || '' }));
+        UI.openModal(j.no + '. ' + j.kind_label + '｜' + j.label, b, { stack: true, sticky: true, wide: true });
+      }
+      host.appendChild(amTable([
+        ['項次', function (j) { return j.no; }], ['部門', function (j) { return j.department; }],
+        ['種類', function (j) { return j.kind_label; }], ['對象', function (j) { return j.label; }],
+        ['收件人', function (j) { return (j.to || []).join(', '); }], ['CC', function (j) { return (j.cc || []).join(', '); }],
+        ['筆數', function (j) { return amLink(j.count, function () { drill(j); }); }],
+        ['狀態', function (j) { return j.mode === 'skip' ? '略過（' + (j.reason || '查無信箱') + '）' : j.mode === 'fallback' ? '轉寄（' + (j.reason || '') + '）' : '寄本人'; }],
+      ], jobs, function (tr, j) { if (j.mode === 'skip') tr.classList.add('row-overdue'); }));
+    }
+
+    // ── 紀錄 ──
+    function renderLog(host) {
+      var st = data.state || {};
+      var lr = st.last_run;
+      host.appendChild(U.el('div', { class: 'scope-info', style: 'text-align:left;font-weight:600' }, [U.el('span', { text: lr ?
+        ('最近一次正式寄送：' + (lr.at || '').replace('T', ' ') + '（' + (AM_TRIGGER[lr.trigger] || lr.trigger) + (lr.test_mode ? '，測試模式' : '') + '）寄出 ' + lr.sent + '　失敗 ' + lr.failed + '　略過 ' + lr.skipped + (lr.error ? '　' + lr.error : ''))
+        : '尚未正式寄送過。' })]));
+      var hist = st.history || [];
+      function showRun(r) {
+        UI.openModal((r.at || '').replace('T', ' ') + ' ' + (AM_TRIGGER[r.trigger] || r.trigger), amTable([
+          ['項次', function (x, i) { return i + 1; }], ['部門', function (x) { return x.department; }], ['種類', function (x) { return x.kind_label; }],
+          ['寄出', function (x) { return x.sent; }], ['失敗', function (x) { return x.failed; }], ['略過', function (x) { return x.skipped; }]], r.summary || []), { stack: true, sticky: true, wide: true });
+      }
+      host.appendChild(U.el('div', { style: 'margin:12px 0 4px;font-weight:700;color:#1a7f4b' }, [U.el('span', { text: '寄送歷史（最近 30 次，含測試）' })]));
+      if (hist.length) host.appendChild(amTable([
+        ['項次', function (r, i) { return 'H' + (i + 1); }], ['時間', function (r) { return (r.at || '').replace('T', ' '); }],
+        ['週', function (r) { return r.week; }], ['方式', function (r) { return (AM_TRIGGER[r.trigger] || r.trigger) + (r.test_mode && r.trigger !== 'test_run' ? '（測試模式）' : ''); }],
+        ['執行者', function (r) { return r.by || ''; }],
+        ['寄出', function (r) { return amLink(r.sent, function () { showRun(r); }); }], ['失敗', function (r) { return r.failed; }],
+        ['略過', function (r) { return r.skipped; }], ['錯誤', function (r) { return r.error || ''; }]], hist));
+      else host.appendChild(U.el('p', { class: 'empty-hint', text: '尚無紀錄。' }));
+      var missed = st.missed || [];
+      host.appendChild(U.el('div', { style: 'margin:14px 0 4px;font-weight:700;color:#c0392b' }, [U.el('span', { text: '漏寄（' + missed.length + '）' })]));
+      if (missed.length) host.appendChild(amTable([
+        ['項次', function (m, i) { return 'M' + (i + 1); }], ['週', function (m) { return m.week; }],
+        ['原定時間', function (m) { return (m.scheduled || '').replace('T', ' '); }], ['發現時間', function (m) { return (m.detected_at || '').replace('T', ' '); }],
+        ['原因', function (m) { return m.reason; }]], missed));
+      else host.appendChild(U.el('p', { class: 'empty-hint', text: '沒有漏寄。' }));
+      var ml = U.el('button', { class: 'btn btn-secondary', style: 'margin-top:12px', text: '看逐封發信紀錄' });
+      ml.addEventListener('click', openMailLog);
+      host.appendChild(ml);
+    }
+
+    function build() {
+      refreshBanner(); box.appendChild(bannerHost);
+      renderTabs(box, [{ label: '設定', render: renderSettings }, { label: '預覽', render: renderPreview }, { label: '紀錄', render: renderLog }], 'automail');
+    }
+    build();
   }
 
   // ---- 系統設定（Super Admin）：session 時數、每週排程試跑 ----
@@ -2586,7 +2900,7 @@
     box.appendChild(save);
 
     box.appendChild(U.el('div', { style: 'margin:18px 0 6px;font-weight:700;color:#1a7f4b;border-top:1px solid #eef2f5;padding-top:12px' }, [U.el('span', { text: '每週部門週報（排程）' })]));
-    box.appendChild(U.el('p', { class: 'empty-hint', text: '平時由伺服器 cron 每週一 08:00 自動寄給「有開啟」的部門窗口。可在此手動試跑一次。' }));
+    box.appendChild(U.el('p', { class: 'empty-hint', text: '舊版週報：手動寄給「有開啟每週週報」的部門窗口。每週自動寄信請改用「其他功能 → 自動寄信排程」。' }));
     var runOut = U.el('span', { style: 'margin-left:10px;font-size:13px' });
     var runBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '立即試跑一次' });
     runBtn.addEventListener('click', async function () {
@@ -2664,6 +2978,7 @@
     // ④ 通知（Super Admin）
     var cMail = card('通知 Email（Super Admin）');
     item(cMail, 'Email／SMTP 設定', 'relay 主機／寄件人／備份信箱／每週排程', openEmailSettings);
+    item(cMail, '自動寄信排程', '每週自動寄盤點週報＋到期催辦（設定／預覽／測試／紀錄）', openAutoMail);
     item(cMail, '發信紀錄', '逐封寄送結果（成功／失敗／轉窗口）', openMailLog);
 
     // ⑤ 權限與系統（Super Admin）

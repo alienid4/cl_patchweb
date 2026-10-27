@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import ad, appsettings, attachments, cases, changes, config, export, importer, logic, mailer, query, security
+from . import ad, appsettings, attachments, automail, cases, changes, config, export, importer, logic, mailer, query, security
 from .db import SessionLocal, init_db
 from .models import AuditLog, Finding, MailLog, User, UserSession
 from .schemas import ImportIn, ImportResult
@@ -30,6 +30,8 @@ async def lifespan(app: FastAPI):
     init_db()
     import threading
     threading.Thread(target=query.warm_snapshot_cache, daemon=True).start()   # 開機先算好開頁快照
+    # 每週自動寄信排程（2026-10-27）：app 內建執行緒；WEBVULN_AUTO_MAIL_THREAD=0 可關（測試用）
+    automail.start_scheduler(SessionLocal)
     yield
 
 
@@ -896,6 +898,14 @@ _ACTION_LABEL = {
     "login": "登入",
     "logout": "登出",
     "login_failed": "登入失敗",
+    "auto_mail_settings": "變更自動寄信排程",
+    "auto_mail_test": "自動寄信：寄範例測試信",
+    "auto_mail_test_run": "自動寄信：完整測試寄送",
+    "auto_mail_run_now": "自動寄信：立即寄出",
+    "auto_mail_run": "自動寄信：排程寄出",
+    "auto_mail_missed": "自動寄信：漏寄",
+    "auto_mail_interrupted": "自動寄信：寄送中斷",
+    "auto_mail_pause": "自動寄信：暫停本週",
 }
 
 
@@ -1013,7 +1023,8 @@ def api_set_my_weekly(body: MyWeeklyIn, request: Request, db: Session = Depends(
 @app.post("/api/send-weekly")
 def api_send_weekly(request: Request, only: str | None = None, db: Session = Depends(get_db),
                     user: User = Depends(require_super)):
-    """手動試跑每週排程（平時由 cron 於週一 08:00 跑）。only＝逗號分隔員編，只寄這些人。"""
+    """手動寄一次舊版部門週報（給有開「每週週報」的人）。only＝逗號分隔員編，只寄這些人。
+    註：伺服器上從來沒有 cron 跑這支（2026-10-27 查證）；每週自動寄信改由 automail 排程負責。"""
     cfg = appsettings.get_email_config(db)
     names = [x for x in (only or "").split(",") if x.strip()] or None
     try:
@@ -1025,6 +1036,147 @@ def api_send_weekly(request: Request, only: str | None = None, db: Session = Dep
                            summary["sent"], summary["skipped"], summary["failed"]),
                        ip=_client_ip(request))
     return summary
+
+
+# ── 每週自動寄信排程（Super Admin；2026-10-27）──
+def _auto_mail_view(db: Session, user) -> dict:
+    now = dt.datetime.now()
+    cfg = automail.get_settings(db)
+    ecfg = appsettings.get_email_config(db)
+    week = automail.iso_week(now.date())
+    return {
+        "settings": cfg, "state": automail.get_state(db),
+        "server_now": now.isoformat(timespec="seconds"),
+        "server_tz": now.astimezone().strftime("UTC%z"),
+        "current_week": week, "this_week_status": automail.claim_status(db, week),
+        "next_run": automail.next_run(db, cfg, now),
+        "departments": query.departments(db),
+        "email_ready": {"enabled": bool(ecfg.get("enabled")),
+                        "configured": bool((ecfg.get("smtp_host") or "").strip()),
+                        "from_default": (ecfg.get("from_default") or "").strip()},
+        "my_email": (getattr(user, "email", None) or "").strip(),
+    }
+
+
+@app.get("/api/auto-mail")
+def api_auto_mail_get(db: Session = Depends(get_db), user: User = Depends(require_super)):
+    return _auto_mail_view(db, user)
+
+
+@app.put("/api/auto-mail")
+def api_auto_mail_put(body: dict, request: Request, db: Session = Depends(get_db),
+                      user: User = Depends(require_super)):
+    try:
+        cfg = automail.save_settings(db, body or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    security.log_audit(db, username=getattr(user, "username", None), action="auto_mail_settings",
+                       detail="enabled=%s weekday=%d %s～%s 催辦%d天 測試模式=%s 部門=%s" % (
+                           cfg["enabled"], cfg["weekday"], cfg["time"], cfg["catchup_until"],
+                           cfg["dunning_days"], cfg["test_mode"],
+                           ",".join(d["department"] for d in cfg["departments"] if d["enabled"]) or "（無）"),
+                       ip=_client_ip(request))
+    return _auto_mail_view(db, user)
+
+
+class AutoMailDeptsIn(BaseModel):
+    departments: list[str] | None = None   # 不給＝設定裡勾選的全部部門
+
+
+@app.post("/api/auto-mail/preview")
+def api_auto_mail_preview(body: AutoMailDeptsIn | None = None, db: Session = Depends(get_db),
+                          user: User = Depends(require_super)):
+    """誰會收到什麼（不寄）：每封的部門、種類、收件人、CC、筆數、內容。"""
+    return automail.preview(db, dt.datetime.now(), departments=(body.departments if body else None))
+
+
+class AutoMailTestIn(BaseModel):
+    to: str | list[str] | None = None      # 測試收件人（可多個，逗號／換行分隔）；不給＝登入者本人信箱
+    department: str | None = None          # 範例測試用：哪個部門
+    departments: list[str] | None = None   # 完整測試用：只測這些部門（不給＝設定勾選的全部）
+
+
+def _test_addresses(body: AutoMailTestIn, user) -> list[str]:
+    addrs = automail.split_emails(body.to)
+    if not addrs:
+        em = (getattr(user, "email", None) or "").strip()
+        addrs = [em] if em else []
+    if not addrs:
+        raise HTTPException(status_code=400, detail="請填測試收件信箱")
+    try:
+        return automail.check_emails(addrs, "測試收件")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/auto-mail/test")
+def api_auto_mail_test(body: AutoMailTestIn, request: Request, db: Session = Depends(get_db),
+                       user: User = Depends(require_super)):
+    """範例測試：選一個部門，盤點週報＋催辦信各一封，只寄給測試信箱，主旨加 [測試]。"""
+    addrs = _test_addresses(body, user)
+    dept = (body.department or "").strip()
+    if dept not in query.departments(db):
+        raise HTTPException(status_code=400, detail="請選擇部門")
+    s = automail.sample_test(db, dt.datetime.now(), getattr(user, "username", None) or "", addrs, dept)
+    security.log_audit(db, username=getattr(user, "username", None), action="auto_mail_test",
+                       detail="dept=%s to=%s sent=%d failed=%d %s" % (dept, ",".join(addrs), s["sent"], s["failed"],
+                                                                     s.get("error") or ""),
+                       ip=_client_ip(request))
+    return s
+
+
+@app.post("/api/auto-mail/test-run")
+def api_auto_mail_test_run(body: AutoMailTestIn, request: Request, db: Session = Depends(get_db),
+                           user: User = Depends(require_super)):
+    """完整測試寄送：跟正式一樣的每一封，全部改寄測試信箱。不佔用本週（週一正式寄送照常）。"""
+    addrs = _test_addresses(body, user)
+    s = automail.test_run(db, dt.datetime.now(), getattr(user, "username", None) or "", addrs,
+                          departments=body.departments)
+    security.log_audit(db, username=getattr(user, "username", None), action="auto_mail_test_run",
+                       detail="to=%s sent=%d failed=%d skipped=%d %s" % (
+                           ",".join(addrs), s["sent"], s["failed"], s["skipped"], s.get("error") or ""),
+                       ip=_client_ip(request))
+    return s
+
+
+class AutoMailRunIn(BaseModel):
+    confirm: bool = False
+    force: bool = False
+
+
+@app.post("/api/auto-mail/run-now")
+def api_auto_mail_run_now(body: AutoMailRunIn, request: Request, db: Session = Depends(get_db),
+                          user: User = Depends(require_super)):
+    """立即寄出一次（正式）。需 confirm；會佔用本週（排程本週就不再寄），本週已寄過要 force。"""
+    if not body.confirm:
+        raise HTTPException(status_code=400, detail="請確認後再寄出（confirm）")
+    try:
+        s = automail.run_now(db, dt.datetime.now(), getattr(user, "username", None) or "", force=body.force)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    security.log_audit(db, username=getattr(user, "username", None), action="auto_mail_run_now",
+                       detail="%sforce=%s sent=%d failed=%d skipped=%d %s" % (
+                           "[測試模式] " if s["record"]["test_mode"] else "", body.force,
+                           s["sent"], s["failed"], s["skipped"], s.get("error") or ""),
+                       ip=_client_ip(request))
+    return s
+
+
+class AutoMailPauseIn(BaseModel):
+    week: str | None = None   # 不給＝本週；""＝取消暫停
+
+
+@app.post("/api/auto-mail/pause-week")
+def api_auto_mail_pause(body: AutoMailPauseIn, request: Request, db: Session = Depends(get_db),
+                        user: User = Depends(require_super)):
+    wk = automail.iso_week(dt.date.today()) if body.week is None else body.week.strip()
+    try:
+        automail.save_settings(db, {"paused_week": wk})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    security.log_audit(db, username=getattr(user, "username", None), action="auto_mail_pause",
+                       detail="paused_week=%s" % (wk or "（取消）"), ip=_client_ip(request))
+    return _auto_mail_view(db, user)
 
 
 class LocalUserIn(BaseModel):

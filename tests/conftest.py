@@ -1,4 +1,9 @@
+import os
+
 import pytest
+
+# 測試不啟動每週自動寄信的背景執行緒（它會連真實 DB；2026-10-27）
+os.environ.setdefault("WEBVULN_AUTO_MAIL_THREAD", "0")
 from sqlalchemy.orm import Session, sessionmaker
 
 from webvuln.db import _make_engine

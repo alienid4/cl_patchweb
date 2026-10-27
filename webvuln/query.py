@@ -909,6 +909,8 @@ def trend(session: Session, department: Optional[str] = None,
         q = select(Finding).where(Finding.batch_id == b.id, Finding.close_status == CLOSE_OPEN)
         if department and department != "全部":
             q = q.where(Finding.department == department)
+        if SHEET_SCOPE.get():   # 跟著週報選的工作表走（2026-10-27：趨勢線用了全部工作表，逾期 55 對不上卡片 54）
+            q = q.where(Finding.sheet_key == SHEET_SCOPE.get())
         rows = _view_filter(session.execute(q).scalars().all())
         out.append({
             "imported_at": b.imported_at.isoformat() if b.imported_at else None,
@@ -936,6 +938,8 @@ def close_stats(session: Session, department: Optional[str] = None,
         q = select(Finding).where(Finding.batch_id == b.id)
         if department and department != "全部":
             q = q.where(Finding.department == department)
+        if SHEET_SCOPE.get():   # 跟著週報選的工作表走（2026-10-27：趨勢線用了全部工作表，逾期 55 對不上卡片 54）
+            q = q.where(Finding.sheet_key == SHEET_SCOPE.get())
         return {vuln_key(f): f for f in _view_filter(session.execute(q).scalars().all())}
 
     cur = _rows(latest)
@@ -996,6 +1000,8 @@ def weekly_report(session: Session, department: Optional[str] = None,
         q = select(Finding).where(Finding.batch_id == batch.id, Finding.close_status == CLOSE_OPEN)
         if department and department != "全部":
             q = q.where(Finding.department == department)
+        if SHEET_SCOPE.get():   # 跟著週報選的工作表走（2026-10-27：趨勢線用了全部工作表，逾期 55 對不上卡片 54）
+            q = q.where(Finding.sheet_key == SHEET_SCOPE.get())
         rows = _view_filter(session.execute(q).scalars().all())
         if owner:
             rows = [f for f in rows if (f.owner or "").strip() == owner]

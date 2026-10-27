@@ -268,6 +268,75 @@ def build_sample(db: Session, cfg: dict, owner: Optional[str] = None,
 
 
 # ── #8 每週部門週報（排程寄給有開啟的部門窗口 dept_admin）──
+def _compare_lines(cp: dict) -> list[str]:
+    """「與上次匯入比較」一句話＋重點變化（週報與自動盤點週報共用；2026-10-27 抽出）。"""
+    lines = ["與上次匯入比較（%s → 本次）：%s" % ((cp.get("prev") or {}).get("asof", "")[:16].replace("T", " "),
+                                            cp.get("summary", ""))]
+    for m in cp.get("metrics") or []:
+        if m["key"] in ("unresolved", "overdue", "need_apply", "submitted", "applied", "todo", "subext"):
+            lines.append("· %s：%s → %d（%s）" % (m["label"].strip(), "—" if m["prev"] is None else m["prev"], m["cur"],
+                                               "—" if m["delta"] is None else "%+d" % m["delta"]))
+    return lines
+
+
+STALE_DATA_DAYS = 14   # 資料超過幾天沒更新，盤點週報加一行警告（2026-10-27）
+
+
+def inventory_body(rep: dict, dept: str, site_url: str, today: dt.date) -> str:
+    """自動排程「盤點狀態」週報內文（寄部門窗口；2026-10-27）。數字全部取 query.weekly_report 同一套口徑。"""
+    fr = rep.get("freshness") or {}
+    imp = (fr.get("imported_at") or "")[:10]
+    ago = fr.get("days_ago")
+    pg = rep.get("progress") or {}
+    need, sub, app_ = rep.get("need_apply_count", 0), rep.get("submitted_count", 0), rep.get("applied_count", 0)
+    universe = rep.get("apply_universe", need + sub + app_)
+    lines = ["%s 弱點盤點狀態週報（%s）" % (dept, today.isoformat()), ""]
+    lines.append("資料日期：%s" % ("%s 匯入（%s 天前）" % (imp, ago) if imp else "尚無匯入資料"))
+    if ago is not None and ago > STALE_DATA_DAYS:
+        lines.append("⚠ 資料已超過 %d 天未更新，以下數字可能不是最新，請確認是否已匯入最新彙總表。" % STALE_DATA_DAYS)
+    lines += [
+        "",
+        "一、盤點數字（未結案）",
+        "· 未結：%d" % rep.get("unresolved", 0),
+        "· 已逾期：%d（其中高風險 %d）" % (rep.get("overdue", 0), rep.get("high_risk_overdue", 0)),
+        "· 近期到期（30 天內）：%d" % rep.get("soon", 0),
+        "· 需申請：%d ＝ 應申請未申請 %d ＋ 送審中（等核准）%d ＋ 已核准 %d" % (universe, need, sub, app_),
+        "· 暫無需申請：%d" % max(0, rep.get("unresolved", 0) - universe),
+        "· 送審逾時（送審超過 %s 天仍未核准）：%d" % (rep.get("submit_stale_days", ""), rep.get("submitted_stale_count", 0)),
+        "· 待追查：%d" % pg.get("flagged", 0),
+        "",
+        "二、與上次匯入比較",
+    ]
+    cp = rep.get("compare") or {}
+    if cp.get("has_prev"):
+        lines += _compare_lines(cp)
+    else:
+        lines.append("（%s）" % (cp.get("reason") or "無上一次匯入可比較"))
+    if site_url:
+        lines += ["", "系統網址（可看明細、列印週報）：%s" % site_url.rstrip("/")]
+    lines += ["", "（本信由弱點彙總系統每週自動發送）"]
+    return "\n".join(lines)
+
+
+def dunning_body(owner: str, items: list[dict], today: dt.date, days: int,
+                 site_url: str = "", note: str = "") -> str:
+    """自動排程「N 天內到期未修補」催辦信內文（寄負責人；2026-10-27）。items 已依到期日排序。"""
+    lines = ["%s 您好：" % owner, "",
+             "以下是您負責、%d 天內到期（含已逾期）尚未修補的弱點，共 %d 筆（依到期日排序，%s）：" % (
+                 days, len(items), today.isoformat()), ""]
+    for i, it in enumerate(items, 1):
+        lines.append("%d. %s｜%s｜%s｜到期 %s（%s）｜處理進度：%s" % (
+            i, it.get("host") or "", it.get("name") or "", it.get("severity") or "",
+            it.get("effective_due") or "—", it.get("due_text") or "", it.get("progress_text") or "未回報"))
+    lines += ["", "請儘速修補；無法如期完成請依程序申請展延／例外，已送審者請追蹤核准進度。"]
+    if site_url:
+        lines.append("系統網址：%s" % site_url.rstrip("/"))
+    lines.append("（本信由弱點彙總系統每週自動發送）")
+    if note:
+        lines += ["", note]
+    return "\n".join(lines)
+
+
 def _weekly_body(rep: dict, dept: str, site_url: str) -> str:
     ch = rep.get("change") or {}
     tg = rep.get("target") or {}
@@ -286,12 +355,7 @@ def _weekly_body(rep: dict, dept: str, site_url: str) -> str:
             ch.get("new", 0), ch.get("resolved", 0), ch.get("delta", 0)))
     cp = rep.get("compare") or {}
     if cp.get("has_prev"):
-        lines += ["", "與上次匯入比較（%s → 本次）：%s" % ((cp.get("prev") or {}).get("asof", "")[:16].replace("T", " "),
-                                                       cp.get("summary", ""))]
-        for m in cp.get("metrics") or []:
-            if m["key"] in ("unresolved", "overdue", "need_apply", "submitted", "applied", "todo", "subext"):
-                lines.append("· %s：%s → %d（%s）" % (m["label"].strip(), "—" if m["prev"] is None else m["prev"], m["cur"],
-                                                   "—" if m["delta"] is None else "%+d" % m["delta"]))
+        lines += [""] + _compare_lines(cp)
     lines += ["", "最需要處理（落後清單前幾筆）："]
     for d in (rep.get("overdue_list") or [])[:8]:
         lines.append("· %s｜%s｜%s｜逾期 %s 天" % (
