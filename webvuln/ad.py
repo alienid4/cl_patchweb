@@ -11,7 +11,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import appsettings, config
+from . import appsettings, config, deptmap
 from .models import User
 
 
@@ -178,27 +178,30 @@ def authenticate_ad_ex(session: Session, cfg: dict, login: str, password: str):
 
     # 負責人名：emp_to_owner 覆寫優先，否則用 AD displayName，再退回員編
     owner_name = (cfg.get("emp_to_owner") or {}).get(login) or attrs.get("name") or login
-    department = attrs.get("department")
+    department = deptmap.clean(attrs.get("department")) or None
     email = (attrs.get("email") or "").strip() or None
     is_super = login in (cfg.get("super_admins") or [])
 
     u = session.execute(select(User).where(User.username == login)).scalars().first()
     if u is None:
-        # 首次登入：帶入 AD 名字／部門／信箱當初始值（部門之後由 Super Admin 於「帳號與權限」校正成 Excel 短名）
+        # 首次登入：帶入 AD 名字／信箱；部門自動對應成 Excel 短名（V2.112，對不到就留空，原始值存 ad_department）
         u = User(username=login, password_hash=None, display_name=owner_name,
-                 email=email,
-                 department=department, role=(config.ROLE_SUPER if is_super else config.ROLE_USER),
+                 email=email, role=(config.ROLE_SUPER if is_super else config.ROLE_USER),
                  is_active=True)
         session.add(u)
+        if department:
+            deptmap.apply_department(u, department, deptmap.known_departments(session), db=session,
+                                     trigger="login", who=login)
     else:
         if not u.is_active:
             return None, "此帳號已停用，請聯絡管理員"
-        # 同步 AD 顯示名與信箱（信箱以 AD 為權威、不像部門會與 Excel 短名衝突）；
-        # 但「部門」不覆蓋——因 AD 部門是長名、與 Excel 短名不同，
-        # 由 Super Admin 在「帳號與權限」設定後即固定，不被每次登入洗掉。
+        # 同步 AD 顯示名與信箱（信箱以 AD 為權威）；部門見 deptmap.apply_department。
         u.display_name = owner_name
         if email:
             u.email = email
+        if department:   # 部門只在空白或上次也是自動對應時才改；手填／來源不明、窗口／管理員不動（V2.112）
+            deptmap.apply_department(u, department, deptmap.known_departments(session), db=session,
+                                     trigger="login", who=login)
         if is_super and config.canon_role(u.role) != config.ROLE_SUPER:
             u.role = config.ROLE_SUPER
     session.commit()

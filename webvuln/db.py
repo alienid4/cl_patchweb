@@ -52,7 +52,8 @@ _ENSURE_COLUMNS = {
                  ("manager_name", "VARCHAR(100)"), ("manager_email", "VARCHAR(200)"),
                  ("email_source", "VARCHAR(20)"), ("email_checked_at", "DATETIME"),
                  ("email_note", "VARCHAR(300)"), ("ad_conflict", "VARCHAR(300)"),
-                 ("ad_bound_by", "VARCHAR(100)"), ("ad_bound_at", "DATETIME")],
+                 ("ad_bound_by", "VARCHAR(100)"), ("ad_bound_at", "DATETIME"),
+                 ("department_source", "VARCHAR(20)")],   # V2.112 部門自動對應（deptmap.py）
     # row_key：每一列的穩定識別碼（2026-10-05，見 rowkey.py）
     "finding": [("row_key", "VARCHAR(500)")],
     # rules_version／import_report：規則版本與匯入檢核報告（V2.110，見 importcheck.py）
@@ -90,6 +91,24 @@ def init_db(target_engine: Engine | None = None) -> None:
     _ensure_columns(eng)
     _migrate_rowkey(eng)
     _backfill_changes(eng)
+    _cleanup_legacy_departments(eng)
+
+
+def _cleanup_legacy_departments(eng: Engine) -> None:
+    """V2.112 一次性：舊版 AD 登入寫進的 AD 長名部門 → 自動對應成 Excel 短名（冪等；失敗不影響開機）。"""
+    from . import deptmap
+    s = Session(bind=eng, autoflush=False, expire_on_commit=False)
+    try:
+        res = deptmap.cleanup_legacy(s)   # 資料＋稽核同一個 commit（在函式裡）
+        if res["skipped_reason"]:
+            print(f"[deptmap] 舊部門清理略過：{res['skipped_reason']}")
+        if res["changed"] or res["conflicts"]:
+            print(f"[deptmap] 舊 AD 長名部門自動對應 {res['changed']} 筆；原始值不一致未改 {len(res['conflicts'])} 筆")
+    except Exception as e:  # noqa: BLE001
+        s.rollback()
+        print(f"[deptmap] !! 舊部門清理失敗：{e!r}")
+    finally:
+        s.close()
 
 
 def _backfill_changes(eng: Engine) -> None:

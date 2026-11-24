@@ -79,7 +79,7 @@
     return v === undefined ? '' : v;
   }
 
-  /* 表8 特例：單位欄含人名「資訊架構部-林偉竹 (EDR偵測規則)」→ 拆 */
+  /* 表8 特例：單位欄含人名「資訊架構部-王小明 (EDR偵測規則)」→ 拆 */
   /* 破折號：半形 - / en dash / em dash / 全形－ 都算（資料實際三種都出現過）
    * 以碼位建構，避免原始碼夾帶難以辨識的字面字元 */
   var DASH_RE = new RegExp('[-' + String.fromCharCode(0x2013) + String.fromCharCode(0x2014) + String.fromCharCode(0xFF0D) + ']');

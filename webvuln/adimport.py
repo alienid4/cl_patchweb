@@ -30,7 +30,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import appsettings, config, mailer, names
+from . import appsettings, config, deptmap, mailer, names
 from .logic import CLOSE_DONE
 from .models import Finding, User
 from .query import latest_batch
@@ -218,13 +218,46 @@ def dept_plausible(ad_dept: str, depts: set) -> bool:
     return any(a == d or a in d or d in a for d in depts)
 
 
+def dept_ok(ad_dept: str, depts: set, known: Optional[list], blocked: Optional[set] = None) -> tuple[bool, str]:
+    """部門不符檢查 → (通過, 不通過原因)。
+    對得到短名 → 用對應結果比；多於一個／候選讀不到 → 不通過（「部門對應不明確」，等人工確認）；
+    真的對不到才退回舊的互相包含比對。"""
+    if not depts:
+        return True, ""
+    d = deptmap.map_detail(ad_dept, known, blocked)
+    if d["mapped"]:
+        ok = deptmap.norm_excel_dept(d["mapped"]) in {deptmap.norm_excel_dept(x) for x in depts}
+        return ok, "" if ok else "部門不符"
+    if d["reason"] in ("多於一個", "多個 AD 部門對到同一個短名") or d["reason"].startswith(deptmap.READ_FAIL):
+        return False, "部門對應不明確"
+    ok = dept_plausible(ad_dept, depts)
+    return ok, "" if ok else "部門不符"
+
+
+def dept_mapping_report(idx: dict, known: list, blocked: Optional[set] = None) -> list:
+    """「部門對應」頁：檔案裡每個原始 AD 部門 → 對應結果（含筆數）。"""
+    agg: dict[str, dict] = {}
+    for p in idx["all"]:
+        raw = (p.get("department") or "").strip()
+        if not raw:
+            continue
+        ent = agg.get(raw)
+        if ent is None:
+            d = deptmap.map_detail(raw, known, blocked)
+            ent = agg[raw] = {"raw": raw, "mapped": d["mapped"] or "", "reason": d["reason"],
+                              "candidates": d["candidates"], "count": 0}
+        ent["count"] += 1
+    return sorted(agg.values(), key=lambda e: (bool(e["mapped"]), -e["count"], e["raw"]))
+
+
 def _keep_email(u: User) -> bool:
     """手填、或來源不明的舊信箱（AD 登入帶入／舊版補的）→ 視同手填，不覆蓋、不清。"""
     return bool((u.email or "").strip()) and u.email_source != SRC_IMPORT
 
 
 def _apply(db: Session, key: str, cand: dict, now: dt.datetime, user: Optional[User] = None,
-           bound_by: Optional[str] = None) -> tuple[User, str]:
+           bound_by: Optional[str] = None, known: Optional[list] = None, who: Optional[str] = None,
+           rep: Optional[dict] = None, blocked: Optional[set] = None) -> tuple[User, str]:
     u = user
     action = ""
     if u is None:
@@ -252,7 +285,11 @@ def _apply(db: Session, key: str, cand: dict, now: dt.datetime, user: Optional[U
     u.email_note = None
     u.ad_conflict = None
     u.employee_id = cand["employee_id"]
-    u.ad_department = cand.get("department") or None
+    dr = deptmap.apply_department(u, cand.get("department"), known, db=db, trigger="import", who=who, blocked=blocked)
+    if rep is not None and dr["suggestion"]:   # 窗口／管理員：只建議、不寫
+        rep.setdefault("dept_suggestions", []).append({"username": u.username, "name": u.display_name or "",
+                                                       "current": u.department or "", "suggestion": dr["suggestion"],
+                                                       "ad_department": cand.get("department") or ""})
     u.manager_name = cand.get("manager_name") or None
     u.manager_email = cand.get("manager_email") or None
     u.email_checked_at = now
@@ -274,9 +311,12 @@ def rows_hash(rows: list) -> str:
 
 
 def state_version(db: Session, owners: list) -> str:
+    """帳號狀態指紋：信箱／員編／主管／衝突／指定＋部門、部門來源、角色、原始 AD 部門＋候選部門清單（裁判 #1）。"""
     us = sorted((u.id, u.username, u.display_name, u.email, u.email_source, u.employee_id, u.manager_email,
-                 u.ad_conflict, u.ad_bound_by, bool(u.is_active)) for u in db.execute(select(User)).scalars().all())
-    return hashlib.sha256(json.dumps([us, sorted(owners)], ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
+                 u.ad_conflict, u.ad_bound_by, bool(u.is_active), u.department, u.department_source, u.role,
+                 u.ad_department, bool(u.weekly_report)) for u in db.execute(select(User)).scalars().all())
+    known = deptmap.known_departments(db)
+    return hashlib.sha256(json.dumps([us, sorted(owners), known], ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
 
 
 def _owners(db: Session) -> list[tuple[str, str]]:
@@ -318,11 +358,18 @@ def run_import(db: Session, rows: list, file_name: Optional[str], who: Optional[
     owners = _owners(db)
     before = {k: _recipient_view(db, k) for k, _ in owners}
     depts = _owner_depts(db)
+    known = deptmap.known_departments(db)
+    coll = deptmap.collisions([p.get("department") for p in idx["all"] if p.get("department")], known)
+    blocked = {deptmap.norm_ad_dept(r) for lst in coll.values() for r in lst}
+    dept_before = {u.id: u.department for u in db.execute(select(User)).scalars().all()}
     rep: dict = {"at": now.isoformat(timespec="seconds"), "file": (file_name or "")[:200], "sheet": (sheet or "")[:100],
                  "by": who or "", "rows_hash": rh, "rows": len(rows or []), "counts": idx["counts"], "owners": len(owners),
                  "matched": [], "ambiguous": [], "conflicts": [], "notfound": [], "absent": [], "nomail": [],
                  "departed": [], "refreshed": [], "managers": [], "errors": idx["errors"][:2000],
-                 "recipient_changes": [], "confirmations": [], "applied": bool(apply)}
+                 "recipient_changes": [], "confirmations": [], "applied": bool(apply),
+                 "dept_map": dept_mapping_report(idx, known, blocked), "dept_suggestions": [],
+                 "dept_collisions": [{"mapped": m, "ad_departments": v} for m, v in sorted(coll.items())],
+                 "weekly_dept_changes": []}
     handled: set[int] = set()
     for u in db.execute(select(User)).scalars().all():   # 衝突每次重算
         u.ad_conflict = None
@@ -336,7 +383,7 @@ def run_import(db: Session, rows: list, file_name: Optional[str], who: Optional[
             p = idx["by_emp"].get(b.employee_id)
             if p is not None and p["status"] == ST_OK:
                 cv = _cand(idx, p)
-                _, action = _apply(db, key, cv, now, user=b)
+                _, action = _apply(db, key, cv, now, user=b, known=known, who=who, rep=rep, blocked=blocked)
                 handled.add(b.id)
                 rep["matched"].append(_row(key, cv, action, "人工指定（%s）" % b.ad_bound_by))
             continue   # 停用／缺席由下面的帳號迴圈處理
@@ -376,12 +423,15 @@ def run_import(db: Session, rows: list, file_name: Optional[str], who: Optional[
                                          "accounts": [{"username": u.username, "employee_id": "", "email": u.email or ""} for u in free],
                                          "candidates": [cv]})
                 continue
-            if not dept_plausible(p["department"], depts.get(key, set())):
-                rep["ambiguous"].append({"name": key, "reason": "部門不符（AD：%s；弱點：%s）" % (
-                    p["department"] or "空白", "、".join(sorted(depts.get(key, set())))), "candidates": [cv]})
+            dok, dwhy = dept_ok(p["department"], depts.get(key, set()), known, blocked)
+            if not dok:
+                mp, _ = deptmap.map_ad_department(p["department"], known)
+                rep["ambiguous"].append({"name": key, "reason": "%s（AD：%s%s；弱點：%s）" % (
+                    dwhy, p["department"] or "空白", "→" + mp if mp else "", "、".join(sorted(depts.get(key, set())))),
+                    "candidates": [cv]})
                 continue
             target = free[0] if free else None
-        u, action = _apply(db, key, cv, now, user=target)
+        u, action = _apply(db, key, cv, now, user=target, known=known, who=who, rep=rep, blocked=blocked)
         db.flush()
         handled.add(u.id)
         rep["matched"].append(_row(key, cv, action, "唯一" if not same else "員編相同"))
@@ -399,7 +449,7 @@ def run_import(db: Session, rows: list, file_name: Optional[str], who: Optional[
         if p["status"] == ST_OK:
             cv = _cand(idx, p)
             before_mail, before_mgr = u.email, u.manager_email
-            _, action = _apply(db, u.display_name or "", cv, now, user=u)
+            _, action = _apply(db, u.display_name or "", cv, now, user=u, known=known, who=who, rep=rep, blocked=blocked)
             if before_mail != u.email or before_mgr != u.manager_email or action not in ("不變",):
                 rep["refreshed"].append({"username": u.username, "name": u.display_name or "",
                                          "employee_id": p["employee_id"], "mail": p["mail"], "action": action})
@@ -433,6 +483,10 @@ def run_import(db: Session, rows: list, file_name: Optional[str], who: Optional[
             rep["recipient_changes"].append({"name": key, "before_to": b["to"] or "（轉部門窗口）", "before_cc": b["cc"],
                                              "after_to": after["to"] or "（轉部門窗口）", "after_cc": after["cc"],
                                              "to_why": after["why"], "cc_why": after["cc_why"]})
+    for u in db.execute(select(User)).scalars().all():   # 部門會變、而且有開每週部門週報的人（裁判 #6）
+        if u.weekly_report and dept_before.get(u.id, None) != u.department and u.id in dept_before:
+            rep["weekly_dept_changes"].append({"username": u.username, "name": u.display_name or "",
+                                               "before": dept_before[u.id] or "", "after": u.department or ""})
     rep["managers"] = [{"name": m["name"], "employee_id": m["employee_id"], "manager_name": m["manager_name"],
                         "manager_email": m["manager_email"], "status": m["manager_status"]} for m in rep["matched"]]
     rep["token"] = tok
@@ -487,7 +541,8 @@ def confirm_pick(db: Session, name: str, employee_id: str, batch_id: Optional[in
         target = db.execute(select(User).where(User.username == "mail:" + key)).scalars().first()
         if target is not None and target.employee_id and target.employee_id != emp and _keep_email(target):
             raise ImportError_("只收信帳號 %s 已綁員編 %s 且信箱為手填，請先到「帳號與權限」處理" % (target.username, target.employee_id))
-    u, action = _apply(db, key, cand, now, user=target, bound_by=who or "(未登入)")
+    u, action = _apply(db, key, cand, now, user=target, bound_by=who or "(未登入)",
+                       known=deptmap.known_departments(db), who=who)
     for x in us:   # 已人工指定：同名其他帳號的衝突標記解除（寄信只認指定的這筆）
         if x is not u:
             x.ad_conflict = None

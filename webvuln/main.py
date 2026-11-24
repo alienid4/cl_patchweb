@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import ad, adimport, appsettings, attachments, automail, cases, changes, config, export, importcheck, importer, logic, mailer, query, security
+from . import ad, adimport, appsettings, deptmap, attachments, automail, cases, changes, config, export, importcheck, importer, logic, mailer, query, security
 from .db import SessionLocal, init_db
 from .models import AuditLog, Finding, MailLog, User, UserSession
 from .schemas import ImportIn, ImportResult, RecomputeIn
@@ -868,6 +868,7 @@ def api_list_users(db: Session = Depends(get_db), user: User = Depends(require_s
              "manager_name": u.manager_name, "manager_email": u.manager_email,
              "email_source": u.email_source, "email_note": u.email_note,
              "ad_conflict": u.ad_conflict, "ad_bound_by": u.ad_bound_by,
+             "department_source": u.department_source,
              "email_checked_at": u.email_checked_at.isoformat(timespec="seconds") if u.email_checked_at else None}
             for u in rows]
 
@@ -892,7 +893,10 @@ def api_set_user_role(user_id: int, body: UserRoleIn, request: Request,
             raise HTTPException(status_code=400, detail="未知角色")
         u.role = body.role
     if body.department is not None:
-        u.department = body.department or None
+        new_dept = deptmap.clean(body.department) or None
+        if new_dept != (u.department or None):   # 手填部門：之後 AD 登入／匯入不覆蓋；清空＝交回 AD 自動對應（V2.112）
+            u.department_source = deptmap.SRC_MANUAL if new_dept else None
+        u.department = new_dept
     if body.email is not None:
         new_mail = body.email.strip() or None
         if (new_mail or "") != (u.email or ""):
@@ -912,6 +916,23 @@ def api_set_user_role(user_id: int, body: UserRoleIn, request: Request,
                        ip=_client_ip(request))
     return {"id": u.id, "username": u.username, "role": config.canon_role(u.role),
             "department": u.department, "email": u.email, "weekly_report": bool(u.weekly_report)}
+
+
+@app.post("/api/users/{user_id}/dept-lock")
+def api_lock_user_dept(user_id: int, request: Request, db: Session = Depends(get_db),
+                       user: User = Depends(require_super)):
+    """「固定為手填」（V2.112）：不改部門文字，只把來源設成手填，之後 AD 登入／匯入／清理都不會再改。"""
+    u = db.get(User, user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="帳號不存在")
+    if not (u.department or "").strip():
+        raise HTTPException(status_code=400, detail="部門是空的，請先填部門")
+    before = u.department_source
+    u.department_source = deptmap.SRC_MANUAL
+    db.commit()
+    security.log_audit(db, username=getattr(user, "username", None), action="dept_lock", target=f"user:{u.username}",
+                       detail="dept=%s source: %s → manual" % (u.department, before or "（空）"), ip=_client_ip(request))
+    return {"id": u.id, "department": u.department, "department_source": u.department_source}
 
 
 # ── Email／SMTP 設定（Super Admin 專用；存 DB，畫面可編輯、免重部署）──
@@ -1459,7 +1480,8 @@ def api_create_local_user(body: LocalUserIn, request: Request, db: Session = Dep
     elif created and not u.display_name:
         u.display_name = uname
     if body.department is not None:
-        u.department = body.department.strip() or None
+        u.department = deptmap.clean(body.department) or None
+        u.department_source = deptmap.SRC_MANUAL if u.department else None
     if body.note is not None:
         u.note = body.note.strip() or None
     db.commit()

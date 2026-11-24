@@ -2670,7 +2670,7 @@
     var ct = rep.counts || {};
     var L = function (k) { return rep[k] || []; };
     var matched = L('matched'), amb = L('ambiguous'), cf = L('conflicts'), nf = L('notfound'), ab = L('absent'), nm = L('nomail'),
-      dep = L('departed'), mgr = L('managers'), refreshed = L('refreshed'), errs = L('errors'), chg = L('recipient_changes');
+      dep = L('departed'), mgr = L('managers'), refreshed = L('refreshed'), errs = L('errors'), chg = L('recipient_changes'), dmap = L('dept_map'), dsug = L('dept_suggestions'), dcol = L('dept_collisions'), wchg = L('weekly_dept_changes');
     box.appendChild(U.el('div', { class: 'scope-info', style: 'text-align:left;font-weight:600;color:' + (preview ? '#b9770e' : '#1a7f4b') }, [U.el('span', { text:
       (preview ? '【預覽，尚未寫入】' : '【已套用｜第 ' + (rep.batch_id || '?') + ' 次匯入】') + '檔案：' + (rep.file || '（未記錄）') +
       (rep.sheet ? '（工作表 ' + rep.sheet + '）' : '') + '　·　' + (rep.at || '').replace('T', ' ') + '　·　操作者：' + (rep.by || '') })]));
@@ -2706,7 +2706,7 @@
     }
     var T = [
       ['摘要', null], ['收件人變動', chg], ['已對上', matched], ['同名／部門待確認', amb], ['身分衝突', cf], ['查無', nf],
-      ['名單缺席', ab], ['在職但無信箱', nm], ['已停用（清信箱）', dep], ['主管對應', mgr], ['資料錯誤', errs]];
+      ['名單缺席', ab], ['在職但無信箱', nm], ['已停用（清信箱）', dep], ['主管對應', mgr], ['資料錯誤', errs], ['部門對應', dmap], ['部門變動且有開週報', wchg]];
     var tabs = T.map(function (t, ti) {
       return { label: t[1] ? t[0] + '（' + (ti === 9 ? mgrOk + '/' + mgr.length : t[1].length) + '）' : t[0], render: function (h) {
         if (ti === 0) {
@@ -2753,6 +2753,28 @@
         if (ti === 9) h.appendChild(amTable([['項次', function (r, i) { return 'G' + (i + 1); }], ['負責人', function (r) { return r.name; }],
           ['員編', function (r) { return r.employee_id; }], ['AD 主管', function (r) { return r.manager_name || '—'; }],
           ['主管信箱', function (r) { return r.manager_email || '—'; }], ['狀態', function (r) { return r.manager_email ? '已對上' : (r.status || '') + ' → 用部門設定'; }]], rows));
+        if (ti === 11) {   // V2.112：AD 部門 → Excel 部門短名
+          h.appendChild(U.el('p', { class: 'empty-hint', text: 'AD 部門（去掉結尾代碼）等於或以某個 Excel 部門結尾就對應，取最長的；同長度有兩個就不對應。對到的部門只會寫進「部門空白或上次也是自動對應」的帳號，手填的不動；不會自動給部門窗口角色。' }));
+          h.appendChild(amTable([['項次', function (r, i) { return 'P' + (i + 1); }], ['AD 部門（原始）', function (r) { return r.raw; }],
+            ['對應到', function (r) { return r.mapped || (r.reason === '多於一個' ? '多於一個' : (r.reason || '對不到')); }],
+            ['候選', function (r) { return (r.candidates || []).join('、'); }], ['筆數', function (r) { return r.count; }]], rows));
+          if (dcol.length) {
+            h.appendChild(U.el('div', { style: 'margin:14px 0 4px;font-weight:700;color:#c0392b' }, [U.el('span', { text: '多個 AD 部門對到同一個短名（這次都不寫入，' + dcol.length + '）' })]));
+            h.appendChild(amTable([['項次', function (r, i) { return 'K' + (i + 1); }], ['短名', function (r) { return r.mapped; }],
+              ['AD 部門', function (r) { return (r.ad_departments || []).join('、'); }]], dcol));
+          }
+          if (dsug.length) {
+            h.appendChild(U.el('div', { style: 'margin:14px 0 4px;font-weight:700;color:#b9770e' }, [U.el('span', { text: '建議部門（部門窗口／最高管理員，系統不自動改，' + dsug.length + '）' })]));
+            h.appendChild(amTable([['項次', function (r, i) { return 'Q' + (i + 1); }], ['登入帳號', function (r) { return r.username; }],
+              ['顯示名', function (r) { return r.name; }], ['目前部門', function (r) { return r.current || '（空）'; }],
+              ['建議部門', function (r) { return r.suggestion; }], ['AD 部門', function (r) { return r.ad_department; }]], dsug));
+          }
+        }
+        if (ti === 12) {
+          h.appendChild(U.el('p', { class: 'empty-hint', text: '這些帳號有開「每週部門週報」，套用後部門會改，週報內容會跟著換成新部門。' }));
+          h.appendChild(amTable([['項次', function (r, i) { return 'W' + (i + 1); }], ['登入帳號', function (r) { return r.username; }],
+            ['顯示名', function (r) { return r.name; }], ['原部門', function (r) { return r.before || '（空）'; }], ['新部門', function (r) { return r.after || '（空）'; }]], rows));
+        }
         if (ti === 10) h.appendChild(amTable([['項次', function (r, i) { return 'Z' + (i + 1); }], ['檔案列號', function (r) { return r.row_no; }],
           ['員編', function (r) { return r.employee_id; }], ['顯示名', function (r) { return r.display_name; }], ['問題', function (r) { return r.error; }]], rows));
       } };
@@ -2873,6 +2895,17 @@
       var roleSel = U.el('select', {}, [['super_admin', 'Super Admin'], ['dept_admin', '部門窗口'], ['user', '一般']].map(function (o) { return U.el('option', { value: o[0], text: o[1] }); }));
       roleSel.value = u.role;
       var deptInp = U.el('input', { type: 'text', value: u.department || '', style: 'padding:5px;border:1px solid #cdd5dd;border-radius:5px;width:110px' });
+      var deptSrc = U.el('div', { style: 'font-size:12px;color:#6b7a73', text: u.department ? (u.department_source === 'ad_auto' ? '自動 AD' : '手填') : '' });
+      if (u.department && u.department_source !== 'manual') {   // 舊資料（來源不明）／自動：可固定為手填，之後自動流程不改
+        var lockB = U.el('button', { class: 'btn btn-sm', text: '固定為手填', style: 'margin-left:4px;font-size:11px;padding:1px 6px' });
+        lockB.addEventListener('click', async function () {
+          var r = await fetch('/api/users/' + u.id + '/dept-lock', { method: 'POST' });
+          var j = await r.json().catch(function () { return {}; });
+          if (!r.ok) { UI.toast(j.detail || '失敗', 'error'); return; }
+          deptSrc.textContent = '手填'; UI.toast('已固定 ' + u.username + ' 的部門為手填', 'success');
+        });
+        deptSrc.appendChild(lockB);
+      }
       var mailInp = U.el('input', { type: 'text', value: u.email || '', placeholder: '（無）', style: 'padding:5px;border:1px solid #cdd5dd;border-radius:5px;width:160px' });
       var noteInp = U.el('input', { type: 'text', value: u.note || '', placeholder: '員編_姓名_部門_用途', style: 'padding:5px;border:1px solid #cdd5dd;border-radius:5px;width:200px' });
       var act = U.el('input', { type: 'checkbox' }); act.checked = u.is_active;
@@ -2893,7 +2926,7 @@
       var adInfo = [u.ad_conflict ? '⚠ 身分衝突：' + u.ad_conflict : '', u.ad_bound_by ? '人工指定：' + u.ad_bound_by : '', u.manager_name ? '主管 ' + u.manager_name + (u.manager_email ? '（' + u.manager_email + '）' : '') : '',
         u.email_source === 'manual' ? '信箱手填' : (u.email_source === 'ad_import' ? '信箱來自 AD 名單' : ''), u.email_note || ''].filter(Boolean).join('；');
       tb.appendChild(U.el('tr', {}, [U.el('td', { text: String(ui + 1) }), U.el('td', { text: u.username }), U.el('td', { text: u.employee_id || '' }), U.el('td', { text: u.display_name || '' }),
-        U.el('td', {}, [roleSel]), U.el('td', {}, [deptInp]), U.el('td', {}, [mailInp]), U.el('td', { text: adInfo, style: 'white-space:normal;font-size:12px;max-width:240px' }),
+        U.el('td', {}, [roleSel]), U.el('td', {}, [deptInp, deptSrc]), U.el('td', {}, [mailInp]), U.el('td', { text: adInfo, style: 'white-space:normal;font-size:12px;max-width:240px' }),
         U.el('td', {}, [noteInp]), U.el('td', {}, [act]), U.el('td', {}, [sv, del])]));
     });
     table.appendChild(tb); makeSortable(table); box.appendChild(U.el('div', { class: 'table-scroll' }, [table]));

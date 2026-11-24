@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 _CJK = "㐀-䶿一-鿿豈-﫿"
-_WS = re.compile(r"[\s　﻿]+")
+_WS = re.compile(r"[\s　﻿​‌‍⁠]+")
 _CJK_GAP = re.compile(r"(?<=[%s]) (?=[%s])" % (_CJK, _CJK))
 _LEAD = re.compile(r"[%s][%s·．・]*" % (_CJK, _CJK))
 

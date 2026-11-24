@@ -82,6 +82,8 @@ class User(Base):
     ad_conflict: Mapped[str | None] = mapped_column(String(300))
     ad_bound_by: Mapped[str | None] = mapped_column(String(100))     # 管理者人工指定「這個負責人＝這位員編」的人
     ad_bound_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+    # 部門來源（V2.112，見 deptmap.py）：ad_auto＝AD 部門自動對應到 Excel 短名；manual＝帳號與權限手填；空＝舊資料（視同手填）
+    department_source: Mapped[str | None] = mapped_column(String(20))
 
 
 class UserSession(Base):
