@@ -25,17 +25,17 @@ def test_override_reflected_in_snapshot(client):
     ids = _import(client)
     assert [r["負責單位"] for r in _rows(client, "s1")] == ["資訊架構部"] * 3
     r = client.post(f"/api/findings/{ids['10.30.5.1']}/overlay",
-                    json={"set_owner": True, "owner": "陳威廷", "set_department": True, "department": "網路部"})
+                    json={"set_owner": True, "owner": "孫大文", "set_department": True, "department": "網路部"})
     assert r.status_code == 200, r.text
     rows = _rows(client, "s1")   # 快取要跟著失效
     assert [(x["負責單位"], x["負責人"]) for x in rows] == [
-        ("資訊架構部", "段譽"), ("網路部", "陳威廷"), ("資訊架構部", "段譽")]
+        ("資訊架構部", "段譽"), ("網路部", "孫大文"), ("資訊架構部", "段譽")]
 
 
 def test_override_on_combined_unit_owner_cell(client):
     ids = _import(client)
-    client.post(f"/api/findings/{ids['h8']}/overlay", json={"set_owner": True, "owner": "何佳璇"})
-    assert _rows(client, "s8")[0]["負責單位"] == "資訊架構部-何佳璇"
+    client.post(f"/api/findings/{ids['h8']}/overlay", json={"set_owner": True, "owner": "錢小芳"})
+    assert _rows(client, "s8")[0]["負責單位"] == "資訊架構部-錢小芳"
 
 
 def test_report_buckets_exclusive(client):

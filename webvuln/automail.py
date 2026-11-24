@@ -174,6 +174,7 @@ def get_settings(db: Session) -> dict:
 def _clean_departments(db: Session, raw, prev: list) -> list[dict]:
     # 已存過的部門即使這次匯入沒有了也放行（不然改別的設定會被擋）；新加的部門才檢查存在
     known = set(query.departments(db)) | {d.get("department") for d in (prev or []) if isinstance(d, dict)}
+    prev_map = {d.get("department"): d for d in (prev or []) if isinstance(d, dict)}
     out, seen = [], set()
     for d in (raw or []):
         if not isinstance(d, dict):
@@ -191,8 +192,16 @@ def _clean_departments(db: Session, raw, prev: list) -> list[dict]:
             "escalate_cc": check_emails(split_emails(d.get("escalate_cc")), "%s 的升級副本（主管）" % name),
             "send_inventory": _to_bool(d.get("send_inventory", True)),
             "send_dunning": _to_bool(d.get("send_dunning", True)),
+            # 部門窗口（收件人，V2.113）：從名錄挑；跟帳號角色無關。沒帶 windows＝沿用；帶空清單＝清掉
+            "windows": (_clean_windows(db, d.get("windows"), prev_map.get(name, {}).get("windows"))
+                        if "windows" in d else list(prev_map.get(name, {}).get("windows") or [])),
         })
     return out
+
+
+def _clean_windows(db: Session, raw, prev=None) -> list:
+    from . import directory
+    return directory.clean_windows(db, raw, prev)
 
 
 def save_settings(db: Session, patch: dict, now: Optional[dt.datetime] = None) -> dict:
@@ -409,15 +418,30 @@ def _dept_entries(cfg: dict, departments: Optional[list] = None, force: bool = F
     return out
 
 
-def _inventory_recipients(db: Session, dept: str) -> list[str]:
-    """部門窗口（dept_admin）＋本部門有開「每週週報」的帳號；啟用且有信箱者。"""
+def _inventory_recipients_ex(db: Session, dept: str, windows: Optional[list] = None) -> tuple[list, str, list]:
+    """盤點週報收件人（V2.113）：①設定的部門窗口（名錄）②部門窗口角色帳號（舊）＋本部門有開「每週週報」的帳號。
+    回 (信箱, 依據, 略過說明)。"""
+    from . import directory
+    out, rule, notes = directory.dept_windows(db, dept, windows)
+    out, notes = list(out), list(notes)
     rows = db.execute(select(User).where(User.department == dept, User.is_active.is_(True))).scalars().all()
-    out = []
+    extra = False
     for u in rows:
         em = (u.email or "").strip()
-        if em and (config.canon_role(u.role) == config.ROLE_DEPT_ADMIN or u.weekly_report) and em not in out:
+        if em and u.weekly_report and em not in out:
+            why = directory.disabled_reason(db, u)   # 開週報的人：名錄顯示停用 → 排除
+            if why:
+                notes.append(why + "，略過")
+                continue
             out.append(em)
-    return out
+            extra = True
+    if extra:
+        rule = (rule + "＋開週報的帳號") if rule else "開週報的帳號"
+    return out, rule, notes
+
+
+def _inventory_recipients(db: Session, dept: str) -> list[str]:
+    return _inventory_recipients_ex(db, dept)[0]
 
 
 def _due_text(r: dict, today: dt.date) -> str:
@@ -564,14 +588,16 @@ def build_jobs(db: Session, cfg: dict, email_cfg: dict, today: dt.date,
             except Exception:  # noqa: BLE001
                 rep["compare"] = None
             att = rep["attention"] = _inventory_attention(rep)
-            to = _inventory_recipients(db, dept)
+            to, inv_rule, inv_notes = _inventory_recipients_ex(db, dept, ent.get("windows") or [])
             mode, reason = "send", ""
             if not to:
                 gf = (email_cfg.get("global_fallback") or "").strip()
                 if gf:
-                    to, mode, reason = [gf], "fallback", "此部門無窗口信箱，轉系統預設"
+                    to, mode, reason, inv_rule = [gf], "fallback", "此部門無窗口信箱，轉系統預設", "系統預設"
                 else:
-                    mode, reason = "skip", "此部門無窗口信箱"
+                    mode, reason, inv_rule = "skip", "此部門無窗口信箱", "寄不出"
+            if inv_notes:
+                reason = "；".join(([reason] if reason else []) + inv_notes)
             need, sub, app_ = rep.get("need_apply_count", 0), rep.get("submitted_count", 0), rep.get("applied_count", 0)
             nodue = rep.get("no_due_count", 0)
             univ = rep.get("apply_universe", need + sub + app_ + nodue)   # 備援加總含缺期限（GPT 檢核 #11）
@@ -593,6 +619,9 @@ def build_jobs(db: Session, cfg: dict, email_cfg: dict, today: dt.date,
             jobs.append({
                 "department": dept, "kind": KIND_INV, "kind_label": KIND_LABEL[KIND_INV],
                 "label": "%s 部門窗口" % dept, "to": to, "cc": [c for c in cc_cfg if c not in to],
+                "final_to": list(to), "final_cc": [c for c in cc_cfg if c not in to], "to_rule": inv_rule,
+                "final_to_reason": inv_rule + (("（%s）" % "；".join(inv_notes)) if inv_notes else ""),
+                "final_cc_reason": "部門設定的 CC" if cc_cfg else "無",
                 "mode": mode, "reason": reason, "count": rep.get("unresolved", 0),
                 "subject": "%s%s 弱點盤點狀態週報（%s）" % (prefix, dept, today.isoformat()),
                 "body": mailer.inventory_body(rep, dept, site_url, today),
@@ -628,8 +657,10 @@ def build_jobs(db: Session, cfg: dict, email_cfg: dict, today: dt.date,
                     continue
                 n_due = sum(1 for it in items if it["section"] == SEC_DUE)
                 n_esc = sum(1 for it in items if it["escalate"])
-                to1, mode, reason, ident = mailer.resolve_recipient_ex(db, owner, dept, email_cfg)
-                to = [to1] if to1 else []
+                rr = mailer.resolve_recipients(db, owner, dept, email_cfg, ent.get("windows") or [])
+                to, mode, reason, ident, to_rule = list(rr["to"]), rr["mode"], rr["reason"], rr["ident"], rr["rule"]
+                if rr["notes"]:
+                    reason = "；".join(([reason] if reason else []) + rr["notes"])
                 cc = [c for c in cc_cfg if c not in to]
                 # 升級副本對象（V2.111）：負責人自己的 AD 主管優先；沒有才用部門設定的升級副本。
                 # 主管只取「收件人本人那一筆帳號」上的（To 轉窗口時不用名字去猜主管）
@@ -651,7 +682,7 @@ def build_jobs(db: Session, cfg: dict, email_cfg: dict, today: dt.date,
                     esc_missing = "應升級但此信寄不出（%s）" % (reason or "查無信箱")
                 # 最後 To／CC＋原因（預覽用，V2.111）
                 to_why = ("寄不出（%s）" % (reason or "查無信箱")) if (mode == "skip" or not to) else (
-                    "本人" if mode == "send" else "轉窗口（%s）" % reason)
+                    to_rule if mode == "send" else "轉窗口［%s］（%s）" % (to_rule, reason))
                 if not n_esc:
                     cc_why = "無升級項目"
                 elif not owner_esc:
@@ -671,6 +702,7 @@ def build_jobs(db: Session, cfg: dict, email_cfg: dict, today: dt.date,
                     "ad_manager": ({"name": mgr_name or "", "email": mgr_mail} if mgr_mail else None),
                     "escalate_source": esc_src,
                     "final_to": list(to), "final_cc": list(cc), "final_to_reason": to_why, "final_cc_reason": cc_why,
+                    "to_rule": to_rule,
                     "subject": _dunning_subject(prefix, owner, days, n_due, len(items) - n_due, today),
                     "body": mailer.dunning_body(*body_args, escalate_cc=esc_applied, escalate_days=esc_days),
                     # 測試寄送走「主管副本已開」的版本（收件人一律改寄測試信箱），讓使用者開之前先驗證
@@ -1304,7 +1336,7 @@ def preview(db: Session, now: dt.datetime, departments: Optional[list] = None) -
         for j in jobs:
             j["actual_to"] = list(cfg.get("test_addresses") or []) if id(j) in send_ids else []
             j["actual_cc"] = []
-            if j["kind"] == KIND_DUN:   # 測試模式：最後 To＝測試信箱、CC 一律不寄
+            if "final_to" in j:   # 測試模式：最後 To＝測試信箱、CC 一律不寄
                 j["final_to"], j["final_cc"] = list(j["actual_to"]), []
                 j["final_to_reason"] = "測試模式改寄測試信箱（正式：%s）" % j.get("final_to_reason", "")
                 j["final_cc_reason"] = "測試模式不寄 CC（正式：%s）" % j.get("final_cc_reason", "")

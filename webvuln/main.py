@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import ad, adimport, appsettings, deptmap, attachments, automail, cases, changes, config, export, importcheck, importer, logic, mailer, query, security
+from . import ad, adimport, appsettings, deptmap, directory, attachments, automail, cases, changes, config, export, importcheck, importer, logic, mailer, query, security
 from .db import SessionLocal, init_db
 from .models import AuditLog, Finding, MailLog, User, UserSession
 from .schemas import ImportIn, ImportResult, RecomputeIn
@@ -163,6 +163,21 @@ def require_super(user: User | None = Depends(current_user), db: Session = Depen
         return user or _AnonUser()
     if user is None:
         raise HTTPException(status_code=401, detail="請先登入")
+    if config.canon_role(user.role) != config.ROLE_SUPER:
+        raise HTTPException(status_code=403, detail="需最高權限（Super Admin）")
+    return user
+
+
+def require_real_user(user: User | None = Depends(current_user)) -> User:
+    """名錄搜尋／群組／部門窗口設定：一定要真的登入（免登入模式的匿名身分也不行，V2.113）。"""
+    if user is None or isinstance(user, _AnonUser):
+        raise HTTPException(status_code=401, detail="請先登入（此功能需實際登入）")
+    return user
+
+
+def require_real_super(user: User = Depends(require_real_user)) -> User:
+    if config.DISABLE_WRITE:
+        raise HTTPException(status_code=503, detail="寫入維護中（暫停）")
     if config.canon_role(user.role) != config.ROLE_SUPER:
         raise HTTPException(status_code=403, detail="需最高權限（Super Admin）")
     return user
@@ -620,6 +635,7 @@ class OverlayIn(BaseModel):
     confirm_by: str | None = None
     confirm_date: str | None = None
     confirm_basis: str | None = None
+    owner_pick: str | None = None   # 從名錄挑的那一筆（員編或 g:<群組 id>；同名多人時必填，V2.113）
     set_owner: bool = False     # 是否要改負責人
     set_department: bool = False  # 是否要改部門
     set_note: bool = False      # 是否要改追蹤備註
@@ -627,14 +643,18 @@ class OverlayIn(BaseModel):
     set_progress: bool = False  # 是否要改處理進度
 
 
-@app.post("/api/findings/{finding_id}/overlay")
-def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
-                    db: Session = Depends(get_db), user: User = Depends(require_write_role)):
-    """管理員在系統內改一筆弱點的可寫欄位（負責人／追蹤備註／預計完成日／處理進度）：存疊加層、重匯不洗掉、不動 Excel。"""
-    _f = db.get(Finding, finding_id)
-    if _f is None:
-        raise HTTPException(status_code=404, detail="弱點不存在")
-    _require_scope(user, _f, db)   # super 全部／dept_admin 限自己部門／user 限自己的
+def _latest_targets(db: Session) -> dict:
+    """最新一批：弱點身分（cases.key_str）→ 該列 finding。疊加層實際改的是這一列，權限也要看這一列（裁判 R14）。"""
+    b = query.latest_batch(db)
+    if not b:
+        return {}
+    out = {}
+    for f in db.execute(select(Finding).where(Finding.batch_id == b.id)).scalars().all():
+        out.setdefault(cases.key_str(f), f)
+    return out
+
+
+def _overlay_fields(body) -> dict:
     fields = {}
     if body.set_owner:
         fields["owner"] = body.owner
@@ -647,13 +667,48 @@ def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
     if body.set_progress:
         fields["progress"] = body.progress
         fields.update(_confirm_fields(body))
+    return fields
+
+
+def _overlay_sig(db: Session, f: Finding) -> tuple:
+    from .models import Case
+    c = db.execute(select(Case).where(Case.vuln_key == cases.key_str(f))).scalars().first()
+    return (f.owner, f.department) + ((c.track_note, c.target_date, c.status, c.confirm_by, c.confirm_date,
+                                       c.confirm_basis, c.owner_override, c.department_override) if c else ())
+
+
+@app.post("/api/findings/{finding_id}/overlay")
+def api_set_overlay(finding_id: int, body: OverlayIn, request: Request,
+                    db: Session = Depends(get_db), user: User = Depends(require_write_role)):
+    """管理員在系統內改一筆弱點的可寫欄位（負責人／追蹤備註／預計完成日／處理進度）：存疊加層、重匯不洗掉、不動 Excel。
+    疊加層＋只收信帳號＋稽核同一個交易（V2.113）。"""
+    _f = db.get(Finding, finding_id)
+    if _f is None:
+        raise HTTPException(status_code=404, detail="弱點不存在")
+    tgt = _latest_targets(db).get(cases.key_str(_f))
+    if tgt is None:
+        raise HTTPException(status_code=400, detail="這筆弱點不在最新一批資料裡，不能修改")
+    _require_scope(user, tgt, db)   # super 全部／dept_admin 限自己部門／user 限自己的（看最新一批那一列）
+    fields = _overlay_fields(body)
     if not fields:
         raise HTTPException(status_code=400, detail="沒有要改的欄位")
+    chk = None
+    if body.set_owner:   # 名錄啟用後：負責人須從名錄選（不變／清除放行；V2.113）
+        chk = directory.check_owner(db, body.owner, tgt.owner, body.owner_pick)
+        if not chk["ok"]:
+            raise HTTPException(status_code=400, detail=chk["error"])
+    if body.set_department:
+        err = directory.check_department(db, body.department, tgt.department)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
     try:
-        r = cases.set_overlay(db, finding_id, fields)
+        r = cases.set_overlay(db, tgt.id, fields, commit=False)
+        if chk and chk.get("person") is not None:
+            r["owner_link"] = directory.link_account(db, chk["person"], getattr(user, "username", None))
     except ValueError as e:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
-    security.log_audit(db, username=user.username, action="set_overlay",
+    security.log_audit(db, username=user.username, action="set_overlay",   # log_audit 的 commit＝整筆一起進
                        target=f"vuln:{r['vuln_key']}", detail=str({k: v for k, v in r.items() if k in fields or k.startswith("confirm_")}),
                        ip=_client_ip(request))
     return r
@@ -675,6 +730,7 @@ class BulkOverlayIn(BaseModel):
     confirm_by: str | None = None
     confirm_date: str | None = None
     confirm_basis: str | None = None
+    owner_pick: str | None = None
     set_owner: bool = False
     set_department: bool = False
     set_note: bool = False
@@ -686,46 +742,61 @@ class BulkOverlayIn(BaseModel):
 def api_bulk_overlay(body: BulkOverlayIn, request: Request, db: Session = Depends(get_db),
                      user: User = Depends(require_write_role)):
     """批次改多筆弱點的疊加欄（負責人／部門／備註／預計完成日／處理進度）：一次套同一個值。
-    逐筆過範圍檢查，無權限者略過並列出；不中斷整批。"""
-    fields = {}
-    if body.set_owner:
-        fields["owner"] = body.owner
-    if body.set_department:
-        fields["department"] = body.department
-    if body.set_note:
-        fields["note"] = body.note
-    if body.set_target:
-        fields["target_date"] = body.target_date
-    if body.set_progress:
-        fields["progress"] = body.progress
-        fields.update(_confirm_fields(body))
+    權限看最新一批的同身分那一列；逐筆一個交易（疊加層＋稽核）；無權限只回 id、不回主機。
+    回 requested（送來幾筆）／unique（去重後的弱點數）／changed／unchanged／failed。"""
+    fields = _overlay_fields(body)
     if not fields:
         raise HTTPException(status_code=400, detail="沒有要改的欄位")
     if not body.ids:
         raise HTTPException(status_code=400, detail="未選取任何弱點")
     if len(body.ids) > 1000:
         raise HTTPException(status_code=400, detail="一次最多 1000 筆")
-    applied, skipped, failed = 0, [], []
+    chk = directory.check_owner(db, body.owner, None, body.owner_pick) if body.set_owner else None
+    derr = directory.check_department(db, body.department, None) if body.set_department else None
+    targets = _latest_targets(db)
+    changed, unchanged, skipped, failed = 0, 0, [], []
+    seen: set = set()
+    link = ""
     for fid in body.ids:
         f = db.get(Finding, fid)
         if f is None:
             failed.append({"id": fid, "error": "不存在"}); continue
-        if not _scope_ok(user, f, db):
-            skipped.append({"id": fid, "host": f.host, "error": "無權限"}); continue
+        k = cases.key_str(f)
+        if k in seen:
+            continue
+        seen.add(k)
+        tgt = targets.get(k)
+        if tgt is None:
+            failed.append({"id": fid, "error": "不在最新一批資料裡"}); continue
+        if not _scope_ok(user, tgt, db):
+            skipped.append({"id": fid, "error": "無權限"}); continue
+        if chk is not None and not chk["ok"] and not directory.check_owner(db, body.owner, tgt.owner, body.owner_pick)["ok"]:
+            failed.append({"id": fid, "error": chk["error"]}); continue
+        if derr and directory.check_department(db, body.department, tgt.department):
+            failed.append({"id": fid, "error": derr}); continue
         try:
-            r1 = cases.set_overlay(db, fid, fields)
-            applied += 1
+            before = _overlay_sig(db, tgt)
+            r1 = cases.set_overlay(db, tgt.id, fields, commit=False)
+            if chk and chk.get("person") is not None and not link:
+                link = directory.link_account(db, chk["person"], getattr(user, "username", None))
+            db.flush()
+            if _overlay_sig(db, tgt) == before:
+                unchanged += 1
+            else:
+                changed += 1
             security.log_audit(db, username=getattr(user, "username", None), action="set_overlay",
-                               target=f"vuln:{r1['vuln_key']}", detail=str({k: v for k, v in r1.items() if k in fields or k.startswith("confirm_")}),
+                               target=f"vuln:{r1['vuln_key']}", detail=str({k2: v for k2, v in r1.items() if k2 in fields or k2.startswith("confirm_")}),
                                ip=_client_ip(request))
         except ValueError as e:
             db.rollback()   # 失敗的這筆什麼都不留（2026-10-19）
             failed.append({"id": fid, "error": str(e)})
+    applied = changed + unchanged
     security.log_audit(db, username=getattr(user, "username", None), action="bulk_overlay",
-                       target=f"count:{applied}", detail="fields=%s skipped=%d failed=%d" % (
-                           list(fields.keys()), len(skipped), len(failed)),
+                       target=f"count:{applied}", detail="fields=%s requested=%d unique=%d changed=%d unchanged=%d skipped=%d failed=%d" % (
+                           list(fields.keys()), len(body.ids), len(seen), changed, unchanged, len(skipped), len(failed)),
                        ip=_client_ip(request))
-    return {"applied": applied, "skipped": skipped, "failed": failed, "total": len(body.ids)}
+    return {"requested": len(body.ids), "unique": len(seen), "changed": changed, "unchanged": unchanged,
+            "applied": applied, "skipped": skipped, "failed": failed, "total": len(body.ids), "owner_link": link}
 
 
 @app.post("/api/attachments/bulk")
@@ -1175,6 +1246,7 @@ class AdImportIn(BaseModel):
     columns: list[_S256]                 # 檔案標題列（檢查必要欄位）
     rows: list[AdRowIn]
     apply: bool = False                  # False＝預覽（不寫入）；True＝套用（要帶預覽的 token）
+    confirm_disable: bool = False        # 名錄缺席人數超過上限時，管理者勾「確認停用」（綁進 token）
     token: _S256 | None = None
 
 
@@ -1202,7 +1274,8 @@ async def api_ad_import(request: Request, db: Session = Depends(get_db), user: U
     rows = [r.model_dump() for r in body.rows]
     who = getattr(user, "username", None)
     try:
-        rep = adimport.run_import(db, rows, body.file_name, who, apply=body.apply, token=body.token, sheet=body.sheet)
+        rep = adimport.run_import(db, rows, body.file_name, who, apply=body.apply, token=body.token, sheet=body.sheet,
+                                  confirm_disable=body.confirm_disable)
     except adimport.ImportError_ as e:
         if str(e) == "STALE":
             raise HTTPException(status_code=409, detail="預覽之後名單或帳號資料有變動，請重新預覽再套用")
@@ -1240,6 +1313,85 @@ def api_ad_import_confirm(body: AdPickIn, request: Request, db: Session = Depend
                        detail="employee_id=%s batch=%s %s" % (body.employee_id, body.batch_id, res["action"]),
                        ip=_client_ip(request))
     return res
+
+
+# ── 員工名錄／群組信箱（V2.113）──
+def _is_super(user) -> bool:
+    return config.canon_role(getattr(user, "role", "") or "") == config.ROLE_SUPER
+
+
+@app.get("/api/directory/status")
+def api_directory_status(db: Session = Depends(get_db), user: User = Depends(require_view)):
+    return directory.status(db)
+
+
+_SEARCH_HITS: dict = {}
+SEARCH_RATE = 30   # 每人每分鐘
+
+
+@app.get("/api/directory/search")
+def api_directory_search(q: str = "", db: Session = Depends(get_db), user: User = Depends(require_real_user)):
+    """負責人挑選：最多 20 筆；至少 2 個字；只有啟用的人與群組；非最高管理員員編只露末 4 碼；不給信箱。
+    每人每分鐘 30 次；不記錄搜尋字。"""
+    import time
+    now = time.monotonic()
+    hits = [t for t in _SEARCH_HITS.get(user.username, []) if now - t < 60]
+    if len(hits) >= SEARCH_RATE:
+        raise HTTPException(status_code=429, detail="搜尋太頻繁，請稍候再試")
+    hits.append(now)
+    _SEARCH_HITS[user.username] = hits
+    return {"items": directory.search(db, q[:100], _is_super(user))}
+
+
+@app.get("/api/directory/departments")
+def api_directory_departments(db: Session = Depends(get_db), user: User = Depends(require_view)):
+    return {"items": directory.departments(db), "active": directory.active(db)}
+
+
+@app.get("/api/directory")
+def api_directory_list(db: Session = Depends(get_db), user: User = Depends(require_real_super)):
+    return {"items": directory.listing(db)}
+
+
+class GroupIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int | None = None
+    name: _S256
+    email: _S256
+    department: _S256 | None = None
+    enabled: bool = True
+
+
+@app.post("/api/directory/groups")
+def api_directory_group_save(body: GroupIn, request: Request, db: Session = Depends(get_db),
+                             user: User = Depends(require_real_super)):
+    from sqlalchemy.exc import IntegrityError
+    try:
+        g = directory.save_group(db, body.id, body.name, body.email, body.department, body.enabled, dt.datetime.now())
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="群組名稱重複")
+    security.log_audit(db, username=getattr(user, "username", None), action="directory_group_save",
+                       target="group:%s" % g.chinese_name, detail="email=%s dept=%s enabled=%s" % (g.email, g.department, g.enabled),
+                       ip=_client_ip(request))
+    return {"id": g.id, "name": g.chinese_name, "email": g.email, "department": g.department, "enabled": g.enabled}
+
+
+@app.delete("/api/directory/groups/{gid}")
+def api_directory_group_delete(gid: int, request: Request, db: Session = Depends(get_db),
+                               user: User = Depends(require_real_super)):
+    from .models import DirectoryEntry
+    g = db.get(DirectoryEntry, gid)
+    if g is None or g.kind != directory.KIND_GROUP:
+        raise HTTPException(status_code=404, detail="群組不存在")
+    name = g.chinese_name
+    db.delete(g)   # 跟稽核同一個 commit
+    security.log_audit(db, username=getattr(user, "username", None), action="directory_group_delete",
+                       target="group:%s" % name, ip=_client_ip(request))
+    return {"deleted": True}
 
 
 # ── #8 每週部門週報：本人開關 + 排程手動試跑 ──
@@ -1286,7 +1438,9 @@ def _auto_mail_view(db: Session, user) -> dict:
     ecfg = appsettings.get_email_config(db)
     week = automail.iso_week(now.date())
     return {
-        "settings": cfg, "state": automail.get_state(db),
+        "settings": dict(cfg, departments=[dict(d, windows=directory.windows_view(db, d.get("windows")))
+                                           if isinstance(d, dict) else d for d in cfg.get("departments") or []]),
+        "state": automail.get_state(db),
         "server_now": now.isoformat(timespec="seconds"),
         "server_tz": now.astimezone().strftime("UTC%z"),
         "current_week": week, "this_week_status": automail.claim_status(db, week),
@@ -1312,9 +1466,28 @@ def api_auto_mail_alerts(db: Session = Depends(get_db), user: User = Depends(req
     return {"items": automail.alert_banner(db, dt.datetime.now())}
 
 
+class WindowIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    employee_id: Annotated[str, StringConstraints(max_length=50)] | None = None   # 既有窗口
+    dir_id: int | None = None                                                   # 新挑的名錄列
+    name: _S256 | None = None
+
+
 @app.put("/api/auto-mail")
 def api_auto_mail_put(body: dict, request: Request, db: Session = Depends(get_db),
                       user: User = Depends(require_super)):
+    # 部門窗口（收件人）設定：要真的登入的最高管理員；型別與長度檢查（每部門最多 20 位）
+    for d in (body or {}).get("departments") or []:
+        if isinstance(d, dict) and "windows" in d:
+            if isinstance(user, _AnonUser):
+                raise HTTPException(status_code=401, detail="設定部門窗口需實際登入")
+            ws = d.get("windows")
+            if not isinstance(ws, list) or len(ws) > 20:
+                raise HTTPException(status_code=422, detail="部門窗口格式不符（最多 20 位）")
+            try:
+                d["windows"] = [WindowIn.model_validate(w).model_dump(exclude_none=True) for w in ws]
+            except ValidationError:
+                raise HTTPException(status_code=422, detail="部門窗口格式不符")
     try:
         cfg = automail.save_settings(db, body or {})
     except ValueError as e:

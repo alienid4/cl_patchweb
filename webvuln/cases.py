@@ -72,17 +72,23 @@ def apply_owner_overrides(session: Session, batch: ImportBatch) -> int:
         (Case.owner_override.isnot(None)) | (Case.department_override.isnot(None)))).scalars().all()
     owners = {c.vuln_key: c.owner_override for c in cs if c.owner_override}
     depts = {c.vuln_key: c.department_override for c in cs if c.department_override}
+    by_key = {c.vuln_key: c for c in cs}
     if not owners and not depts:
         return 0
     n = 0
     for f in session.execute(select(Finding).where(Finding.batch_id == batch.id)).scalars().all():
         k = key_str(f)
         ov = owners.get(k)
+        c = by_key.get(k)
         if ov and f.owner != ov:
+            if c is not None:
+                c.owner_excel = f.owner   # 記下這次 Excel 原值，清除覆蓋時還原
             f.owner = ov
             n += 1
         dv = depts.get(k)
         if dv and f.department != dv:
+            if c is not None:
+                c.department_excel = f.department
             f.department = dv
             n += 1
     if n:
@@ -183,7 +189,7 @@ def _get_or_create_case(session: Session, f0: Finding) -> Case:
     return c
 
 
-def set_overlay(session: Session, finding_id: int, fields: dict) -> dict:
+def set_overlay(session: Session, finding_id: int, fields: dict, commit: bool = True) -> dict:
     """管理員在系統內改一筆弱點的可寫欄位（存疊加層、重匯不洗掉、不動 Excel）。
     fields 只改有給的鍵：
       - 'owner' → Case.owner_override，並即時套到最新快照同鍵 finding 的 owner
@@ -209,23 +215,36 @@ def set_overlay(session: Session, finding_id: int, fields: dict) -> dict:
 
     if "owner" in fields:
         ov = (fields["owner"] or "").strip() or None
-        c.owner_override = ov
         latest = query.latest_batch(session)
-        if latest and ov:
-            for f in session.execute(select(Finding).where(Finding.batch_id == latest.id)).scalars().all():
-                if key_str(f) == vk:
-                    f.owner = ov
-                    out["updated"] += 1
+        targets = [f for f in session.execute(select(Finding).where(Finding.batch_id == latest.id)).scalars().all()
+                   if key_str(f) == vk] if latest else []
+        if ov and not c.owner_override and targets:
+            c.owner_excel = targets[0].owner   # 第一次覆蓋：記下 Excel 原值
+        for f in targets:
+            if ov:
+                f.owner = ov
+                out["updated"] += 1
+            elif c.owner_override and c.owner_excel is not None:   # 清除覆蓋 → 立刻還原 Excel 原值
+                f.owner = c.owner_excel
+                out["updated"] += 1
+        c.owner_override = ov
         out["owner"] = ov
     if "department" in fields:
         dv = (fields["department"] or "").strip() or None
+        latest = query.latest_batch(session)
+        targets = [f for f in session.execute(select(Finding).where(Finding.batch_id == latest.id)).scalars().all()
+                   if key_str(f) == vk] if latest else []
+        if dv and not c.department_override and targets:
+            c.department_excel = targets[0].department
+        for f in targets:
+            if dv:
+                f.department = dv
+            elif c.department_override and c.department_excel is not None:
+                f.department = c.department_excel
+        if not dv and c.department_override and c.department_excel is not None:
+            c.department = c.department_excel
         c.department_override = dv
         c.department = dv or c.department
-        latest = query.latest_batch(session)
-        if latest and dv:
-            for f in session.execute(select(Finding).where(Finding.batch_id == latest.id)).scalars().all():
-                if key_str(f) == vk:
-                    f.department = dv
         out["department"] = dv
     if "note" in fields:
         c.track_note = (fields["note"] or "").strip() or None
@@ -248,7 +267,10 @@ def set_overlay(session: Session, finding_id: int, fields: dict) -> dict:
                 out["confirm_by"] = c.confirm_by
                 out["confirm_date"] = c.confirm_date.isoformat()
                 out["confirm_basis"] = c.confirm_basis
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     return out
 
 

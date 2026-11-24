@@ -41,8 +41,21 @@ def resolve_owner(db: Session, owner: Optional[str]) -> dict:
     key = names.owner_key(owner)
     if not key:
         return out
+    from . import directory
+    # 名錄裡同名在職的人超過一位 → 不知道是哪一位，不直寄（裁判 R1；就算只有一位有帳號也一樣）
+    n_dir = len(directory.persons_by_name(db, key)) if directory.active(db) else 0
+    if n_dir > 1:
+        out.update(status="conflict", reason="名錄同名 %d 人，轉部門窗口" % n_dir)
+        return out
     us = [u for u in db.execute(select(User).where(User.is_active.is_(True))).scalars().all()
           if names.owner_key(u.display_name) == key]
+    # 帳號有綁員編、名錄顯示已停用 → 排除（所有 To／CC 一致）
+    gone = [directory.disabled_reason(db, u) for u in us]
+    excluded = [w for w in gone if w]
+    us = [u for u, w in zip(us, gone) if not w]
+    if not us and excluded:
+        out.update(status="excluded", reason="%s，轉部門窗口" % excluded[0])
+        return out
     bound = [u for u in us if u.ad_bound_by and not u.ad_conflict]
     if bound:
         us = bound
@@ -58,9 +71,13 @@ def resolve_owner(db: Session, owner: Optional[str]) -> dict:
         out.update(status="conflict", reason="同名帳號 %d 個、信箱不同（待確認），轉部門窗口" % len(withmail))
         return out
     u = next((x for x in withmail if (x.manager_email or "").strip()), withmail[0])
+    mgr = (u.manager_email or "").strip() or None
+    if mgr and directory.email_disabled(db, mgr):   # AD 主管在名錄已停用 → 不副本
+        mgr = None
+        out["manager_note"] = "AD 主管名錄顯示已停用，不副本"
     out.update(status="ok", user=u, email=u.email.strip(),
-               manager_name=(u.manager_name or "").strip() or None,
-               manager_email=(u.manager_email or "").strip() or None)
+               manager_name=((u.manager_name or "").strip() or None) if mgr else None,
+               manager_email=mgr)
     return out
 
 
@@ -83,20 +100,38 @@ def _dept_admin_email(db: Session, department: Optional[str]) -> Optional[str]:
     return None
 
 
-def resolve_recipient_ex(db: Session, owner: str, dept: Optional[str], cfg: dict) -> tuple:
-    """回 (to, mode, reason, ident)。ident＝resolve_owner 的結果；只有 mode=send 時 ident 才是收件人本人。"""
+def resolve_recipients(db: Session, owner: str, dept: Optional[str], cfg: dict, windows: Optional[list] = None) -> dict:
+    """負責人 → 收件人（V2.113）。回 {to:[...], mode, reason, rule, ident, notes}。
+    順序：①負責人名＝群組名 → 群組信箱 ②負責人本人（名錄／帳號）③設定窗口（名錄的人）
+          ④角色窗口（部門窗口角色帳號，舊）⑤系統預設 ⑥寄不出。rule＝哪一條給的收件人（預覽顯示用）。
+    windows＝呼叫端的部門窗口設定快照（一輪寄送用同一份）；None＝自己讀設定。"""
+    from . import directory
+    g = directory.group_by_name(db, owner)
+    if g is not None and (g.email or "").strip():
+        return {"to": [g.email.strip()], "mode": "send", "reason": "", "rule": "群組",
+                "ident": {"status": "group", "user": None, "email": g.email.strip(), "manager_name": None,
+                          "manager_email": None, "reason": ""}, "notes": []}
     ident = resolve_owner(db, owner)
     if ident["status"] == "ok":
-        return ident["email"], "send", "", ident
-    conflict = ident["status"] == "conflict"
-    da = _dept_admin_email(db, dept)
-    if da:
-        return da, "fallback", (ident["reason"] if conflict else "查無負責人信箱，轉部門窗口"), ident
+        return {"to": [ident["email"]], "mode": "send", "reason": "", "rule": "本人", "ident": ident,
+                "notes": [ident["manager_note"]] if ident.get("manager_note") else []}
+    special = ident["status"] in ("conflict", "excluded")
+    why = (ident["reason"] or "").replace("，轉部門窗口", "") if special else "查無負責人信箱"
+    wins, rule, notes = directory.dept_windows(db, dept, windows)
+    if wins:
+        return {"to": wins, "mode": "fallback", "reason": "%s，轉部門窗口" % why, "rule": rule, "ident": ident, "notes": notes}
     gf = (cfg.get("global_fallback") or "").strip()
     if gf:
-        return gf, "fallback", ("%s；部門無窗口信箱，轉系統預設" % ident["reason"] if conflict
-                                else "查無負責人與窗口信箱，轉系統預設"), ident
-    return None, "skip", (ident["reason"] if conflict else "查無信箱"), ident
+        return {"to": [gf], "mode": "fallback", "reason": ("%s；部門無窗口信箱，轉系統預設" % why) if special
+                else "查無負責人與窗口信箱，轉系統預設", "rule": "系統預設", "ident": ident, "notes": notes}
+    return {"to": [], "mode": "skip", "reason": why if special else "查無信箱", "rule": "寄不出",
+            "ident": ident, "notes": notes}
+
+
+def resolve_recipient_ex(db: Session, owner: str, dept: Optional[str], cfg: dict) -> tuple:
+    """回 (to, mode, reason, ident)。to＝第一個收件人（相容舊呼叫）；多位窗口請用 resolve_recipients。"""
+    r = resolve_recipients(db, owner, dept, cfg)
+    return (r["to"][0] if r["to"] else None), r["mode"], r["reason"], r["ident"]
 
 
 def _resolve_recipient(db: Session, owner: str, dept: Optional[str], cfg: dict) -> tuple:

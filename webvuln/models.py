@@ -86,6 +86,26 @@ class User(Base):
     department_source: Mapped[str | None] = mapped_column(String(20))
 
 
+class DirectoryEntry(Base):
+    """員工名錄＋群組信箱（V2.113，見 directory.py）。person 由 AD 名單匯入刷新；group 由管理者維護。不存電話／分機。"""
+    __tablename__ = "directory_person"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(10), default="person", index=True)     # person／group
+    employee_id: Mapped[str | None] = mapped_column(String(50), unique=True, index=True)   # group 為空
+    chinese_name: Mapped[str] = mapped_column(String(100), index=True)   # names.owner_key；group＝群組名
+    group_key: Mapped[str | None] = mapped_column(String(100), unique=True)   # 群組正規化名（唯一）；person 為空
+    display_name: Mapped[str | None] = mapped_column(String(200))
+    ad_department: Mapped[str | None] = mapped_column(String(256))       # AD 原始部門
+    department: Mapped[str | None] = mapped_column(String(200))          # 對應到的 Excel 部門（deptmap）
+    email: Mapped[str | None] = mapped_column(String(200))
+    manager_name: Mapped[str | None] = mapped_column(String(100))
+    manager_email: Mapped[str | None] = mapped_column(String(200))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    source: Mapped[str | None] = mapped_column(String(20))               # ad_import／manual
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime, default=dt.datetime.now)
+
+
 class UserSession(Base):
     """伺服器端 session（cookie 帶隨機 token 對到這裡）。"""
     __tablename__ = "user_session"
@@ -129,6 +149,9 @@ class Case(Base):
     owner_override: Mapped[str | None] = mapped_column(String(100))
     # 管理員在系統內改的部門（負責人可能是別單位的人）；重匯時套回 finding，不會被洗掉
     department_override: Mapped[str | None] = mapped_column(String(200))
+    # 被覆蓋前的 Excel 原值（V2.113）：清除覆蓋時立刻還原；每次匯入套回覆蓋前會更新成最新 Excel 值
+    owner_excel: Mapped[str | None] = mapped_column(String(100))
+    department_excel: Mapped[str | None] = mapped_column(String(200))
     # 管理追蹤備註（承辦回報「何時做什麼動作」管理人記這裡）；只存系統、不動 Excel 原備註
     track_note: Mapped[str | None] = mapped_column(Text)
     # 預計完成日（承辦回報、管理人登記）；結構化欄位，供週報彙總「預計 X 完成幾支」

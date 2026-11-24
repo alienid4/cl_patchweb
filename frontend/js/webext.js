@@ -1445,21 +1445,26 @@
   }
 
   // 批次改狀態：對已勾選 N 筆套同一組疊加欄（負責人／部門／進度／預計完成日／備註）。詳細預覽後才套。
-  function openBatchStatus(ids, onDone) {
-    ensureLists();
+  async function openBatchStatus(ids, onDone) {
+    await ensureLists();
     var box = U.el('div');
     box.appendChild(U.el('p', { class: 'empty-hint', text: '只勾「要改」的欄位才會套用；其餘保持不動。已選 ' + ids.length + ' 筆。' }));
     var FS = 'padding:6px 10px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px;width:100%';
-    function rowField(labelText, inputEl) {
+    function rowField(labelText, inputEl, keepStyle) {
       var use = U.el('input', { type: 'checkbox' });
-      inputEl.style.cssText = FS;
+      if (!keepStyle) inputEl.style.cssText = FS;
       var r = U.el('div', { style: 'display:grid;grid-template-columns:20px 120px 1fr;gap:8px;align-items:center;margin:6px 0' }, [
         use, U.el('span', { text: labelText, style: 'font-weight:600' }), inputEl]);
       box.appendChild(r);
       return { use: use, el: inputEl };
     }
-    var fOwner = rowField('負責人', U.el('input', { list: 'webext-owners', placeholder: '改負責人為…（可打新名字）' }));
-    var fDept = rowField('部門', U.el('input', { list: 'webext-depts', placeholder: '改部門為…' }));
+    var bOwnerP = dirPicker({ initial: '', placeholder: (_dirStatus || {}).active ? '打 2 個字以上搜尋 AD 名錄' : '改負責人為…（尚未匯入 AD 名單，可自由輸入）' });
+    if (!(_dirStatus || {}).active) bOwnerP.input.setAttribute('list', 'webext-owners');
+    bOwnerP.wrap.style.margin = '0';
+    var fOwner = rowField('負責人', bOwnerP.wrap, true);
+    fOwner.el = bOwnerP.input;
+    var bDeptC = deptChooser('');
+    var fDept = rowField('部門', bDeptC.el);
     var progSel = U.el('select'); PROGRESS_OPTS.forEach(function (o) { progSel.appendChild(U.el('option', { value: o[0], text: o[1] })); });
     var fProg = rowField('處理進度', progSel);
     // 選「資安已確認結案」→ 證據欄出現一次，套到全部勾選的列（2026-10-28）
@@ -1476,8 +1481,11 @@
     function collect() {
       var body = { ids: ids };
       var changes = [];
-      if (fOwner.use.checked) { body.set_owner = true; body.owner = fOwner.el.value.trim(); changes.push('負責人 → ' + (body.owner || '（清除）')); }
-      if (fDept.use.checked) { body.set_department = true; body.department = fDept.el.value.trim(); changes.push('部門 → ' + (body.department || '（清除）')); }
+      if (fOwner.use.checked) {
+        body.set_owner = true; body.owner = bOwnerP.value(); body.owner_pick = bOwnerP.pick();
+        changes.push('負責人 → ' + (body.owner || '（清除）') + (bOwnerP.valid() ? '' : '　⚠ 須從名錄點選'));
+      }
+      if (fDept.use.checked) { body.set_department = true; body.department = bDeptC.value(); changes.push('部門 → ' + (body.department || '（清除）')); }
       // 下拉停在「（不變）」＝不改（2026-10-19：原本勾了就送空字串，等於把進度清掉）；只有「清除進度」才清
       if (fProg.use.checked && progSel.value) {
         body.set_progress = true; body.progress = progSel.value === '__clear__' ? '' : progSel.value;
@@ -1508,6 +1516,7 @@
     apply.addEventListener('click', async function () {
       var c = collect();
       if (!c.changes.length) { UI.toast('請至少勾一個要改的欄位', 'error'); return; }
+      if (fOwner.use.checked && !bOwnerP.valid()) { UI.toast('負責人須從名錄選擇：請打字搜尋後點選一筆', 'error'); return; }
       if (c.body.progress === CONF_PROG && bConf.missing().length) { UI.toast('資安已確認結案要附證據，缺：' + bConf.missing().join('、'), 'error'); return; }
       if (!window.confirm('對 ' + ids.length + ' 筆套用：\n' + c.changes.join('\n') + '\n\n確定？')) return;
       apply.disabled = true; apply.textContent = '套用中…';
@@ -1515,7 +1524,7 @@
         var r = await fetch('/api/findings/bulk-overlay', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c.body) });
         var j = await r.json();
         if (!r.ok) { UI.toast(j.detail || '失敗', 'error'); apply.disabled = false; apply.textContent = '確認套用'; return; }
-        UI.toast('已套用 ' + j.applied + ' 筆' + (j.skipped.length ? ('，略過 ' + j.skipped.length + '（無權限）') : '') + (j.failed.length ? ('，失敗 ' + j.failed.length + '：' + (j.failed[0].error || '')) : ''), j.failed.length ? 'error' : 'success');
+        UI.toast('送出 ' + j.requested + ' 筆（弱點 ' + j.unique + '）：有變更 ' + j.changed + '、沒變 ' + j.unchanged + (j.skipped.length ? ('、略過 ' + j.skipped.length + '（無權限）') : '') + (j.failed.length ? ('、失敗 ' + j.failed.length + '：' + (j.failed[0].error || '')) : ''), j.failed.length ? 'error' : 'success');
         UI.closeModal(); if (onDone) onDone();
       } catch (e) { UI.toast('套用時發生錯誤', 'error'); apply.disabled = false; apply.textContent = '確認套用'; }
     });
@@ -1552,7 +1561,124 @@
 
   // 既有部門/負責人清單(可搜尋下拉用)；開一次抓、之後快取
   var _deptList = null, _ownerList = null;
+
+  // ---- 員工名錄挑選（V2.113）：負責人／部門窗口只能從 AD 名錄挑，打錯字＝沒信箱＝掉球 ----
+  // _dirStatus.failed＝狀態讀不到（跟「還沒匯入」分開：讀不到時不退回自由輸入，給重試）
+  var _dirStatus = null, _dirDepts = null;
+  async function ensureDir(force) {
+    if (_dirStatus && !_dirStatus.failed && !force) return _dirStatus;
+    try { _dirStatus = await jget('/api/directory/status'); }
+    catch (e) { _dirStatus = { active: false, failed: true, warning: '名錄狀態讀取失敗' }; }
+    try { var dd = await jget('/api/directory/departments'); _dirDepts = dd.items || []; } catch (e) { _dirDepts = null; }
+    return _dirStatus;
+  }
+  // opts: {initial, placeholder, groups(預設 true), onPick}
+  // 回 {wrap, input, value(), pick(), changed(), valid()}：名錄啟用（或狀態讀不到）時，改過的值一定要是挑出來的那一筆
+  function dirPicker(opts) {
+    opts = opts || {};
+    var st = _dirStatus || { active: false, failed: true };
+    var strict = st.active || st.failed;   // 讀不到狀態也不准自由輸入
+    var initial = (opts.initial || '').trim();
+    var wrap = U.el('div', { style: 'position:relative;margin:4px 0 12px' });
+    var input = U.el('input', { type: 'text', value: initial, autocomplete: 'off',
+      placeholder: opts.placeholder || (st.active ? '打 2 個字以上搜尋 AD 名錄（姓名／部門），↑↓ 選、Enter 確定' : (st.failed ? '名錄讀取失敗' : '自由輸入')) });
+    input.style.cssText = 'display:block;width:100%;padding:8px;border:1px solid #e3e6ea;border-radius:6px;font-size:14px;font-family:inherit;box-sizing:border-box';
+    var list = U.el('div', { style: 'display:none;position:absolute;z-index:60;left:0;right:0;top:100%;max-height:260px;overflow:auto;background:#fff;border:1px solid #cdd5dd;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.12);text-align:left' });
+    var hint = U.el('div', { style: 'font-size:12px;margin-top:2px' });
+    wrap.appendChild(input); wrap.appendChild(list); wrap.appendChild(hint);
+    var picked = null, seq = 0, timer = null, items = [], hi = -1;
+    function setHint() {
+      hint.innerHTML = '';
+      if (st.failed) {
+        hint.style.color = '#c0392b';
+        hint.appendChild(U.el('span', { text: '⚠ 名錄狀態讀取失敗，暫時不能改負責人 ' }));
+        var rb = U.el('button', { class: 'btn btn-sm btn-secondary', text: '重試', style: 'font-size:11px;padding:1px 8px' });
+        rb.addEventListener('click', async function (ev) {
+          ev.preventDefault();
+          await ensureDir(true); st = _dirStatus || st; strict = st.active || st.failed;
+          if (!st.active && !st.failed) input.setAttribute('list', 'webext-owners');
+          setHint();
+        });
+        hint.appendChild(rb);
+        return;
+      }
+      if (!st.active) { hint.style.color = '#b9770e'; hint.textContent = '⚠ ' + (st.warning || '尚未匯入 AD 名單，負責人無法驗證'); return; }
+      var v = input.value.trim();
+      hint.textContent = picked ? ('已選：' + picked.name + '｜' + (picked.department || '—') + (picked.kind === 'group' ? '｜群組' : (picked.employee_id ? '｜員編末4碼 ' + picked.employee_id.slice(-4) : ''))) :
+        (!v || v === initial ? (v ? '（未變更）' : '') : '⚠ 請從清單點選一筆（不能自由輸入）');
+      hint.style.color = (!picked && v && v !== initial) ? '#c0392b' : '#6b7a73';
+    }
+    function hide() { list.style.display = 'none'; list.innerHTML = ''; items = []; hi = -1; }
+    function choose(it) {
+      picked = it; input.value = it.name; hide(); setHint();
+      if (opts.onPick) opts.onPick(it);
+    }
+    function highlight() {
+      Array.prototype.forEach.call(list.children, function (c, i) { c.style.background = i === hi ? '#e8f5ef' : ''; });
+      if (hi >= 0 && list.children[hi]) list.children[hi].scrollIntoView({ block: 'nearest' });
+    }
+    async function doSearch(q, my) {
+      var j; try { j = await jget('/api/directory/search?q=' + encodeURIComponent(q)); } catch (e) { if (my === seq) { hide(); hint.textContent = '⚠ 搜尋失敗：' + (e.message || e); hint.style.color = '#c0392b'; } return; }
+      if (my !== seq || input.value.trim() !== q) return;   // 只認最後一次搜尋（中途改字的舊結果丟掉）
+      items = (j.items || []).filter(function (it) { return opts.groups !== false || it.kind !== 'group'; });
+      list.innerHTML = ''; hi = -1;
+      if (!items.length) list.appendChild(U.el('div', { style: 'padding:6px 10px;color:#888', text: '名錄查無「' + q + '」' }));
+      items.forEach(function (it, i) {
+        var line = it.kind === 'group' ? (it.name + '｜' + (it.department || '—') + '｜群組信箱') :
+          (it.name + '｜' + (it.department || '—') + '｜' + (it.employee_id ? it.employee_id.slice(-4) : '—'));
+        var row = U.el('div', { style: 'padding:6px 10px;cursor:pointer;border-bottom:1px solid #f0f2f4', text: (i + 1) + '. ' + line });
+        row.addEventListener('mousedown', function (ev) { ev.preventDefault(); choose(it); });
+        list.appendChild(row);
+      });
+      list.style.display = 'block';
+    }
+    input.addEventListener('input', function () {
+      picked = null; hide(); setHint();
+      var my = ++seq;   // 讓進行中的舊回應作廢
+      if (timer) clearTimeout(timer);
+      if (!st.active) return;
+      var q = input.value.trim();
+      if (q.length < 2) return;
+      timer = setTimeout(function () { doSearch(q, my); }, 250);   // debounce
+    });
+    input.addEventListener('keydown', function (ev) {
+      if (list.style.display === 'none' || !items.length) return;
+      if (ev.key === 'ArrowDown') { ev.preventDefault(); hi = Math.min(items.length - 1, hi + 1); highlight(); }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); hi = Math.max(0, hi - 1); highlight(); }
+      else if (ev.key === 'Enter') { if (hi >= 0) { ev.preventDefault(); choose(items[hi]); } }
+      else if (ev.key === 'Escape') { hide(); }
+    });
+    input.addEventListener('blur', function () { seq++; if (timer) clearTimeout(timer); setTimeout(hide, 150); });
+    setHint();
+    return {
+      wrap: wrap, input: input,
+      value: function () { return input.value.trim(); },
+      pick: function () { return picked ? picked.pick_id : null; },
+      picked: function () { return picked; },
+      changed: function () { return input.value.trim() !== initial; },
+      valid: function () { var v = input.value.trim(); return !strict || !v || v === initial || !!picked; },
+      clear: function () { picked = null; input.value = ''; hide(); setHint(); },
+    };
+  }
+  // 部門：名錄啟用時只能從清單選（下拉）；未啟用時維持舊的可搜尋輸入
+  function deptChooser(initial) {
+    var st = _dirStatus || { active: false };
+    initial = (initial || '').trim();
+    if (!st.active || !_dirDepts) {
+      var inp = U.el('input', { type: 'text', value: initial, list: 'webext-depts', autocomplete: 'off', placeholder: '從清單選（避免打錯新增部門）' });
+      return { el: inp, value: function () { return inp.value.trim(); } };
+    }
+    var sel = U.el('select');
+    sel.appendChild(U.el('option', { value: '', text: '（留空＝回到 Excel 值）' }));
+    var opts = _dirDepts.slice();
+    if (initial && opts.indexOf(initial) < 0) opts.unshift(initial);
+    opts.forEach(function (d) { sel.appendChild(U.el('option', { value: d, text: d + (d === initial ? '（目前）' : '') })); });
+    sel.value = initial;
+    return { el: sel, value: function () { return sel.value; } };
+  }
+
   async function ensureLists() {
+    await ensureDir();
     if (_deptList && _ownerList) return;
     try { _deptList = await jget('/api/departments'); } catch (e) { _deptList = _deptList || []; }
     try { _ownerList = await jget('/api/owners'); } catch (e) { _ownerList = _ownerList || []; }
@@ -1626,10 +1752,13 @@
   async function editOverlay(row, done) {
     await ensureLists();
     var title = (row.host || '') + ' / ' + (row.name || row.plugin_id || '');
-    // 負責人：可搜尋下拉＋可新增(找不到就打新名字,有人離職/新進)
-    var owner = U.el('input', { type: 'text', value: row.owner || '', list: 'webext-owners', autocomplete: 'off', placeholder: '可輸入搜尋；找不到可直接打新名字' });
-    // 部門：可搜尋下拉，但只能選現有(存檔時驗證)，避免打錯多出部門
-    var dept = U.el('input', { type: 'text', value: row.department || '', list: 'webext-depts', autocomplete: 'off', placeholder: '從清單選（避免打錯新增部門）' });
+    // 負責人：名錄啟用時只能從 AD 名錄挑（V2.113）；未匯入 AD 名單時維持舊的自由輸入＋提醒
+    var ownerP = dirPicker({ initial: row.owner || '' });
+    if (!(_dirStatus || {}).active) ownerP.input.setAttribute('list', 'webext-owners');
+    var owner = ownerP.input;
+    // 部門：只能從清單選
+    var deptC = deptChooser(row.department || '');
+    var dept = deptC.el;
     var target = U.el('input', { type: 'date', value: row.target_date || '' });
     var progress = U.el('select', {}, [
       U.el('option', { value: '', text: '未標記' }),
@@ -1645,10 +1774,10 @@
     var conf = confirmFields(row);   // 選「資安已確認結案」才出現（2026-10-28）
     var note = U.el('textarea', { rows: '4' });
     note.value = row.track_note || '';
-    [owner, dept, target, progress, note].forEach(function (i) { i.style.cssText = 'display:block;width:100%;margin:4px 0 12px;padding:8px;border:1px solid #e3e6ea;border-radius:6px;font-size:14px;font-family:inherit'; });
+    [dept, target, progress, note].forEach(function (i) { i.style.cssText = 'display:block;width:100%;margin:4px 0 12px;padding:8px;border:1px solid #e3e6ea;border-radius:6px;font-size:14px;font-family:inherit'; });
     var body = U.el('div', {}, [
       U.el('p', { class: 'empty-hint', text: title }),
-      U.el('label', { text: '負責人（留空＝取消覆蓋、回到 Excel 值）' }), owner,
+      U.el('label', { text: '負責人（留空＝取消覆蓋、回到 Excel 值）' }), ownerP.wrap,
       U.el('label', { text: '部門（負責人可能是別單位的人；留空＝回到 Excel 值）' }), dept,
       U.el('label', { text: '處理進度（系統內自己標，不碰 Excel；結論仍以資安 Excel 為主）' }), progress, conf.box,
       U.el('label', { text: '預計完成日（承辦回報預計哪天做完；留空＝清除。供主管週報彙總）' }), target,
@@ -1718,8 +1847,9 @@
     }
     save.addEventListener('click', function () {
       // 部門只能選現有(避免打錯多出部門)；留空＝清除回 Excel 值
-      var dv = (dept.value || '').trim();
-      if (dv && (_deptList || []).indexOf(dv) < 0) {
+      if (!ownerP.valid()) { UI.toast('負責人須從名錄選擇：請打字搜尋後點選一筆', 'error'); owner.focus(); return; }
+      var dv = deptC.value();
+      if (dv && dv !== (row.department || '') && ((_dirStatus || {}).active ? (_dirDepts || []) : (_deptList || [])).indexOf(dv) < 0) {
         UI.toast('部門「' + dv + '」不在清單中。請從既有部門選擇（避免打錯新增部門）；留空＝回到 Excel 值。', 'error');
         dept.focus(); return;
       }
@@ -1737,7 +1867,7 @@
     async function doSave() {
       var r = await fetch('/api/findings/' + row.id + '/overlay', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(Object.assign({ set_owner: true, owner: owner.value, set_department: true, department: dept.value, set_target: true, target_date: target.value, set_progress: true, progress: progress.value, set_note: true, note: note.value },
+        body: JSON.stringify(Object.assign({ set_owner: true, owner: ownerP.value(), owner_pick: ownerP.pick(), set_department: true, department: deptC.value(), set_target: true, target_date: target.value, set_progress: true, progress: progress.value, set_note: true, note: note.value },
           progress.value === CONF_PROG ? conf.values() : {}))
       });
       if (!r.ok) { var e = await r.json().catch(function () { return {}; }); UI.toast('存失敗：' + (e.detail || r.status), 'error'); return; }
@@ -2704,9 +2834,10 @@
           return b;
         }]], flat);
     }
+    var dirInfo = rep.directory || {}, toDis = dirInfo.to_disable || [];
     var T = [
       ['摘要', null], ['收件人變動', chg], ['已對上', matched], ['同名／部門待確認', amb], ['身分衝突', cf], ['查無', nf],
-      ['名單缺席', ab], ['在職但無信箱', nm], ['已停用（清信箱）', dep], ['主管對應', mgr], ['資料錯誤', errs], ['部門對應', dmap], ['部門變動且有開週報', wchg]];
+      ['名單缺席', ab], ['在職但無信箱', nm], ['已停用（清信箱）', dep], ['主管對應', mgr], ['資料錯誤', errs], ['部門對應', dmap], ['部門變動且有開週報', wchg], ['名錄將停用', toDis]];
     var tabs = T.map(function (t, ti) {
       return { label: t[1] ? t[0] + '（' + (ti === 9 ? mgrOk + '/' + mgr.length : t[1].length) + '）' : t[0], render: function (h) {
         if (ti === 0) {
@@ -2770,6 +2901,11 @@
               ['建議部門', function (r) { return r.suggestion; }], ['AD 部門', function (r) { return r.ad_department; }]], dsug));
           }
         }
+        if (ti === 13) {
+          h.appendChild(U.el('p', { class: 'empty-hint', text: '名錄裡在職、但這次檔案沒有的人（套用後標停用，不刪）。上限 ' + (dirInfo.disable_limit || 0) + ' 人；超過要勾「確認停用」才會停用。' }));
+          h.appendChild(amTable([['項次', function (r, i) { return 'Y' + (i + 1); }], ['姓名', function (r) { return r.name; }],
+            ['員編', function (r) { return r.employee_id; }], ['部門', function (r) { return r.department || '—'; }]], rows));
+        }
         if (ti === 12) {
           h.appendChild(U.el('p', { class: 'empty-hint', text: '這些帳號有開「每週部門週報」，套用後部門會改，週報內容會跟著換成新部門。' }));
           h.appendChild(amTable([['項次', function (r, i) { return 'W' + (i + 1); }], ['登入帳號', function (r) { return r.username; }],
@@ -2782,6 +2918,18 @@
     renderTabs(host, tabs, null);
     if ((opt.history || []).length > 1) box.appendChild(U.el('p', { class: 'empty-hint', text: '最近匯入：' + opt.history.slice().reverse().map(function (x) { return '#' + x.batch_id + ' ' + (x.at || '').replace('T', ' ') + ' ' + (x.by || '') + ' ' + (x.file || ''); }).join('　|　') }));
     var foot = null;
+    if (preview && dirInfo.needs_confirm) {   // 將停用人數超過上限：要勾才停用（勾選會重新預覽，綁進確認碼）
+      var cdis = U.el('input', { type: 'checkbox' }); cdis.checked = !!dirInfo.confirmed;
+      cdis.addEventListener('change', async function () {
+        try {
+          var nb = Object.assign({}, opt.body, { apply: false, confirm_disable: cdis.checked });
+          var pv2 = await adPost(nb);
+          UI.closeModal(); showAdReport(pv2, { preview: true, body: nb });
+        } catch (e) { UI.toast('重新預覽失敗：' + (e.message || e), 'error'); cdis.checked = !cdis.checked; }
+      });
+      box.insertBefore(U.el('label', { style: 'display:flex;gap:6px;align-items:center;color:#c0392b;font-weight:700;margin:6px 0' },
+        [cdis, U.el('span', { text: '確認停用名錄裡 ' + toDis.length + ' 位這次檔案沒有的人（超過上限 ' + dirInfo.disable_limit + '，可能是部分名單）' })]), host);
+    }
     if (preview) {
       foot = U.el('button', { class: 'btn btn-primary', text: '確認套用' });
       foot.addEventListener('click', async function () {
@@ -2798,6 +2946,67 @@
       });
     }
     UI.openModal(preview ? 'AD 名單匯入預覽（尚未寫入）' : 'AD 名單匯入結果', box, { wide: true, sticky: true, stack: true, footer: foot });
+  }
+
+
+  // ---- 群組信箱／員工名錄（V2.113，Super Admin）----
+  async function openDirectoryAdmin() {
+    var d;
+    try { d = await jget('/api/directory'); } catch (e) { UI.toast('讀取失敗（需最高權限）', 'error'); return; }
+    await ensureDir(true);
+    var items = d.items || [];
+    var groups = items.filter(function (x) { return x.kind === 'group'; });
+    var persons = items.filter(function (x) { return x.kind === 'person'; });
+    var box = U.el('div', { style: 'text-align:left' });
+    var host = U.el('div'); box.appendChild(host);
+    function groupForm(g) {
+      g = g || {};
+      var FS = 'display:block;width:100%;margin:4px 0 10px;padding:7px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px';
+      var nm = U.el('input', { value: g.name || '', placeholder: '群組名（＝弱點的負責人欄，例：DBA、主機組）', style: FS });
+      var em = U.el('input', { value: g.email || '', placeholder: '群組信箱', style: FS });
+      var dc = deptChooser(g.department || ''); dc.el.style.cssText = FS;
+      var en = U.el('input', { type: 'checkbox' }); en.checked = g.enabled !== false;
+      var fb = U.el('div', {}, [U.el('label', { text: '群組名' }), nm, U.el('label', { text: '群組信箱' }), em,
+        U.el('label', { text: '部門（選填）' }), dc.el, U.el('label', { style: 'display:flex;gap:6px;align-items:center' }, [en, U.el('span', { text: '啟用' })])]);
+      var go = U.el('button', { class: 'btn btn-primary', text: '儲存' });
+      go.addEventListener('click', async function () {
+        var r = await fetch('/api/directory/groups', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: g.id || null, name: nm.value, email: em.value, department: dc.value() || null, enabled: en.checked }) });
+        var j = await r.json().catch(function () { return {}; });
+        if (!r.ok) { UI.toast(typeof j.detail === 'string' ? j.detail : '儲存失敗', 'error'); return; }
+        UI.toast('已儲存群組 ' + j.name, 'success'); UI.closeModal(); UI.closeModal(); openDirectoryAdmin();
+      });
+      UI.openModal(g.id ? '編輯群組信箱' : '新增群組信箱', fb, { footer: go, stack: true, sticky: true });
+    }
+    renderTabs(host, [
+      { label: '群組信箱（' + groups.length + '）', render: function (h) {
+        h.appendChild(U.el('p', { class: 'empty-hint', text: '弱點的負責人是群組名（如 DBA、主機組）時，催辦信寄到這裡設定的群組信箱（找不到本人時、轉部門窗口之前）。' }));
+        var add = U.el('button', { class: 'btn btn-primary btn-sm', text: '新增群組信箱' });
+        add.addEventListener('click', function () { groupForm(null); });
+        h.appendChild(add);
+        h.appendChild(amTable([['項次', function (g, i) { return 'G' + (i + 1); }], ['群組名', function (g) { return g.name; }],
+          ['信箱', function (g) { return g.email; }], ['部門', function (g) { return g.department || '—'; }],
+          ['狀態', function (g) { return g.enabled ? '啟用' : '停用'; }],
+          ['操作', function (g) {
+            var e = U.el('button', { class: 'btn btn-sm btn-secondary', text: '編輯' }); e.addEventListener('click', function () { groupForm(g); });
+            var del = U.el('button', { class: 'btn btn-sm', text: '刪除', style: 'margin-left:6px;border:1px solid #d9534f;color:#c0392b;background:#fff' });
+            del.addEventListener('click', async function () {
+              if (!confirm('刪除群組信箱「' + g.name + '」？負責人是這個群組名的催辦信會改轉部門窗口。')) return;
+              var r = await fetch('/api/directory/groups/' + g.id, { method: 'DELETE' });
+              if (!r.ok) { UI.toast('刪除失敗', 'error'); return; }
+              UI.toast('已刪除', 'success'); UI.closeModal(); openDirectoryAdmin();
+            });
+            return U.el('span', {}, [e, del]);
+          }]], groups));
+      } },
+      { label: '員工名錄（' + persons.length + '）', render: function (h) {
+        h.appendChild(U.el('p', { class: 'empty-hint', text: '由「匯入 AD 名單」確認套用時自動刷新（含停用者）；不存電話／分機。負責人與部門窗口只能從這裡的人挑。' }));
+        h.appendChild(amTable([['項次', function (x, i) { return 'E' + (i + 1); }], ['員編', function (x) { return x.employee_id; }],
+          ['姓名', function (x) { return x.name; }], ['部門', function (x) { return x.department || '—'; }], ['AD 部門', function (x) { return x.ad_department || ''; }],
+          ['信箱', function (x) { return x.email || '（無）'; }], ['主管', function (x) { return x.manager_name || ''; }],
+          ['狀態', function (x) { return x.enabled ? '在職' : '停用'; }], ['更新', function (x) { return (x.updated_at || '').replace('T', ' '); }]], persons));
+      } }], null);
+    UI.openModal('群組信箱／員工名錄', box, { wide: true, sticky: true, stack: true });
   }
 
   // ---- 帳號與權限（Super Admin）：指定部門窗口及其部門 ----
@@ -2885,7 +3094,9 @@
     adImpBtn.addEventListener('click', openAdImport);
     var adRepBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '上次 AD 名單匯入結果' });
     adRepBtn.addEventListener('click', openAdReportLast);
-    box.appendChild(U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 10px' }, [adImpBtn, adRepBtn, fetchBtn, localBtn, seedBtn, fetchOut]));
+    var dirBtn = U.el('button', { class: 'btn btn-secondary btn-sm', text: '群組信箱／員工名錄' });
+    dirBtn.addEventListener('click', openDirectoryAdmin);
+    box.appendChild(U.el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 10px' }, [adImpBtn, adRepBtn, dirBtn, fetchBtn, localBtn, seedBtn, fetchOut]));
 
     if (!users.length) { box.appendChild(U.el('p', { class: 'empty-hint', text: '尚無帳號（AD 登入後會自動建立）。' })); UI.openModal('帳號與權限（Super Admin）', box, { sticky: true, wide: true }); return; }
     var table = U.el('table', { class: 'tracking-table' });
@@ -3300,7 +3511,34 @@
     document.body.insertBefore(bar, document.body.firstChild);
   }
 
+  // 部門窗口（收件人）：名錄挑多位；只存員編（信箱由名錄刷新）；不改任何人的角色
+  function windowsEditor(init) {
+    var cur = (init || []).map(function (w) { return { employee_id: w.employee_id, name: w.name, email: w.email, enabled: w.enabled !== false, status: w.status }; });
+    var el = U.el('div', { style: 'min-width:220px' });
+    var chips = U.el('div');
+    function draw() {
+      chips.innerHTML = '';
+      cur.forEach(function (w, i) {
+        var x = U.el('span', { text: ' ✕', style: 'cursor:pointer;color:#c0392b', title: '移除' });
+        x.addEventListener('click', function () { cur.splice(i, 1); draw(); });
+        chips.appendChild(U.el('div', { style: 'font-size:12.5px;margin:2px 0' + (w.enabled ? '' : ';color:#c0392b') },
+          [U.el('span', { text: (i + 1) + '. ' + (w.name || '') + (w.dir_id ? '（' + (w.department || '新加入') + '）' : '（' + (w.email || '無信箱') + '）') + (w.enabled ? '' : '［' + (w.status || 'AD 已停用') + '，寄信會略過］') }), x]));
+      });
+    }
+    var pk = dirPicker({ groups: false, placeholder: (_dirStatus || {}).active ? '搜尋名錄加入窗口' : '尚未匯入 AD 名單',
+      onPick: function (it) {
+        var did = parseInt(String(it.pick_id || '').replace('d:', ''), 10);
+        if (!cur.some(function (w) { return w.dir_id === did; })) cur.push({ dir_id: did, name: it.name, department: it.department, enabled: true });
+        pk.clear(); draw();
+      } });
+    pk.wrap.style.margin = '4px 0';
+    if (!(_dirStatus || {}).active) pk.input.disabled = true;   // 沒名錄（或讀不到）就不能加窗口
+    el.appendChild(chips); el.appendChild(pk.wrap); draw();
+    return { el: el, value: function () { return cur.map(function (w) { return w.dir_id ? { dir_id: w.dir_id } : { employee_id: w.employee_id }; }); } };
+  }
+
   async function openAutoMail() {
+    await ensureDir(true);
     var data;
     try { data = await jget('/api/auto-mail'); }
     catch (e) { UI.toast('讀取失敗（需最高權限）', 'error'); return; }
@@ -3403,6 +3641,7 @@
         ['部門', function (n) { return n + ((data.departments || []).indexOf(n) < 0 ? '（最新匯入已無此部門）' : ''); }],
         ['CC（多個用逗號或換行）', function (n, i) { return inputs[i].cc; }],
         ['升級副本（主管）', function (n, i) { return inputs[i].esc; }],
+        ['部門窗口（收件人，從名錄挑）', function (n, i) { return inputs[i].win.el; }],
         ['盤點週報', function (n, i) { return mark(inputs[i].inv); }],
         ['到期催辦', function (n, i) { return mark(inputs[i].dun); }],
       ], names.map(function (n) {
@@ -3412,7 +3651,7 @@
         var esc = U.el('textarea', { rows: '1', placeholder: '選填：只有含升級項目的催辦信才副本' }); esc.value = (d.escalate_cc || []).join(', '); esc.style.cssText = FS + ';width:100%;min-width:200px';
         var inv = U.el('input', { type: 'checkbox' }); inv.checked = d.send_inventory !== false;
         var dun = U.el('input', { type: 'checkbox' }); dun.checked = d.send_dunning !== false;
-        inputs.push({ name: n, on: on, cc: cc, esc: esc, inv: inv, dun: dun });
+        inputs.push({ name: n, on: on, cc: cc, esc: esc, inv: inv, dun: dun, win: windowsEditor(d.windows || []) });
         return n;
       }));
       host.appendChild(tbl);
@@ -3425,7 +3664,8 @@
         inputs.forEach(function (x) {
           var cc = amEmails(x.cc.value); bad = bad.concat(amBadEmails(cc));
           var ec = amEmails(x.esc.value); bad = bad.concat(amBadEmails(ec));
-          if (x.on.checked || saved[x.name] || cc.length || ec.length) deps.push({ department: x.name, enabled: x.on.checked, cc: cc, escalate_cc: ec, send_inventory: x.inv.checked, send_dunning: x.dun.checked });
+          var wins = x.win.value();
+          if (x.on.checked || saved[x.name] || cc.length || ec.length || wins.length) deps.push({ department: x.name, enabled: x.on.checked, cc: cc, escalate_cc: ec, windows: wins, send_inventory: x.inv.checked, send_dunning: x.dun.checked });
         });
         var ta = amEmails(taddr.value); bad = bad.concat(amBadEmails(ta));
         var al = amEmails(alr.value); bad = bad.concat(amBadEmails(al));
@@ -3571,11 +3811,14 @@
         ['種類', function (j) { return j.kind_label; }], ['對象', function (j) { return j.label; }],
         ['收件人', function (j) { return j.actual_to ? ((j.actual_to.join(', ') || '（略過）') + '（測試；正式：' + ((j.to || []).join(', ') || '無') + '）') : (j.to || []).join(', '); }],
         ['CC', function (j) { return j.actual_to ? '（測試不寄 CC；正式：' + ((j.cc || []).join(', ') || '無') + '）' : (j.cc || []).join(', '); }],
-        ['筆數', function (j) { return amLink(j.count, function () { drill(j); }); }],
+        ['筆數（週報＝未結數／催辦＝信內筆數）', function (j) { return amLink(j.count, function () { drill(j); }); }],
         ['升級', function (j) { return j.escalate_count ? amLink('★' + j.escalate_count + (j.escalate_missing ? '（' + j.escalate_missing + '）' : (j.escalate_note ? '（' + j.escalate_note + '）' : '')), function () { drill(j); }) : ''; }],
         ['AD 主管', function (j) { return j.kind !== 'dunning' ? '' : (j.ad_manager ? (j.ad_manager.name || '') + '（' + j.ad_manager.email + '）' : '無 AD 主管 → 用部門設定'); }],
-        ['最後 To／最後 CC＋原因', function (j) { return j.kind !== 'dunning' ? '' : 'To：' + ((j.final_to || []).join(', ') || '（無）') + '［' + (j.final_to_reason || '') + '］　CC：' + ((j.final_cc || []).join(', ') || '（無）') + '［' + (j.final_cc_reason || '') + '］'; }],
-        ['狀態', function (j) { return j.mode === 'skip' ? '略過（' + (j.reason || '查無信箱') + '）' : j.mode === 'fallback' ? '轉寄（' + (j.reason || '') + '）' : '寄本人'; }],
+        ['最後 To／最後 CC＋原因', function (j) { return !j.final_to ? '' : 'To：' + ((j.final_to || []).join(', ') || '（無）') + '［' + (j.final_to_reason || '') + '］　CC：' + ((j.final_cc || []).join(', ') || '（無）') + '［' + (j.final_cc_reason || '') + '］'; }],
+        ['收件依據', function (j) {
+          var rule = j.to_rule || (j.kind === 'inventory' ? (j.final_to_reason || '').split('（')[0] : '');
+          return j.mode === 'skip' ? '略過（' + (j.reason || '查無信箱') + '）' : (j.mode === 'fallback' ? '轉寄［' + (rule || '—') + '］（' + (j.reason || '') + '）' : (rule || '本人'));
+        }],
       ], jobs, function (tr, j) { if (j.mode === 'skip') tr.classList.add('row-overdue'); }));
     }
 

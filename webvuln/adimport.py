@@ -41,6 +41,9 @@ FIELDS = ("employeeID", "SamAccountName", "DisplayName", "mail", "department", "
 REQUIRED = ("employeeID", "DisplayName", "mail", "Enabled")
 SRC_IMPORT = "ad_import"
 SRC_MANUAL = "manual"
+# 名錄完整性保護（裁判 R4）：這次檔案缺席的人超過 max(5, 目前啟用人數×3%) → 要管理者額外勾選確認才標停用
+DIR_DISABLE_MIN = 5
+DIR_DISABLE_RATIO = 0.03
 _MAIL_RE = re.compile(r"^[A-Za-z0-9._%+'\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+$")
 _CN_RE = re.compile(r"(?:^|,)\s*CN=((?:\\.|[^,\\])*)", re.IGNORECASE)
 
@@ -339,20 +342,26 @@ def _recipient_view(db: Session, key: str) -> dict:
     return {"to": "", "cc": "", "why": ident["reason"] or "轉部門窗口", "cc_why": "部門設定（升級時；To 轉窗口時不用 AD 主管）"}
 
 
-def token_for(db: Session, rows: list) -> tuple[str, str]:
+def token_for(db: Session, rows: list, confirm_disable: bool = False) -> tuple[str, str]:
+    """確認碼＝名單＋帳號／名錄狀態＋「確認停用」勾選（勾選也綁進來，套用時不能偷換）。"""
+    from .models import DirectoryEntry
     rh = rows_hash(rows)
     sv = state_version(db, [k for k, _ in _owners(db)])
-    return rh, hashlib.sha256((rh + "|" + sv).encode()).hexdigest()
+    dv = hashlib.sha256(json.dumps(sorted((e.id, e.employee_id, e.chinese_name, e.enabled, e.email, e.kind) for e in
+                                          db.execute(select(DirectoryEntry)).scalars().all()), default=str,
+                                   ensure_ascii=False).encode()).hexdigest()
+    return rh, hashlib.sha256((rh + "|" + sv + "|" + dv + "|" + ("C" if confirm_disable else "")).encode()).hexdigest()
 
 
 def run_import(db: Session, rows: list, file_name: Optional[str], who: Optional[str], apply: bool = False,
-               token: Optional[str] = None, sheet: Optional[str] = None, now: Optional[dt.datetime] = None) -> dict:
+               token: Optional[str] = None, sheet: Optional[str] = None, now: Optional[dt.datetime] = None,
+               confirm_disable: bool = False) -> dict:
     """apply=False：預覽（算完整套變更後 rollback，不寫入）；apply=True：token 必須等於預覽那次的 token。"""
     now = now or dt.datetime.now()
     idx = build_index(rows)
     if not idx["counts"][ST_OK]:
         raise ImportError_("名單裡沒有可用的列（啟用＋員編＋有效信箱＋中文名），未匯入")
-    rh, tok = token_for(db, rows)
+    rh, tok = token_for(db, rows, confirm_disable)
     if apply and token != tok:
         raise ImportError_("STALE")
     owners = _owners(db)
@@ -489,6 +498,23 @@ def run_import(db: Session, rows: list, file_name: Optional[str], who: Optional[
                                                "before": dept_before[u.id] or "", "after": u.department or ""})
     rep["managers"] = [{"name": m["name"], "employee_id": m["employee_id"], "manager_name": m["manager_name"],
                         "manager_email": m["manager_email"], "status": m["manager_status"]} for m in rep["matched"]]
+    # 員工名錄（V2.113）：檔案裡有員編＋中文名的人全部刷新（含停用）；名單疑似不完整時不標停用
+    from . import directory
+    from .models import DirectoryEntry
+    in_file = {p["employee_id"] for p in idx["all"] if p.get("employee_id") and p.get("status") != ST_ERROR}
+    enabled_now = [e for e in db.execute(select(DirectoryEntry).where(DirectoryEntry.kind == directory.KIND_PERSON,
+                                                                     DirectoryEntry.enabled.is_(True))).scalars().all()]
+    absent_people = [e for e in enabled_now if e.employee_id not in in_file]
+    n_absent = len(absent_people)
+    limit = max(DIR_DISABLE_MIN, int(len(enabled_now) * DIR_DISABLE_RATIO))
+    over = n_absent > limit
+    allow = (not over) or bool(confirm_disable)
+    rep["directory"] = directory.refresh_from_import(db, idx, known, blocked, now, allow_disable=allow)
+    rep["directory"].update({"to_disable": [{"name": e.chinese_name, "employee_id": e.employee_id,
+                                             "department": e.department or e.ad_department or ""} for e in absent_people],
+                             "disable_limit": limit, "needs_confirm": over, "confirmed": bool(confirm_disable)})
+    if over and not confirm_disable:
+        rep.setdefault("warnings", []).append("名錄裡有 %d 人這次檔案沒有（上限 %d），可能是部分名單：沒勾「確認停用」就不標停用" % (n_absent, limit))
     rep["token"] = tok
     if not apply:
         db.rollback()
