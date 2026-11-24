@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- 不快取：避免更新後瀏覽器仍載入舊版(看不到新版號) -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>國泰證券弱點彙總</title>
+  <link rel="stylesheet" href="css/style.css?v=2.111">
+</head>
+<body>
+
+  <!-- [網頁版加] 開場載入遮罩：第一幀就蓋住，避免「上傳畫面一閃」；webext 載完伺服器快照才移除 -->
+  <div id="webext-boot" style="position:fixed;inset:0;background:#fff;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;font-family:'Microsoft JhengHei','PingFang TC',sans-serif">
+    <div style="width:44px;height:44px;border:4px solid #d7e8df;border-top-color:#1a7f4b;border-radius:50%;animation:wxspin .8s linear infinite"></div>
+    <div style="font-weight:700;font-size:18px;color:#1a7f4b">國泰證券弱點彙總</div>
+    <div style="font-size:13px;color:#8a97a3">載入資料中…</div>
+  </div>
+  <style>@keyframes wxspin{to{transform:rotate(360deg)}}</style>
+  <script>setTimeout(function(){var b=document.getElementById('webext-boot');if(b&&b.parentNode)b.parentNode.removeChild(b);},8000);</script>
+
+  <!-- ===== 頁首 ===== -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand">
+        <img class="brand-logo-img" src="assets/logo.png" alt="國泰證券"
+             onerror="if(!this.dataset.f){this.dataset.f=1;this.src='assets/logo.svg';}else{this.style.display='none';this.nextElementSibling.style.display='inline';}">
+        <span class="brand-logo" style="display:none">🛡️</span>
+        <div>
+          <h1>國泰證券弱點彙總 <span id="app-version" class="app-version"></span></h1>
+          <p class="brand-sub">弱點追蹤管理</p>
+        </div>
+      </div>
+      <div id="header-search" class="header-search hidden">
+        <input id="global-search-input" type="search" class="search-input"
+               placeholder="查詢：負責人／主機／弱點名稱／Plugin ID…（可空格分隔多字）">
+        <button id="global-search-clear" class="btn btn-secondary btn-sm">清除</button>
+      </div>
+
+      <div class="header-actions">
+        <!-- [網頁版加] 登入（寫入功能用），風格沿用原本 .btn -->
+        <span id="webext-user" class="webext-user hidden"></span>
+        <button id="webext-login-btn" class="btn btn-ghost">登入</button>
+        <div class="more-menu">
+          <button id="more-btn" class="btn btn-ghost hidden">其他功能 ▾</button>
+          <div id="more-dropdown" class="more-dropdown hidden">
+            <div class="more-info">檔案：<span id="file-name-tag" class="file-tag"></span></div>
+            <div class="more-divider"></div>
+            <button id="help-btn" class="more-item">使用說明</button>
+            <button id="security-btn" class="more-item">資安說明</button>
+            <button id="features-btn" class="more-item">功能開關</button>
+            <button id="reload-btn" class="more-item">重新選擇檔案</button>
+            <button id="clear-btn" class="more-item">清除暫存資料</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- ===== 上傳區 ===== -->
+    <section id="upload-section" class="upload-section">
+      <div id="drop-zone" class="drop-zone">
+        <div class="drop-icon">📊</div>
+        <h2>選擇或拖放「弱點彙總報告」Excel</h2>
+        <p class="drop-hint">支援 .xlsx / .xls / .csv　·　檔案僅在您的瀏覽器本機解析，不會上傳</p>
+        <button id="pick-btn" class="btn btn-primary btn-lg">選擇檔案</button>
+        <input type="file" id="file-input" accept=".xlsx,.xlsm,.xls,.csv" hidden>
+        <p class="drop-note">
+          預期工作表：<code>1-系統弱點掃描弱點</code>（找不到時自動改用第一個工作表）<br>
+          依「欄位名稱」讀取，欄位順序改變仍可運作。
+        </p>
+        <p class="drop-version">版本 <span id="app-version-up"></span> · <a href="docs/使用說明.html" target="_blank" rel="noopener" class="help-link">使用說明</a> · <a href="docs/資安說明.html" target="_blank" rel="noopener" class="help-link">資安說明</a></p>
+      </div>
+      <div id="error-box" class="error-box"></div>
+    </section>
+
+    <!-- ===== 主內容 ===== -->
+    <section id="main-content" class="main-content hidden">
+     <div class="workspace">
+      <!-- 左側：工作表導覽 -->
+      <nav id="sheet-nav" class="sheet-nav"></nav>
+
+      <!-- 右側：看板 -->
+      <div class="ws-main">
+
+      <!-- 主管總覽首頁 -->
+      <div id="summary-view" class="summary-view"></div>
+
+      <!-- 各項目(工作表)細項 -->
+      <div id="sheet-view" class="hidden">
+
+      <div id="quality-banner" class="quality-banner"></div>
+
+      <div id="scope-info" class="scope-info"></div>
+
+      <!-- 分頁列 -->
+      <nav class="tabs">
+        <button class="tab-btn active" data-tab="dashboard">總覽</button>
+        <button class="tab-btn" data-tab="tracking">人員追蹤</button>
+        <button class="tab-btn" data-tab="matrix">交叉分析</button>
+        <button class="tab-btn" data-tab="stats">例外／展延統計</button>
+        <button class="tab-btn" data-tab="search">查詢</button>
+      </nav>
+
+      <!-- TAB1 Dashboard（子分頁：點選切換，免下拉） -->
+      <div id="tab-dashboard" class="tab-panel active">
+        <nav class="subtabs">
+          <button class="subtab-btn active" data-sub="metrics">指標</button>
+          <button class="subtab-btn" data-sub="sevrepair">結案進度</button>
+          <button class="subtab-btn" data-sub="today">優先處理</button>
+          <button class="subtab-btn" data-sub="risk">風險排序</button>
+          <button class="subtab-btn" data-sub="charts">圖表</button>
+        </nav>
+        <div class="subpanel active" data-sub="metrics">
+          <div id="metric-grid" class="metric-grid"></div>
+        </div>
+        <div class="subpanel" data-sub="sevrepair">
+          <div id="sev-repair" class="sev-repair-panel"></div>
+        </div>
+        <div class="subpanel" data-sub="today">
+          <div id="today-actions" class="action-panel"></div>
+        </div>
+        <div class="subpanel" data-sub="risk">
+          <div id="risk-top" class="risk-panel"></div>
+        </div>
+        <div class="subpanel" data-sub="charts">
+          <div class="charts-row">
+            <div class="chart-card">
+              <div class="chart-wrap"><canvas id="chart-severity"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <div class="chart-wrap"><canvas id="chart-due"></canvas></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB2 人員追蹤 -->
+      <div id="tab-tracking" class="tab-panel">
+        <div class="panel-head">
+          <h3>各負責人未結案追蹤</h3>
+        </div>
+        <div id="tracking-body" class="tracking-body"></div>
+      </div>
+
+      <!-- TAB 交叉分析：嚴重度 × 到期時間帶 逐層過濾 -->
+      <div id="tab-matrix" class="tab-panel">
+        <div class="panel-head">
+          <h3>嚴重度 × 到期時間帶</h3>
+        </div>
+        <div id="matrix-body" class="matrix-cross-body"></div>
+      </div>
+
+      <!-- TAB3 例外/展延統計（子分頁：免下拉） -->
+      <div id="tab-stats" class="tab-panel">
+        <nav class="subtabs">
+          <button class="subtab-btn active" data-sub="stage">階段統計</button>
+          <button class="subtab-btn" data-sub="stats-charts">圖表</button>
+        </nav>
+        <div class="subpanel active" data-sub="stage">
+          <div id="stats-scope" class="scope-info"></div>
+          <div id="stage-grid" class="stage-grid"></div>
+        </div>
+        <div class="subpanel" data-sub="stats-charts">
+          <div class="charts-row">
+            <div class="chart-card"><div class="chart-wrap"><canvas id="chart-stage-pie"></canvas></div></div>
+            <div class="chart-card"><div class="chart-wrap"><canvas id="chart-stage-band"></canvas></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB4 查詢 -->
+      <div id="tab-search" class="tab-panel">
+        <div class="panel-head">
+          <h3>查詢</h3>
+        </div>
+        <div id="search-body" class="search-body"></div>
+      </div>
+
+      </div><!-- /#sheet-view -->
+
+      <!-- [網頁版加] 承辦作業大項的內容區（與 summary-view/sheet-view 並列，靠 .hidden 切換） -->
+      <div id="webext-view" class="hidden">
+        <div class="panel-head"><h3 id="webext-view-title">承辦作業</h3></div>
+        <div id="webext-view-body"></div>
+      </div>
+      </div><!-- /.ws-main -->
+     </div><!-- /.workspace -->
+    </section>
+  </main>
+
+  <!-- ===== Loading 遮罩 ===== -->
+  <div id="loading" class="loading-overlay">
+    <div class="spinner"></div>
+    <p>解析中…</p>
+  </div>
+
+  <!-- ===== Modal ===== -->
+  <div id="modal-overlay" class="modal-overlay">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h3 id="modal-title">明細</h3>
+        <button id="modal-close" class="modal-close" aria-label="關閉">✕</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+      <div id="modal-footer" class="modal-footer"></div>
+    </div>
+  </div>
+
+  <!-- ===== Toast ===== -->
+  <div id="toast" class="toast"></div>
+
+  <footer class="app-footer">
+    <span>國泰證券弱點彙總 · 純前端本機解析 · SheetJS + Chart.js</span>
+  </footer>
+
+  <!-- ===== 相依函式庫：本機載入，離線(無網路)也能用，不依賴 CDN ===== -->
+  <script src="assets/vendor/xlsx.full.min.js?v=2.111"></script>
+  <script src="assets/vendor/chart.umd.min.js?v=2.111"></script>
+
+  <!-- ===== 應用程式 ===== -->
+  <script src="config/version.js?v=2.111"></script>
+  <script src="config/config.js?v=2.111"></script>
+  <script src="config/features.js?v=2.111"></script>
+  <script src="config/profiles.js?v=2.111"></script>
+  <script src="js/utils.js?v=2.111"></script>
+  <script src="js/sheets.js?v=2.111"></script>
+  <script src="js/analysis.js?v=2.111"></script>
+  <script src="js/multi.js?v=2.111"></script>
+  <script src="js/reminder.js?v=2.111"></script>
+  <script src="js/ui-common.js?v=2.111"></script>
+  <script src="js/features.js?v=2.111"></script>
+  <script src="js/dashboard.js?v=2.111"></script>
+  <script src="js/tracking.js?v=2.111"></script>
+  <script src="js/matrix.js?v=2.111"></script>
+  <script src="js/stats.js?v=2.111"></script>
+  <script src="js/search.js?v=2.111"></script>
+  <script src="js/summary.js?v=2.111"></script>
+  <script src="js/history.js?v=2.111"></script>
+  <script src="js/main.js?v=2.111"></script>
+  <!-- 網頁版黏合層（不改原檔）：開頁載入伺服器快照、上傳同時存回伺服器 -->
+  <script src="js/webext.js?v=2.111"></script>
+</body>
+</html>

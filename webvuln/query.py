@@ -1,0 +1,1453 @@
+"""查詢層（唯讀）。讀最新快照，於 Python 端算統計。
+
+刻意在 Python 算(不用 SQL 日期運算)：資料量小、邏輯與單機版一致、且轉 MSSQL 時零改動。
+逾期/分帶用「今天」現算 → 天生避開跨午夜。
+到期時間帶互斥：各帶相加＝未結案(對帳)。
+"""
+from __future__ import annotations
+
+import datetime as dt
+import re
+from contextvars import ContextVar
+from typing import Optional
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from collections import defaultdict
+
+from .config import SLA_POLICY_DAYS, lead_days
+from .logic import (CLOSE_DONE, CLOSE_OPEN, SEVERITIES, STAGE_EXCEPTION,
+                    STAGE_EXTENSION, STAGE_ORIGINAL, applied_exc, applied_ext, overdue_days)
+from .models import Finding, ImportBatch, SheetColumns
+
+BANDS = ("已逾期", "30天內", "31–90天", "91–180天", "180天以上", "無到期日")
+HIGH_RISK = ("Critical", "High")
+SOON_DAYS = 30
+
+
+def latest_batch(session: Session) -> Optional[ImportBatch]:
+    return session.execute(
+        select(ImportBatch).where(ImportBatch.is_latest.is_(True))
+    ).scalars().first()
+
+
+# 「只看某一張工作表」：由 main 的中介層依網址參數 ?sheet= 設定，這個請求內所有統計都只算那張表。
+# 用 contextvar 而不是每個函式加參數：週報、到期倒數、負責人、趨勢…十幾支查詢都經過 _latest_findings，
+# 一處生效就不會有哪個面板漏改、數字對不起來。
+SHEET_SCOPE: ContextVar[Optional[str]] = ContextVar("SHEET_SCOPE", default=None)
+
+# 「登入者能看的範圍」（使用者 2026-10-06：AD 登入看週報，應該只看到自己的弱點）。由 main 的中介層依登入者設定：
+#   None＝不限（Super Admin／免登入模式／排程等沒有請求的背景工作）
+#   ("owner", 名字)＝一般使用者只看負責人是自己的；("dept", 部門)＝部門窗口只看自己部門；("deny", "")＝看不到（缺名字或部門）
+# 跟寫入權限 _scope_ok 同一套規則：看得到的＝改得了的。
+VIEW_SCOPE: ContextVar[Optional[tuple]] = ContextVar("VIEW_SCOPE", default=None)
+
+
+def _in_view(f: Finding) -> bool:
+    sc = VIEW_SCOPE.get()
+    if not sc:
+        return True
+    kind, val = sc
+    if kind == "owner":
+        return bool(val) and (f.owner or "").strip() == val
+    if kind == "dept":
+        return bool(val) and (f.department or "") == val
+    return False
+
+
+def _view_filter(rows):
+    return rows if not VIEW_SCOPE.get() else [f for f in rows if _in_view(f)]
+
+
+def _latest_findings(session: Session, department: Optional[str] = None) -> list[Finding]:
+    b = latest_batch(session)
+    if not b:
+        return []
+    q = select(Finding).where(Finding.batch_id == b.id)
+    if department and department != "全部":
+        q = q.where(Finding.department == department)
+    sheet = SHEET_SCOPE.get()
+    if sheet:
+        q = q.where(Finding.sheet_key == sheet)
+    return _view_filter(list(session.execute(q).scalars().all()))
+
+
+def sheets(session: Session) -> list[dict]:
+    """最新快照有哪些工作表（依原本順序）與各自未結筆數；不受 ?sheet= 影響。"""
+    b = latest_batch(session)
+    if not b:
+        return []
+    order: list[str] = []
+    cnt: dict[str, int] = {}
+    pmap = submitted_map(session)
+    for f in session.execute(select(Finding).where(Finding.batch_id == b.id).order_by(Finding.id)).scalars().all():
+        if not _in_view(f):   # 工作表筆數也只算看得到的
+            continue
+        k = f.sheet_key or "未分類"
+        if k not in cnt:
+            cnt[k] = 0
+            order.append(k)
+        if effectively_open(f, pmap):
+            cnt[k] += 1
+    return [{"sheet_key": k, "open": cnt[k]} for k in order]
+
+
+def reconcile_check(session: Session, department: Optional[str] = None,
+                    today: Optional[dt.date] = None) -> dict:
+    """對帳健檢（讓操作者不靠 AI 也能確認數字兜得起來）：跑一組「A 應等於 B」不變式，
+    每條回實際數字＋是否相等。全綠＝畫面各數字彼此一致、且對得上匯入總列數。"""
+    today = today or dt.date.today()
+    b = latest_batch(session)
+    allf = _latest_findings(session, None)
+    fs = _latest_findings(session, department)
+    pmap = submitted_map(session)
+    excel_open = [f for f in fs if f.close_status == CLOSE_OPEN]
+    open_ = [f for f in fs if effectively_open(f, pmap)]          # 系統未結
+    confirmed = [f for f in fs if is_sec_confirmed(f, pmap)]      # 資安已確認、Excel 待更新
+    closed = [f for f in fs if f.close_status == CLOSE_DONE]
+    other = [f for f in fs if f.close_status not in (CLOSE_OPEN, CLOSE_DONE)]
+    n = len(open_)
+
+    # 到期桶(互斥)
+    due = {"overdue": 0, "d30": 0, "d31_60": 0, "d61_90": 0, "d90plus": 0, "no_due": 0}
+    for f in open_:
+        if not f.effective_due:
+            due["no_due"] += 1; continue
+        d = (f.effective_due - today).days
+        due["overdue" if d < 0 else "d30" if d <= 30 else "d31_60" if d <= 60
+            else "d61_90" if d <= 90 else "d90plus"] += 1
+    # 處置階段
+    stg = {"original": 0, "extension": 0, "exception": 0, "other": 0}
+    for f in open_:
+        k = {STAGE_ORIGINAL: "original", STAGE_EXTENSION: "extension",
+             STAGE_EXCEPTION: "exception"}.get(f.stage, "other")
+        stg[k] += 1
+    # 嚴重度(含 Unknown)
+    sev = len([f for f in open_ if f.severity in SEVERITIES])
+    sev_unknown = n - sev
+    # 各部門未結相加(全域)
+    dept_open = {}
+    for f in allf:
+        if effectively_open(f, pmap):
+            dept_open[f.department or "（未填）"] = dept_open.get(f.department or "（未填）", 0) + 1
+
+    def eq(name, a_label, a, b_label, b):
+        return {"name": name, "a_label": a_label, "a": a, "b_label": b_label, "b": b, "ok": a == b}
+
+    checks = [
+        # 資安已確認結案（2026-10-28）：系統把它當已結案，Excel 還沒更新 → 說得清楚差在哪
+        eq("Excel 未結 ＝ 系統未結 ＋ 資安已確認待更新", "Excel 未結", len(excel_open),
+           "系統未結%d+資安已確認%d" % (n, len(confirmed)), n + len(confirmed)),
+        eq("未結案 ＝ 到期各桶相加", "未結案", n,
+           "+".join(str(due[k]) for k in ["overdue", "d30", "d31_60", "d61_90", "d90plus", "no_due"]),
+           sum(due.values())),
+        eq("未結案 ＝ 處置階段相加", "未結案", n,
+           "原始%d+展延%d+例外%d+其他%d" % (stg["original"], stg["extension"], stg["exception"], stg["other"]),
+           sum(stg.values())),
+        eq("未結案 ＝ 嚴重度相加", "未結案", n, "四級%d+Unknown%d" % (sev, sev_unknown), sev + sev_unknown),
+        eq("本報表全部列 ＝ 未結＋資安已確認＋已結＋其他", "全部列", len(fs),
+           "未結%d+資安已確認%d+已結%d+其他%d" % (n, len(confirmed), len(closed), len(other)),
+           n + len(confirmed) + len(closed) + len(other)),
+    ]
+    if not department or department == "全部":
+        checks.append(eq("全部未結 ＝ 各部門未結相加", "全部未結", n,
+                         "%d 個部門相加" % len(dept_open), sum(dept_open.values())))
+
+    return {
+        "scope": department or "全部",
+        "source_file": b.source_file if b else None,
+        "imported_at": b.imported_at.isoformat() if b else None,
+        "import_rows": b.row_count if b else 0,
+        "latest_rows": len(allf),
+        "excel_open": len(excel_open), "sec_confirmed": len(confirmed),
+        "all_ok": all(c["ok"] for c in checks),
+        "checks": checks,
+    }
+
+
+def action_line(f: Finding, today: dt.date) -> dt.date | None:
+    """行動線＝真正到期日 − 申請提前期（依嚴重度）。"""
+    if not f.effective_due:
+        return None
+    return f.effective_due - dt.timedelta(days=lead_days(f.severity))
+
+
+def should_apply(f: Finding, today: dt.date) -> bool:
+    """應提申請的資格：未結案、還在原始修補期限(＝尚未申請的代理)、已過行動線。
+    （純資格判斷；「應申請未申請」還要扣掉承辦已標送審中的，見 submitted_map / is_submitted。2026-10-19）"""
+    al = action_line(f, today)
+    return (f.close_status == CLOSE_OPEN and f.stage == STAGE_ORIGINAL
+            and al is not None and al <= today)
+
+
+def _marks() -> tuple:
+    from .logic import PROGRESS_SUBMITTED, PROGRESS_SEC_CONFIRMED
+    return PROGRESS_SUBMITTED + (PROGRESS_SEC_CONFIRMED,)
+
+
+def submitted_map(session: Session) -> dict:
+    """會改變計數歸類的承辦標記 {vuln_key 字串: 進度}：展延送審中／例外送審中（2026-10-19）、
+    資安已確認結案（2026-10-28）。所有計數都拿這份給 effectively_open／apply_bucket。"""
+    from .models import Case
+    return {c.vuln_key: c.status for c in session.execute(
+        select(Case).where(Case.status.in_(_marks()))).scalars().all()}
+
+
+def is_sec_confirmed(f: Finding, pmap: dict) -> bool:
+    """Excel 仍未結案、但資安已確認結案（待 Excel 更新）。"""
+    from .logic import PROGRESS_SEC_CONFIRMED
+    return f.close_status == CLOSE_OPEN and pmap.get("|".join(vuln_key(f)), "") == PROGRESS_SEC_CONFIRMED
+
+
+def effectively_open(f: Finding, pmap: dict) -> bool:
+    """★ 系統口徑的「未結」（2026-10-28 唯一判斷）：Excel 未結案、且資安沒有確認結案。
+    未結、已逾期、近期到期、高風險、需申請各類、到期桶、負責人／弱點統計、摘要、排行、趨勢(最新批)、
+    週報分解樹、自動寄信……全部走這一支；Excel／finding 本身不改。"""
+    return f.close_status == CLOSE_OPEN and not is_sec_confirmed(f, pmap)
+
+
+def eff_close_status(f: Finding, pmap: dict) -> Optional[str]:
+    """系統口徑的結案狀態：資安已確認（Excel 仍未結）→「資安已確認」；其餘照 Excel。"""
+    from .logic import STATUS_SEC_CONFIRMED
+    return STATUS_SEC_CONFIRMED if is_sec_confirmed(f, pmap) else f.close_status
+
+
+def confirm_stale_days(session: Session) -> int:
+    """資安已確認結案超過幾天 Excel 仍未結 → 確認逾期未更新（系統設定 confirm_stale_days，預設 14）。"""
+    from . import appsettings
+    try:
+        return int(appsettings.get_general_config(session)["confirm_stale_days"])
+    except Exception:  # noqa: BLE001
+        from .logic import CONFIRM_STALE_DAYS_DEFAULT
+        return CONFIRM_STALE_DAYS_DEFAULT
+
+
+def is_submitted(f: Finding, smap: dict) -> bool:
+    """有標送審中（展延送審中／例外送審中）且未結案。歸哪一類一律走 apply_bucket（已核准優先）。"""
+    from .logic import PROGRESS_SUBMITTED
+    return f.close_status == CLOSE_OPEN and smap.get("|".join(vuln_key(f)), "") in PROGRESS_SUBMITTED
+
+
+# 需申請四類（互斥）＋暫無需申請：週報、下鑽、與上次比較、首頁摘要、排行、分解樹(前端 applyTree 同一套)都用這一支。
+# 缺期限・待確認（V2.108）：未結、但完全沒有可用的到期日（Excel 日期欄空白或寫成看不懂的文字）。
+# 以前會掉進「暫無需申請（期限內）」被當成不急，現在單獨一類、算在需申請裡，要人去確認期限。
+BUCKET_NEED, BUCKET_SUB, BUCKET_APP, BUCKET_NODUE = "need", "sub", "app", "nodue"
+
+
+def approval_expired(f: Finding, T: dt.date) -> bool:
+    """例外／展延到 T 那天已過期（使用者 2026-10-07：過了期限就失去例外管理，要處理）。"""
+    return (f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
+            and f.effective_due is not None and f.effective_due < T)
+
+
+def apply_bucket(f: Finding, today: dt.date, smap: dict, T: Optional[dt.date] = None) -> Optional[str]:
+    """一筆未結弱點在 T 那天（預設今天）落在哪一類（2026-10-19 統一口徑）：
+      app  已核准：例外／展延到 T 還沒過期（有核准就算，送審中的標記不搶）
+      sub  送審中（等核准）：承辦標了展延送審中／例外送審中，且不是有效的已核准
+           （含原本的核准已過期、承辦已送續申請的列）
+      need 應申請未申請：原始期限且到 T 已過行動線，或例外／展延到 T 已過期；且沒標送審中
+      nodue 缺期限・待確認：沒有任何可用到期日、且沒標送審中（V2.108）
+      None 暫無需申請（或已結案）
+    不改到期日、不改階段；送審中只是承辦疊加層的標記。資安已確認結案的列＝已結案，不在任何一類（2026-10-28）。"""
+    if not effectively_open(f, smap):
+        return None
+    T = T or today
+    ap = f.stage in (STAGE_EXCEPTION, STAGE_EXTENSION)
+    if ap and not approval_expired(f, T):
+        return BUCKET_APP
+    if is_submitted(f, smap):
+        return BUCKET_SUB
+    if ap:
+        return BUCKET_NEED                       # 例外／展延到那天已過期
+    if f.effective_due is None:
+        return BUCKET_NODUE                      # 沒有可用到期日 → 不能當「期限內」，要確認
+    al = action_line(f, today)
+    if f.stage == STAGE_ORIGINAL and al is not None and al <= T:
+        return BUCKET_NEED
+    return None
+
+
+def submit_stale_days(session: Session) -> int:
+    """送審中超過幾天算「送審逾時」（系統設定 submit_stale_days，預設 14）。"""
+    from . import appsettings
+    try:
+        return int(appsettings.get_general_config(session)["submit_stale_days"])
+    except Exception:  # noqa: BLE001
+        from .logic import SUBMIT_STALE_DAYS_DEFAULT
+        return SUBMIT_STALE_DAYS_DEFAULT
+
+
+def _band(f: Finding, today: dt.date) -> str:
+    if not f.effective_due:
+        return "無到期日"
+    d = (f.effective_due - today).days  # 距到期天數，負數＝已逾期
+    if d < 0:
+        return "已逾期"
+    if d <= 30:
+        return "30天內"
+    if d <= 90:
+        return "31–90天"
+    if d <= 180:
+        return "91–180天"
+    return "180天以上"
+
+
+def departments(session: Session) -> list[str]:
+    b = latest_batch(session)
+    if not b:
+        return []
+    rows = session.execute(
+        select(Finding.department).where(Finding.batch_id == b.id).distinct()
+    ).scalars().all()
+    return sorted(d for d in rows if d)
+
+
+def owners(session: Session) -> list[str]:
+    """最新快照的既有負責人清單(去重排序)，供編輯視窗可搜尋下拉。"""
+    b = latest_batch(session)
+    if not b:
+        return []
+    rows = session.execute(
+        select(Finding.owner).where(Finding.batch_id == b.id).distinct()
+    ).scalars().all()
+    return sorted(o.strip() for o in rows if o and o.strip())
+
+
+def summary(session: Session, department: Optional[str] = None,
+            lead: int = 0, today: Optional[dt.date] = None) -> dict:
+    today = today or dt.date.today()
+    fs = _latest_findings(session, department)
+    _smap = submitted_map(session)
+    open_ = [f for f in fs if effectively_open(f, _smap)]
+    # 已結＝Excel 已結案＋資安已確認結案（系統口徑當已結，2026-10-28；總覽快照同步改成結案，數字才一致）
+    done = [f for f in fs if f.close_status == CLOSE_DONE or is_sec_confirmed(f, _smap)]
+
+    bands = {k: 0 for k in BANDS}
+    for f in open_:
+        bands[_band(f, today)] += 1
+
+    # 到期倒數桶(互斥，依距到期天數)：已逾期/30天內/31–60/61–90/90天以上/無到期日
+    # lead＝申請提前量；給值時用「行動期限＝到期−lead」倒數(該動手倒數)
+    due = {"overdue": 0, "d30": 0, "d31_60": 0, "d61_90": 0, "d90plus": 0, "no_due": 0}
+    for f in open_:
+        if not f.effective_due:
+            due["no_due"] += 1; continue
+        d = (f.effective_due - today).days - lead
+        if d < 0: due["overdue"] += 1
+        elif d <= 30: due["d30"] += 1
+        elif d <= 60: due["d31_60"] += 1
+        elif d <= 90: due["d61_90"] += 1
+        else: due["d90plus"] += 1
+
+    sev = {k: 0 for k in SEVERITIES}
+    for f in open_:
+        if f.severity in sev:
+            sev[f.severity] += 1
+
+    total = len(open_) + len(done)
+    b = latest_batch(session)
+    imported = b.imported_at if b else None
+    return {
+        "department": department or "全部",
+        "unresolved": len(open_),
+        "overdue": bands["已逾期"],
+        "due_soon": bands["30天內"],
+        "high_risk": sum(1 for f in open_ if f.severity in HIGH_RISK),
+        "closed": len(done),
+        "close_rate": round(len(done) / total * 100, 1) if total else 0.0,
+        "bands": bands,          # 互斥；相加＝unresolved（對帳）
+        "due_buckets": due,      # 到期倒數桶(互斥)：overdue/d30/d31_60/d61_90/d90plus/no_due
+        "severity": sev,
+        # 行動線：應提申請未提（扣掉承辦已標送審中的，2026-10-19）
+        "should_apply": sum(1 for f in open_ if apply_bucket(f, today, _smap) == BUCKET_NEED),
+        "lead_days": lead_days(None),   # 預設提前期天數
+        # 缺口（會被漏掉的洞）
+        "gaps": {
+            "no_owner": sum(1 for f in open_ if not (f.owner or "").strip()),
+            "no_due": sum(1 for f in open_ if not f.effective_due),
+        },
+        # 資料新鮮度
+        "freshness": {
+            "imported_at": imported.isoformat() if imported else None,
+            "days_ago": (today - imported.date()).days if imported else None,
+        },
+    }
+
+
+def display_host(f) -> Optional[str]:
+    """畫面顯示用的主機：Excel 沒有主機/IP 的列（如 10-外部威脅情資）退回顯示「資產名稱」。
+    只影響顯示；DB 的 host 與承辦疊加層的鍵(sheet|plugin|host)不動，避免重匯後承辦進度對不上。"""
+    if f.host:
+        return f.host
+    raw = f.raw or {}
+    a = raw.get("資產名稱")
+    return str(a).strip() if a not in (None, "") and str(a).strip() else f.host
+
+
+def _note_no_progress(c) -> bool:
+    """追蹤備註有寫、但處理進度沒設（狀態沒轉，卻以為轉了）。"""
+    if c is None:
+        return False
+    from .logic import PROGRESS_VALUES
+    return bool((c.track_note or "").strip()) and c.status not in PROGRESS_VALUES
+
+
+def _is_reported(c) -> bool:
+    """承辦有沒有回報過：處理進度、預計完成日、追蹤備註任一有填（不看 Excel，只看系統內疊加欄）。"""
+    if c is None:
+        return False
+    from .logic import PROGRESS_VALUES
+    return (c.status in PROGRESS_VALUES) or bool((c.track_note or "").strip()) or (c.target_date is not None)
+
+
+def find(session: Session, department: Optional[str] = None, status: str = CLOSE_OPEN,
+         owner: Optional[str] = None, severity: Optional[str] = None,
+         band: Optional[str] = None, keyword: Optional[str] = None,
+         sheet_key: Optional[str] = None, stage: Optional[str] = None,
+         only_should_apply: bool = False, applied: bool = False, apply_intent: bool = False,
+         progress: Optional[str] = None, submitted: bool = False,
+         no_owner: bool = False, no_due: bool = False,
+         risk: Optional[str] = None, apply_universe: bool = False, not_apply: bool = False,
+         no_due_bucket: bool = False,
+         no_target: bool = False, flagged: bool = False, reported: bool = False,
+         note_no_progress: bool = False,
+         due_min: Optional[int] = None, due_max: Optional[int] = None, lead: int = 0,
+         horizon: Optional[int] = None,
+         today: Optional[dt.date] = None) -> list[dict]:
+    """下鑽明細。status 預設未結案；band 互斥分帶；keyword 多字 AND；
+    only_should_apply/no_owner/no_due 為缺口/行動線清單；applied=已申請處置中(例外/展延，官方)；
+    apply_intent=管理人標「要申請展延/例外」(尚未在 Excel 反映)；
+    submitted=承辦標「展延送審中／例外送審中」且資安還沒核准(送審中・等核准，2026-10-19)。
+    需申請四類互斥：應申請未申請(_need)／送審中(_sub)／已核准(_apv)／缺期限・待確認(no_due_bucket)，
+    其餘＝暫無需申請。"""
+    today = today or dt.date.today()
+    fs = _latest_findings(session, department)
+    # horizon＝週報分解表的拉霸（2026-10-07 使用者更正）：時間推進 N 天，看「那一天」的狀態。
+    #   應申請未申請＝那天已過行動線的原始期限 ＋ 例外／展延到那天已到期的（失去例外管理，要處理）
+    #   已核准＝例外／展延到那天還沒到期的。
+    # 不給 horizon＝今天，跟 horizon=0 完全一樣（2026-10-19 統一：今天已過期的例外／展延也不算已核准）。
+    # 送審中（等核准）（2026-10-19）：分類一律走 apply_bucket（已核准優先 → 送審中 → 應申請未申請）。
+    _T = today + dt.timedelta(days=horizon or 0)
+    _smap = submitted_map(session)
+    _bk = lambda f: apply_bucket(f, today, _smap, _T)
+    _apv = lambda f: _bk(f) == BUCKET_APP
+    _sub = lambda f: _bk(f) == BUCKET_SUB
+    _need = lambda f: _bk(f) == BUCKET_NEED
+
+    # 結案狀態篩選走系統口徑（2026-10-28）：未結案＝effectively_open（不含資安已確認）；
+    # 「資安已確認」＝Excel 未結、資安已確認待更新；其餘（已結案／其他）照 Excel；全部＝不篩。
+    # 待追查(flagged)的母體另含資安已確認（確認逾期未更新也要追），所以 flagged 時未結案改用 Excel 未結案。
+    from .logic import STATUS_SEC_CONFIRMED
+    if status and status != "全部":
+        if status == CLOSE_OPEN:
+            fs = [f for f in fs if (f.close_status == CLOSE_OPEN if flagged else effectively_open(f, _smap))]
+        elif status == STATUS_SEC_CONFIRMED:
+            fs = [f for f in fs if is_sec_confirmed(f, _smap)]
+        else:
+            fs = [f for f in fs if f.close_status == status]
+    if owner:
+        fs = [f for f in fs if f.owner == owner]
+    if severity:
+        fs = [f for f in fs if f.severity == severity]
+    if sheet_key:
+        fs = [f for f in fs if f.sheet_key == sheet_key]
+    if stage:
+        fs = [f for f in fs if f.stage == stage]
+    if applied:  # 已核准：備註有申請紀錄→階段已成 例外/展延(備註閘門)，且到那天(預設今天)還沒到期
+        fs = [f for f in fs if _apv(f)]
+    if apply_intent:  # 管理人標「要申請展延/例外」(不論官方階段，含尚未反映的送審中)
+        from .models import Case as _C
+        from .logic import PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC
+        _ks = {c.vuln_key for c in session.execute(
+            select(_C).where(_C.status.in_((PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC)))).scalars().all()}
+        fs = [f for f in fs if "|".join(vuln_key(f)) in _ks]
+    if progress:  # 管理人處理進度精確比對(如 等複掃)；對 Case.status
+        from .models import Case as _C2
+        _pk = {c.vuln_key for c in session.execute(
+            select(_C2).where(_C2.status == progress)).scalars().all()}
+        fs = [f for f in fs if "|".join(vuln_key(f)) in _pk]
+    if band:
+        fs = [f for f in fs if _band(f, today) == band]
+    if only_should_apply:   # 應申請未申請＝有資格、但承辦還沒標送審中
+        fs = [f for f in fs if _need(f)]
+    if submitted:           # 送審中（等核准）
+        fs = [f for f in fs if _sub(f)]
+    if no_due_bucket:       # 缺期限・待確認（需申請的第四類，V2.108）
+        fs = [f for f in fs if _bk(f) == BUCKET_NODUE]
+    if no_owner:
+        fs = [f for f in fs if not (f.owner or "").strip()]
+    if no_due:
+        fs = [f for f in fs if not f.effective_due]
+    # 總覽「每個數字可下鑽」用的組合篩選：
+    if risk == "high":   # 高風險 = Critical/High
+        fs = [f for f in fs if f.severity in HIGH_RISK]
+    elif risk == "high_only":   # 高風險未結（不含已逾期、近期到期），與總覽三卡互斥同口徑
+        fs = [f for f in fs if _is_high_only(f, today)]
+    _in_universe = lambda f: _bk(f) is not None
+    if apply_universe:   # 需申請母體 = 應申請未申請 + 送審中 + 已核准 + 缺期限・待確認
+        fs = [f for f in fs if _in_universe(f)]
+    if not_apply:        # 還不急 = 未結但不在申請母體(原始階段、有到期日、未過行動線)
+        fs = [f for f in fs if not _in_universe(f)]
+    if no_target:        # 母體內「未回報預計完成日」(要催)
+        from .models import Case as _Ct
+        _tgt = {c.vuln_key for c in session.execute(
+            select(_Ct).where(_Ct.target_date.isnot(None))).scalars().all()}
+        fs = [f for f in fs if _in_universe(f) and "|".join(vuln_key(f)) not in _tgt]
+    if flagged:          # 需追查⚠️(說要申請/做完卻未反映：待查或可疑)
+        from .models import Case as _Cf
+        from .logic import classify_progress, FLAGGED_STATES, PROGRESS_VALUES, CLOSE_DONE as _CD
+        _b2 = latest_batch(session); _imp2 = _b2.imported_at if _b2 else None
+        _sd2 = submit_stale_days(session)
+        _cd2 = confirm_stale_days(session)
+        _cm = {c.vuln_key: c for c in session.execute(select(_Cf)).scalars().all()}
+        def _flag(f):
+            c = _cm.get("|".join(vuln_key(f)))
+            p = c.status if (c and c.status in PROGRESS_VALUES) else ""
+            return classify_progress(p, f.close_status == _CD, f.stage,
+                                     (c.status_changed_at if c else None), _imp2, _sd2,
+                                     approval_expired=approval_expired(f, today),
+                                     confirm_date=(c.confirm_date if c else None),
+                                     confirm_stale_days=_cd2) in FLAGGED_STATES
+        fs = [f for f in fs if _flag(f)]
+    if note_no_progress:   # ⚠ 待補進度：追蹤備註有寫、處理進度沒設（常見：寫了「修補完畢」卻忘了設等複掃）
+        from .models import Case as _Cn
+        _nk = {c.vuln_key for c in session.execute(select(_Cn)).scalars().all() if _note_no_progress(c)}
+        fs = [f for f in fs if "|".join(vuln_key(f)) in _nk]
+    if reported:         # 已回報：處理進度／預計完成日／追蹤備註任一有填
+        from .models import Case as _Cr
+        _rk = {c.vuln_key for c in session.execute(select(_Cr)).scalars().all() if _is_reported(c)}
+        fs = [f for f in fs if "|".join(vuln_key(f)) in _rk]
+    if due_min is not None or due_max is not None:  # 距到期天數範圍(到期倒數)；lead=申請提前量(行動期限=到期−lead)
+        def _dd(f):
+            return (f.effective_due - today).days - lead if f.effective_due else None
+        fs = [f for f in fs if _dd(f) is not None
+              and (due_min is None or _dd(f) >= due_min)
+              and (due_max is None or _dd(f) <= due_max)]
+    if keyword:
+        terms = [t.lower() for t in keyword.split() if t.strip()]
+        def hit(f: Finding) -> bool:
+            hay = " ".join(str(x or "").lower() for x in (f.host, f.owner, f.name, f.plugin_id))
+            return all(t in hay for t in terms)
+        fs = [f for f in fs if hit(f)]
+
+    row = _row_builder(session, today)
+    return [row(f) for f in fs]
+
+
+def _row_builder(session: Session, today: dt.date, progress_map: Optional[dict] = None):
+    """清單每一列的輸出格式（find 與「與上次匯入比較」共用，欄位一致畫面才吃得下）。
+    progress_map：給了就用它當承辦進度（比較「上次」時用當時拍下的進度），不給就讀目前的承辦疊加層。"""
+    # 系統內寫的疊加欄(追蹤備註/預計完成日/處理進度)：依穩定鍵對 Case 帶進每列(非 Excel 原值)
+    from .models import Attachment, Case
+    from .logic import PROGRESS_VALUES, PROGRESS_SUBMITTED, classify_progress, submit_age_days, CLOSE_DONE
+    ov = {c.vuln_key: c for c in session.execute(
+        select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None))
+                           | (Case.status.in_(PROGRESS_VALUES)))).scalars().all()}
+    # 申請佐證文件數(依穩定鍵)：清單顯示 📎N
+    att_count: dict = {}
+    for (vk,) in session.execute(select(Attachment.vuln_key)).all():
+        att_count[vk] = att_count.get(vk, 0) + 1
+    _b = latest_batch(session)
+    _imp = _b.imported_at if _b else None
+    _sd = submit_stale_days(session)
+    _cd = confirm_stale_days(session)
+    _smap = {k: c.status for k, c in ov.items() if c.status in _marks()}
+    from .logic import PROGRESS_SEC_CONFIRMED, confirm_age_days
+
+    def row(f: Finding) -> dict:
+        c = ov.get("|".join(vuln_key(f)))   # Case.vuln_key 是字串(| 接)
+        progress = (c.status if (c and c.status in PROGRESS_VALUES) else "")
+        pstate = classify_progress(progress, f.close_status == CLOSE_DONE, f.stage,
+                                   (c.status_changed_at if c else None), _imp, _sd,
+                                   approval_expired=approval_expired(f, today),
+                                   confirm_date=(c.confirm_date if c else None), confirm_stale_days=_cd)
+        _conf = progress == PROGRESS_SEC_CONFIRMED
+        _bucket = apply_bucket(f, today, _smap)   # 跟清單同一支判斷，列旗標才不會跟清單對不上
+        return {
+            "id": f.id, "sheet_key": f.sheet_key, "plugin_id": f.plugin_id, "name": f.name,
+            "host": display_host(f), "severity": f.severity, "department": f.department, "owner": f.owner,
+            "effective_due": f.effective_due.isoformat() if f.effective_due else None,
+            "remediation_due": f.remediation_due.isoformat() if f.remediation_due else None,  # 原始/應計修補期限(展延前)
+            "first_extension_due": f.first_extension_due.isoformat() if f.first_extension_due else None,  # Excel 首次展延上限(原值)
+            "exception_due": f.exception_due.isoformat() if f.exception_due else None,  # Excel 例外核准期限(原值)
+            # 日期有填但備註沒有對應申請紀錄＝不算數（compute_effective_due 的規則）；畫面用來把那格標灰
+            "ext_applied": applied_ext(f.remark, f.raw), "exc_applied": applied_exc(f.remark, f.raw),
+            "overdue_days": overdue_days(f.effective_due, today),
+            "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
+            "apply_bucket": _bucket,                  # 需申請四類（need/sub/app/nodue/None）；自動寄信分段用同一份（V2.109）
+            "should_apply": _bucket == BUCKET_NEED,   # 應申請未申請（同 ?should_apply=true；不含送審中、含已過期的例外／展延）
+            "submitted": _bucket == BUCKET_SUB,       # 送審中（等核准）（同 ?submitted=true）
+            # 送審中標了幾天（送審逾時判斷用；畫面顯示「已 N 天」）
+            "submit_days": (submit_age_days(c.status_changed_at) if (c and progress in PROGRESS_SUBMITTED) else None),
+            "stage": f.stage, "close_status": f.close_status, "remark": f.remark,
+            # 系統口徑結案狀態（Excel 未結、資安已確認 →「資安已確認」）與證據（2026-10-28）
+            "eff_close_status": eff_close_status(f, _smap),
+            "sec_confirmed": is_sec_confirmed(f, _smap),
+            "confirm_by": c.confirm_by if (c and _conf) else None,
+            "confirm_date": (c.confirm_date.isoformat() if (c and _conf and c.confirm_date) else None),
+            "confirm_basis": c.confirm_basis if (c and _conf) else None,
+            "confirm_days": (confirm_age_days(c.confirm_date, today) if (c and _conf and c.confirm_date) else None),
+            "track_note": c.track_note if c else None,
+            "target_date": (c.target_date.isoformat() if (c and c.target_date) else None),
+            "progress": progress,          # 管理人手動標(處理中/要申請展延/要申請例外/等複掃/展延送審中/例外送審中/'')
+            "progress_state": pstate,      # 進度對帳(等複掃→複掃三態；要申請→申請三態；送審中→等核准/送審逾時/已反映；否則 None)
+            "att_count": att_count.get("|".join(vuln_key(f)), 0),   # 申請佐證文件數(📎)
+            "raw": f.raw or {},   # 原始整列(原欄名→原值)，供「匯出此清單」帶出全部原始欄位
+        }
+
+    if progress_map is not None:
+        _base = row
+
+        def row(f: Finding) -> dict:
+            d = _base(f)
+            d["progress"] = progress_map.get("|".join(vuln_key(f)), "")
+            return d
+    return row
+
+
+# 單機版解析器(sheets.js parseCounts)的「計數字串」，如「中*4 低*2」：一列會展開成 4+2 筆紀錄。
+_COUNT_RE = re.compile(r"(嚴重|critical|高|high|中|medium|低|low|info)\s*[\*xX×]\s*(\d+)", re.I)
+
+
+def _count_total(raw: dict) -> Optional[int]:
+    """這列是「計數字串」列的話，回傳它會展開成幾筆；不是就回 None。"""
+    for v in raw.values():
+        if isinstance(v, str):
+            ms = _COUNT_RE.findall(v)
+            if ms:
+                return sum(int(n) for _, n in ms)
+    return None
+
+
+def _collapse_counted(rows: list) -> list:
+    """把「計數字串」展開出來的重複列收回原本那一列。
+
+    為什麼：匯入時「中*4 低*2」這種列被(刻意)展開成 6 筆、每筆都帶同一份原始列。
+    快照若照存回前端，前端重組 Excel 再解析時每一列又會再展開一次（6 列 × 6 = 36），
+    2026-10-05 實測第 9 表：Excel 28 列 → DB 136 筆 → 畫面 1042 筆。
+    規則：連續且內容完全相同的 L 列，若該列計數總和為 n(>1) 且 L 是 n 的倍數，收成 L/n 列
+    （Excel 本來就有兩列一模一樣時也保得住）；對不上就原樣不動，寧可不收也不要收錯。"""
+    out: list = []
+    i = 0
+    while i < len(rows):
+        j = i
+        while j + 1 < len(rows) and rows[j + 1] == rows[i]:
+            j += 1
+        run = j - i + 1
+        n = _count_total(rows[i]) if isinstance(rows[i], dict) else None
+        keep = run // n if (n and n > 1 and run % n == 0) else run
+        out.extend(rows[i] for _ in range(keep))
+        i = j + 1
+    return out
+
+
+def _drop_blank_columns(columns: list, rows: list) -> tuple[list, list]:
+    """去掉「沒有欄名、而且整欄都沒值」的欄。原始 Excel 的使用範圍常被拉到最後一欄(XFD)，
+    2026-10-05 實測第 3 表 16,377 欄只有 33 欄有值，前端重組 Excel 光這張就多花 1 秒以上。
+    有欄名的欄一律保留（就算整欄空白），不改原封匯出(export 用 sheet_columns，不經這裡)。"""
+    def blank(v):
+        return v is None or (isinstance(v, str) and v.strip() == "")
+    used = set()
+    for r in rows:
+        for k, v in r.items():
+            if not blank(v):
+                used.add(k)
+    keep = [c for c in columns if str(c).strip() or c in used]
+    keep_set = set(keep)
+    slim = [{k: v for k, v in r.items() if k in keep_set or not blank(v)} for r in rows]
+    return keep, slim
+
+
+# 開頁輕量版：平均每格超過這麼多字的欄先不送（Description、Plugin Output 之類，約占快照七成大小）。
+# 原畫面不用這些欄；要看完整內容的「原始資料」與「完整匯出」另外向伺服器要，不經快照。
+HEAVY_AVG_CHARS = 150
+# 解析器會用到的欄（profiles.js fieldAliases），再長也一律保留，不然畫面會少欄位
+_PROTECT_COLS = ["負責單位", "部門", "負責人", "負責人員", "Host", "內部Host IP", "標的IP", "IP", "網址", "資產名稱",
+                 "Name", "風險項目", "發現", "標的", "Audit Name", "外部情資", "Plugin ID",
+                 "發現嚴重性", "Finding Severity", "Risk Severity", "風險等級", "Grade", "風險",
+                 "修補期限", "改善期限", "預計完成日期", "改善完成日", "首次展延上限", "首次展延期限", "例外核准期限",
+                 "預計完成日", "修補完成日", "結案狀態", "改善狀況", "結案日期", "備註"]
+
+
+def _nk(v) -> str:
+    import unicodedata
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(v))).lower()
+
+
+_PROTECT_NK = [_nk(c) for c in _PROTECT_COLS]
+
+
+def _drop_heavy_columns(columns: list, rows: list) -> tuple[list, list, list]:
+    """去掉長文字欄（輕量版快照用）。回傳 (保留欄, 瘦身後的列, 被拿掉的欄)。"""
+    heavy = []
+    for c in columns:
+        k = _nk(c)
+        if any(k == p or k.startswith(p) for p in _PROTECT_NK):
+            continue
+        if "單號" in str(c):   # 例外單號／展延單號＝已申請的依據（V2.108），再長也要送，不然前端判定會跟後端不一樣
+            continue
+        vals = [r.get(c) for r in rows if r.get(c) not in (None, "")]
+        if vals and sum(len(str(v)) for v in vals) / len(vals) > HEAVY_AVG_CHARS:
+            heavy.append(c)
+    if not heavy:
+        return columns, rows, []
+    hs = set(heavy)
+    return ([c for c in columns if c not in hs],
+            [{k: v for k, v in r.items() if k not in hs} for r in rows], heavy)
+
+
+# 伺服器端快取：同一批資料只算一次（開機後、匯入後先算好），之後開頁直接回傳 bytes。
+# 2026-10-06 實測 221：每次重算 0.44 秒；快照只跟匯入批次有關（不含承辦疊加層），批次沒換就不會變。
+_SNAP_CACHE: dict = {}
+
+
+def _overrides(session: Session) -> tuple[dict, dict]:
+    """系統上改過的負責人／部門（承辦疊加層），{vuln_key 字串: 值}。"""
+    from .models import Case
+    cs = session.execute(select(Case).where(
+        (Case.owner_override.isnot(None)) | (Case.department_override.isnot(None)))).scalars().all()
+    return ({c.vuln_key: c.owner_override for c in cs if c.owner_override},
+            {c.vuln_key: c.department_override for c in cs if c.department_override})
+
+
+def _confirmed_keys(session: Session) -> set:
+    """處理進度＝資安已確認結案的 vuln_key（快照把這些列的結案狀態改成已結案，2026-10-28）。"""
+    from .models import Case
+    from .logic import PROGRESS_SEC_CONFIRMED
+    return {c.vuln_key for c in session.execute(
+        select(Case).where(Case.status == PROGRESS_SEC_CONFIRMED)).scalars().all()}
+
+
+def override_sig(session: Session) -> str:
+    """換人紀錄＋資安已確認結案的指紋（穩定、跨重啟不變）：伺服器快取與瀏覽器 IndexedDB 快取都用它判斷要不要重抓。"""
+    import hashlib
+    ov_o, ov_d = _overrides(session)
+    conf = sorted(_confirmed_keys(session))
+    sig = (sorted(ov_o.items()), sorted(ov_d.items())) + ((tuple(conf),) if conf else ())   # 沒確認時指紋跟舊版一樣
+    return hashlib.sha1(repr(sig).encode("utf-8")).hexdigest()[:12]
+
+
+def snapshot_bytes(session: Session, light: bool = True) -> bytes:
+    import json as _json
+    b = latest_batch(session)
+    ov_sig = override_sig(session)   # 改了負責人／部門也要讓快取失效（總覽要跟週報同一套數字）
+    key = (b.id if b else None, b.imported_at.isoformat() if (b and b.imported_at) else None, light, ov_sig)
+    hit = _SNAP_CACHE.get(key)
+    if hit is not None:
+        return hit
+    data = _json.dumps(snapshot(session, light=light), ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+    _SNAP_CACHE.clear()          # 只留最新一批，舊的丟掉
+    _SNAP_CACHE[key] = data
+    return data
+
+
+def warm_snapshot_cache() -> None:
+    """背景預先算好輕量快照（開機、匯入後呼叫）；失敗不影響服務，下次有人開頁再算。"""
+    from .db import SessionLocal
+    try:
+        with SessionLocal() as s:
+            snapshot_bytes(s, light=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[snapshot] 預熱失敗：{e!r}")
+
+
+# 總覽（前端吃原始列自己算）要跟週報同一套數字：系統上改過的負責人／部門，寫回快照那一列的對應欄。
+# 使用者 2026-10-06：「數字要對得上才有說服力」——原本總覽照 Excel、週報照改過的，同一部門差 6 筆。
+_UNIT_NK = [_nk(c) for c in ("負責單位", "部門")]
+_OWNER_NK = [_nk(c) for c in ("負責人", "負責人員")]
+# 結案狀態欄（profiles.js closeStatus 別名）：資安已確認結案的列改成這個值，總覽（瀏覽器算）就跟週報同一套數字。
+# 值帶「已結案」讓 sheets.js classifyClose 判成 closed（不含「未結」等未結字樣），括號讓人看得出是系統標的。
+_CLOSE_ALIASES = ("結案狀態", "改善狀況")
+SNAP_CONFIRMED_VALUE = "已結案（資安已確認，待Excel更新）"
+_CONF_MARK = "\u0000sec_confirmed"   # 暫時標記（收回重複列後就拿掉，不會送到前端）
+
+
+def _resolve_close_col(cols: list) -> Optional[str]:
+    """跟前端 sheets.js resolveField 同一套（2026-10-28 獨立測試指出）：先「正規化後完全相同」、再「前綴」，
+    別名依序 結案狀態 → 改善狀況。所以「結案狀態(資安填)」這種欄名也找得到。"""
+    hs = [(c, _nk(c)) for c in cols if str(c).strip()]
+    for a in _CLOSE_ALIASES:
+        for c, k in hs:
+            if k == _nk(a):
+                return c
+    for a in _CLOSE_ALIASES:
+        for c, k in hs:
+            if k.startswith(_nk(a)):
+                return c
+    return None
+
+
+def _patch_confirmed(cols: list, rows: list) -> tuple[list, list]:
+    """資安已確認結案的列（帶暫時標記）：把這張表的結案狀態欄改成「已結案（資安已確認…）」。
+    這張表沒有結案狀態欄 → 補一欄「結案狀態」（只有已確認的列有值；其餘空白＝前端照舊判未結）。"""
+    if not any(_CONF_MARK in r for r in rows):
+        return cols, rows
+    col = _resolve_close_col(cols)
+    if col is None:
+        col = "結案狀態"
+        cols = list(cols) + [col]
+    out = []
+    for r in rows:
+        if _CONF_MARK in r:
+            r = {k: v for k, v in r.items() if k != _CONF_MARK}
+            r[col] = SNAP_CONFIRMED_VALUE
+        out.append(r)
+    return cols, out
+
+
+def _with_overrides(f: Finding, ov_o: dict, ov_d: dict, confirmed: Optional[set] = None) -> dict:
+    raw = f.raw or {}
+    k = "|".join(vuln_key(f))
+    if confirmed and f.close_status == CLOSE_OPEN and k in confirmed:
+        raw = dict(raw)
+        raw[_CONF_MARK] = True   # 哪一欄要改等整張表的欄名確定後再決定（_patch_confirmed）
+    if not ov_o and not ov_d:
+        return raw
+    o, d = ov_o.get(k), ov_d.get(k)
+    if not o and not d:
+        return raw
+    out = dict(raw)
+    unit_keys = [c for c in out if _nk(c) in _UNIT_NK]
+    owner_keys = [c for c in out if _nk(c) in _OWNER_NK]
+    if owner_keys:
+        for c in owner_keys:
+            if o:
+                out[c] = o
+        for c in unit_keys:
+            if d:
+                out[c] = d
+    else:
+        # 沒有負責人欄（如第 8 表「部門-人名」寫在同一格）：整格重組成「部門-負責人」
+        for c in unit_keys:
+            out[c] = f"{d or f.department or ''}-{o or f.owner or ''}"
+    return out
+
+
+def snapshot(session: Session, light: bool = False) -> dict:
+    """回傳最新快照的『原封』內容（各表欄序＋每列 raw），供網頁前端重建 workbook、
+    餵回單機版原本的解析/render pipeline，畫面與單機版一模一樣。
+    送出前做兩件事（都不改 DB）：收回計數字串展開的重複列、去掉沒名字的空白欄。"""
+    b = latest_batch(session)
+    if not b:
+        return {"source_file": None, "imported_at": None, "sheets": []}
+    scs = {sc.sheet_key: sc.columns for sc in session.execute(
+        select(SheetColumns).where(SheetColumns.batch_id == b.id)).scalars().all()}
+    findings = session.execute(
+        select(Finding).where(Finding.batch_id == b.id).order_by(Finding.id)).scalars().all()
+    order: list[str] = []
+    by: dict[str, list] = {}
+    ov_o, ov_d = _overrides(session)
+    conf = _confirmed_keys(session)
+    for f in findings:
+        k = f.sheet_key or "未分類"
+        if k not in by:
+            by[k] = []
+            order.append(k)
+        by[k].append(_with_overrides(f, ov_o, ov_d, conf))
+    sheets = []
+    for k in order:
+        rows = _collapse_counted(by[k])
+        cols = scs.get(k) or ([c for c in rows[0].keys() if c != _CONF_MARK] if rows else [])
+        cols, rows = _patch_confirmed(cols, rows)   # 資安已確認結案 → 總覽跟週報同一套（2026-10-28）
+        cols, rows = _drop_blank_columns(cols, rows)
+        dropped: list = []
+        if light:
+            cols, rows, dropped = _drop_heavy_columns(cols, rows)
+        sheets.append({"name": k, "columns": cols, "rows": rows, "omitted": dropped})
+    return {"source_file": b.source_file, "batch_id": b.id,   # batch_id：一致性自檢比對同一批用（V2.110）
+            "imported_at": b.imported_at.isoformat() if b.imported_at else None,
+            "light": light, "sheets": sheets}
+
+
+def matrix(session: Session, department: Optional[str] = None,
+           today: Optional[dt.date] = None) -> dict:
+    """交叉分析：嚴重度 × 到期時間帶（未結案）。列/欄總和皆可對帳到未結案總數。"""
+    today = today or dt.date.today()
+    open_ = _open_findings(session, department)
+    grid: dict = {s: {b: 0 for b in BANDS} for s in SEVERITIES}
+    unknown = {b: 0 for b in BANDS}
+    has_unknown = False
+    for f in open_:
+        b = _band(f, today)
+        if f.severity in grid:
+            grid[f.severity][b] += 1
+        else:
+            unknown[b] += 1
+            has_unknown = True
+    order = list(SEVERITIES) + (["Unknown"] if has_unknown else [])
+    if has_unknown:
+        grid["Unknown"] = unknown
+    return {
+        "severities": order,
+        "bands": list(BANDS),
+        "cells": grid,  # cells[severity][band] = 數
+        "row_totals": {s: sum(grid[s].values()) for s in order},
+        "col_totals": {b: sum(grid[s][b] for s in order) for b in BANDS},
+        "total": len(open_),
+    }
+
+
+def stage_stats(session: Session, department: Optional[str] = None,
+                today: Optional[dt.date] = None) -> dict:
+    """例外／展延階段統計（未結案）：各處置階段計數＋占比＋『例外核准未到期』安全名單。"""
+    today = today or dt.date.today()
+    open_ = _open_findings(session, department)
+    total = len(open_)
+    order = [STAGE_EXCEPTION, STAGE_EXTENSION, STAGE_ORIGINAL]
+    cnt = {k: 0 for k in order}
+    other = 0
+    for f in open_:
+        if f.stage in cnt:
+            cnt[f.stage] += 1
+        else:
+            other += 1
+    stages = [{"key": k, "count": cnt[k],
+               "pct": round(cnt[k] / total * 100, 1) if total else 0.0} for k in order]
+    if other:
+        stages.append({"key": "未定期限", "count": other,
+                       "pct": round(other / total * 100, 1) if total else 0.0})
+    # 安全名單：例外管理中 且 真正到期日尚未到（例外核准未到期）
+    safe = sum(1 for f in open_ if f.stage == STAGE_EXCEPTION
+               and f.effective_due and f.effective_due > today)
+    return {"total": total, "stages": stages, "safe_count": safe}
+
+
+def _open_findings(session: Session, department: Optional[str] = None) -> list[Finding]:
+    """最新批、系統口徑未結（effectively_open，不含資安已確認結案）。"""
+    pmap = submitted_map(session)
+    return [f for f in _latest_findings(session, department) if effectively_open(f, pmap)]
+
+
+def _is_overdue(f: Finding, today: dt.date) -> bool:
+    od = overdue_days(f.effective_due, today)
+    return od is not None and od > 0
+
+
+SOON_DAYS = 30   # 「近期到期」門檻，與前端 config.soonDays 一致
+
+
+def _is_high_only(f: Finding, today: dt.date) -> bool:
+    """高風險未結，扣掉已逾期與近期到期（總覽三卡互斥：已逾期 → 近期到期 → 其餘高風險）。"""
+    if f.severity not in HIGH_RISK:
+        return False
+    if not f.effective_due:
+        return True
+    d = (f.effective_due - today).days
+    return d > SOON_DAYS
+
+
+def owner_summary(session: Session, department: Optional[str] = None,
+                  due_max: Optional[int] = None, lead: int = 0,
+                  today: Optional[dt.date] = None) -> list[dict]:
+    """負責人角度（主管要的『誰還有幾隻、各自什麼狀態』）：
+    每位負責人未結案 總數 ＋ 處置階段分佈(原始/首次展延/例外管理) ＋ 等複掃(自行結案請複審) ＋ 逾期。
+    stage 合計＝total；rescan/overdue 為疊加標記(子集)。依逾期、總數排序。
+    due_max 給值時只算『距到期 ≤ due_max 天』(含已逾期；無到期日排除)，供近期到期彙總。"""
+    from collections import defaultdict
+    from .models import Case
+    from .logic import PROGRESS_RESCAN, PROGRESS_VALUES
+    today = today or dt.date.today()
+    fs = _open_findings(session, department)
+    if due_max is not None:
+        fs = [f for f in fs if f.effective_due and (f.effective_due - today).days - lead <= due_max]
+    prog = {c.vuln_key: c.status for c in session.execute(
+        select(Case).where(Case.status.in_(PROGRESS_VALUES))).scalars().all()}
+
+    agg: dict = defaultdict(lambda: {"total": 0, "original": 0, "extension": 0, "exception": 0,
+                                     "other": 0, "rescan": 0, "overdue": 0, "_depts": set()})
+    for f in fs:
+        name = (f.owner or "").strip() or "— 未指派"
+        a = agg[name]
+        a["total"] += 1
+        if f.stage == STAGE_ORIGINAL: a["original"] += 1
+        elif f.stage == STAGE_EXTENSION: a["extension"] += 1
+        elif f.stage == STAGE_EXCEPTION: a["exception"] += 1
+        else: a["other"] += 1
+        if _is_overdue(f, today): a["overdue"] += 1
+        if prog.get("|".join(vuln_key(f))) == PROGRESS_RESCAN: a["rescan"] += 1
+        if f.department: a["_depts"].add(f.department)
+    rows = []
+    for name, a in agg.items():
+        depts = sorted(a.pop("_depts"))
+        rows.append({"owner": name, "department": "、".join(depts), **a})
+    rows.sort(key=lambda r: (-r["overdue"], -r["total"]))
+    return rows
+
+
+def _ranking(session: Session, key_fn, department: Optional[str], today: dt.date) -> list[dict]:
+    fs = _latest_findings(session, department)
+    _smap = submitted_map(session)
+    agg: dict = defaultdict(lambda: {"unresolved": 0, "overdue": 0, "should_apply": 0,
+                                     "high_risk": 0, "closed": 0})
+    for f in fs:
+        a = agg[key_fn(f)]
+        if effectively_open(f, _smap):
+            a["unresolved"] += 1
+            if _is_overdue(f, today):
+                a["overdue"] += 1
+            if apply_bucket(f, today, _smap) == BUCKET_NEED:
+                a["should_apply"] += 1
+            if f.severity in HIGH_RISK:
+                a["high_risk"] += 1
+        elif f.close_status == CLOSE_DONE or is_sec_confirmed(f, _smap):   # 資安已確認＝已結（2026-10-28）
+            a["closed"] += 1
+    rows = []
+    for name, a in agg.items():
+        total = a["unresolved"] + a["closed"]
+        rows.append({"name": name, **a,
+                     "close_rate": round(a["closed"] / total * 100, 1) if total else 0.0})
+    rows.sort(key=lambda r: (-r["overdue"], -r["unresolved"]))
+    return rows
+
+
+def ranking_by_owner(session: Session, department: Optional[str] = None,
+                     today: Optional[dt.date] = None) -> list[dict]:
+    """負責人數量排行榜（依逾期多寡）。"""
+    return _ranking(session, lambda f: (f.owner or "").strip() or "— 未指派",
+                    department, today or dt.date.today())
+
+
+def ranking_by_department(session: Session, today: Optional[dt.date] = None) -> list[dict]:
+    return _ranking(session, lambda f: (f.department or "").strip() or "— 未填",
+                    None, today or dt.date.today())
+
+
+def vuln_key(f: Finding) -> tuple:
+    """穩定識別鍵。有 row_key(新制，見 rowkey.py)就用它；沒有(轉換前或轉換失敗)才用舊的
+    sheet+plugin+正規化 host。轉換是全庫一次做完，所以同一時間不會新舊混用。"""
+    rk = getattr(f, "row_key", None)
+    if rk:
+        return (rk,)
+    host = (f.host or "").strip().lower()
+    return ((f.sheet_key or ""), (f.plugin_id or ""), host)
+
+
+def _two_latest_batches(session: Session):
+    bs = session.execute(
+        select(ImportBatch).order_by(ImportBatch.imported_at.desc(), ImportBatch.id.desc()).limit(2)
+    ).scalars().all()
+    return (bs[0] if bs else None, bs[1] if len(bs) > 1 else None)
+
+
+def _batch_snap(session: Session, batch_id: int) -> dict:
+    """某批被換掉當下拍下的承辦進度 {vuln_key: 進度}（changes.capture_progress 寫的）；沒拍到回 {}。"""
+    from .models import ProgressSnap
+    return {r.vuln_key: r.progress for r in session.execute(
+        select(ProgressSnap).where(ProgressSnap.batch_id == batch_id)).scalars().all()}
+
+
+def trend(session: Session, department: Optional[str] = None,
+          today: Optional[dt.date] = None, limit: int = 12) -> list[dict]:
+    """未結趨勢：每次匯入(批)當下的未結數與其中逾期數，依時間排序。供主管週報折線。
+
+    歷史批留著(is_latest 只標最新；舊批的 finding 仍在)，所以能回看每批的未結量。
+    """
+    today = today or dt.date.today()
+    batches = session.execute(
+        select(ImportBatch).order_by(ImportBatch.imported_at.asc(), ImportBatch.id.asc())
+    ).scalars().all()
+    if limit and len(batches) > limit:
+        batches = batches[-limit:]        # 只看最近 N 批
+    out = []
+    pmap = submitted_map(session)
+    for b in batches:
+        q = select(Finding).where(Finding.batch_id == b.id, Finding.close_status == CLOSE_OPEN)
+        if department and department != "全部":
+            q = q.where(Finding.department == department)
+        if SHEET_SCOPE.get():   # 跟著週報選的工作表走（2026-10-27：趨勢線用了全部工作表，逾期 55 對不上卡片 54）
+            q = q.where(Finding.sheet_key == SHEET_SCOPE.get())
+        rows = _view_filter(session.execute(q).scalars().all())
+        if b.is_latest:   # 最新批扣掉資安已確認結案（跟卡片同一套，2026-10-28）
+            rows = [f for f in rows if effectively_open(f, pmap)]
+        else:             # 舊批：用那批被換掉當下拍下的進度（跟「與上次比較」的上次未結同一套）；沒拍到就照 Excel
+            snap = _batch_snap(session, b.id)
+            if snap:
+                rows = [f for f in rows if effectively_open(f, snap)]
+        out.append({
+            "imported_at": b.imported_at.isoformat() if b.imported_at else None,
+            "date": b.imported_at.date().isoformat() if b.imported_at else None,
+            "open": len(rows),
+            "overdue": sum(1 for f in rows if _is_overdue(f, today)),
+        })
+    return out
+
+
+def close_stats(session: Session, department: Optional[str] = None,
+                today: Optional[dt.date] = None) -> dict:
+    """結案統計：本期新結案（上期未結、這期已結）＋依結案人。來源(Excel)確認為準。
+
+    「承辦聲稱但來源未確認(可疑)」需承辦疊加層(W3)才算得出，這裡先回 0/空並標註。
+    """
+    latest, prev = _two_latest_batches(session)
+    if not latest:
+        return {"new_closed": 0, "by_closer": [], "source_confirmed": 0,
+                "claimed_unconfirmed": 0, "note": "尚無匯入"}
+
+    def _rows(b):
+        if not b:
+            return {}
+        q = select(Finding).where(Finding.batch_id == b.id)
+        if department and department != "全部":
+            q = q.where(Finding.department == department)
+        if SHEET_SCOPE.get():   # 跟著週報選的工作表走（2026-10-27：趨勢線用了全部工作表，逾期 55 對不上卡片 54）
+            q = q.where(Finding.sheet_key == SHEET_SCOPE.get())
+        return {vuln_key(f): f for f in _view_filter(session.execute(q).scalars().all())}
+
+    cur = _rows(latest)
+    old = _rows(prev)
+
+    newly_closed = []
+    # 上期「未結」用系統口徑（2026-10-28，同「與上次比較」）：上期換批當下已標資安已確認結案的，那時就算已結，
+    # 這期 Excel 才結案不算本期新結案。
+    prev_snap = _batch_snap(session, prev.id) if prev else {}
+    for k, f in cur.items():
+        was_open = (k in old) and effectively_open(old[k], prev_snap)
+        if f.close_status == CLOSE_DONE and (was_open or (k not in old)):
+            # 上期未結→這期已結，或這期才出現就已結案
+            newly_closed.append(f)
+
+    by_closer: dict = defaultdict(int)
+    for f in newly_closed:
+        by_closer[(f.owner or "").strip() or "— 未指派"] += 1
+
+    from . import cases  # 延後匯入避免循環
+    claimed = cases.suspect_count(session)  # 承辦聲稱完成、來源未確認(可疑)
+
+    return {
+        "new_closed": len(newly_closed),
+        "source_confirmed": len(newly_closed),   # 皆為來源 Excel 確認
+        "claimed_unconfirmed": claimed,          # 承辦聲稱完成但來源仍未結案(W3)
+        "by_closer": sorted(({"name": k, "closed": v} for k, v in by_closer.items()),
+                            key=lambda r: -r["closed"]),
+        "prev_batch": prev.id if prev else None,
+        "latest_batch": latest.id,
+    }
+
+
+def _fnv(s: str) -> int:
+    """FNV-1a 32 位元，以 UTF-16 碼位計（跟前端 sheets.js fnv 一樣）。"""
+    h = 0x811C9DC5
+    b = s.encode("utf-16-le")
+    for i in range(0, len(b), 2):
+        h ^= b[i] | (b[i + 1] << 8)
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+def row_sig(rows) -> int:
+    """一致性自檢的逐筆指紋（V2.110，裁判 2026-11-23）：每筆 工作表(前31字)|主機|弱點|負責人|到期日 → FNV-1a，
+    全部相加取 2^32 餘數（與順序無關、重複列各算一次）。筆數、加總都一樣但兩列到期日對調時也會不同。"""
+    t = 0
+    for f in rows:
+        key = "\u0001".join([(f.sheet_key or "")[:31], f.host or "", f.name or "", f.owner or "",
+                             f.effective_due.isoformat() if f.effective_due else ""])
+        t = (t + _fnv(key)) % 4294967296
+    return t
+
+
+def weekly_report(session: Session, department: Optional[str] = None,
+                  owner: Optional[str] = None, today: Optional[dt.date] = None) -> dict:
+    """主管週報：一份快照回答『要申請的有幾支、申請了沒、預計何時完成、落後多少』。
+
+    口徑(皆取未結案)：
+      - 應申請未申請(need_apply)：尚在原始修補期限、已過行動線→催承辦去提例外/展延(iForm)。
+      - 已申請處置中(applied)：備註有申請紀錄→stage 已成 例外/展延(備註閘門，見 logic)。
+      - 預計完成(target_date)：承辦回報的日期；彙總已填/未填、逾預計、近 30 天到期。
+      - 落後(overdue)：已過真正到期日；如期(on_track)：未逾期。
+    清單只回『應申請未申請』與『落後』(主管最需要催的兩類)，各帶預計完成日與追蹤備註。
+    """
+    today = today or dt.date.today()
+    fs = _latest_findings(session, department)
+    if owner:
+        fs = [f for f in fs if (f.owner or "").strip() == owner]
+    _pm = submitted_map(session)
+    open_ = [f for f in fs if effectively_open(f, _pm)]          # 系統口徑未結（不含資安已確認）
+    sec_conf = [f for f in fs if is_sec_confirmed(f, _pm)]       # 資安已確認、Excel 待更新
+    _b = latest_batch(session)
+    imported = _b.imported_at if _b else None
+
+    # 本週變化(週對週)：用「穩定鍵的多重集合(保留重複列)」比對。
+    # 計列數(非去重鍵)，讓「本批未結」＝未結案(302)、與對帳健檢一致；
+    # 用 Counter 相減算新增/解決，淨變化＝新增−解決 精準兜得起來(重複列也算對)。
+    from collections import Counter
+    _latest_b, _prev_b = _two_latest_batches(session)
+    def _open_keys(batch):
+        if not batch:
+            return Counter()
+        q = select(Finding).where(Finding.batch_id == batch.id, Finding.close_status == CLOSE_OPEN)
+        if department and department != "全部":
+            q = q.where(Finding.department == department)
+        if SHEET_SCOPE.get():   # 跟著週報選的工作表走（2026-10-27：趨勢線用了全部工作表，逾期 55 對不上卡片 54）
+            q = q.where(Finding.sheet_key == SHEET_SCOPE.get())
+        rows = _view_filter(session.execute(q).scalars().all())
+        if owner:
+            rows = [f for f in rows if (f.owner or "").strip() == owner]
+        # 資安已確認結案＝已結（2026-10-28）：本批用目前的標記；上批用換批當下拍下的進度（沒拍到就照 Excel）
+        if batch is _latest_b:
+            rows = [f for f in rows if effectively_open(f, _pm)]
+        else:
+            rows = [f for f in rows if effectively_open(f, _batch_snap(session, batch.id))]
+        return Counter("|".join(vuln_key(f)) for f in rows)   # 多重集合：同鍵重複列各算一次
+    if _prev_b:
+        _cur_k = _open_keys(_latest_b); _prv_k = _open_keys(_prev_b)
+        _now = sum(_cur_k.values()); _prev = sum(_prv_k.values())   # 列數(與未結案同口徑)
+        change = {"has_prev": True, "prev": _prev, "now": _now,
+                  "delta": _now - _prev,
+                  "new": sum((_cur_k - _prv_k).values()),          # 這批多出來的列
+                  "resolved": sum((_prv_k - _cur_k).values())}      # 上批有、這批沒了的列
+    else:
+        change = {"has_prev": False}
+
+    # 疊加欄(預計完成日/追蹤備註/處理進度)對照
+    from .models import Case
+    from .logic import (PROGRESS_VALUES, PROGRESS_WIP, PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC,
+                        PROGRESS_RESCAN, PROGRESS_SUBMIT_EXT, PROGRESS_SUBMIT_EXC, PROGRESS_SUBMITTED,
+                        SUBMIT_STALE, classify_progress, submit_age_days, FLAGGED_STATES, CLOSE_DONE)
+    _sd = submit_stale_days(session)
+    _cd = confirm_stale_days(session)
+    from .logic import CONFIRM_STALE, confirm_age_days, PROGRESS_SEC_CONFIRMED
+    ov = {c.vuln_key: c for c in session.execute(
+        select(Case).where((Case.track_note.isnot(None)) | (Case.target_date.isnot(None))
+                           | (Case.status.in_(PROGRESS_VALUES)))).scalars().all()}
+
+    def _c(f):
+        return ov.get("|".join(vuln_key(f)))
+
+    def _bkt_of(f):
+        return apply_bucket(f, today, _pm)
+
+    def _target(f):
+        c = _c(f)
+        return c.target_date if c else None
+
+    def _progress(f):
+        c = _c(f)
+        return c.status if (c and c.status in PROGRESS_VALUES) else ""
+
+    def _detail(f) -> dict:
+        c = _c(f)
+        td = c.target_date if c else None
+        prog = c.status if (c and c.status in PROGRESS_VALUES) else ""
+        pstate = classify_progress(prog, f.close_status == CLOSE_DONE, f.stage,
+                                   (c.status_changed_at if c else None), imported, _sd,
+                                   approval_expired=approval_expired(f, today),
+                                   confirm_date=(c.confirm_date if c else None), confirm_stale_days=_cd)
+        _conf = prog == PROGRESS_SEC_CONFIRMED and c is not None
+        return {
+            "id": f.id, "host": display_host(f), "owner": f.owner, "department": f.department,
+            "severity": f.severity, "name": f.name, "plugin_id": f.plugin_id,
+            "stage": f.stage, "progress": prog, "progress_state": pstate,
+            "confirm_by": c.confirm_by if _conf else None,
+            "confirm_date": c.confirm_date.isoformat() if (_conf and c.confirm_date) else None,
+            "confirm_basis": c.confirm_basis if _conf else None,
+            "confirm_days": confirm_age_days(c.confirm_date, today) if (_conf and c.confirm_date) else None,
+            "submit_days": (submit_age_days(c.status_changed_at) if (c and prog in PROGRESS_SUBMITTED) else None),
+            "effective_due": f.effective_due.isoformat() if f.effective_due else None,
+            "overdue_days": overdue_days(f.effective_due, today),
+            "action_line": action_line(f, today).isoformat() if action_line(f, today) else None,
+            "target_date": td.isoformat() if td else None,
+            "target_overdue": bool(td and td < today),   # 已過自己承諾的完成日
+            "apply_bucket": _bkt_of(f),                  # 需申請四類（V2.109 自動寄信分段用）
+            "track_note": c.track_note if c else None,
+            "raw": f.raw or {},   # 原始整列，供「匯出此清單」帶出全部原始欄位
+        }
+
+    # 需申請三類互斥（2026-10-19）：應申請未申請／送審中（等核准）／已核准；其餘＝暫無需申請
+    # 已核准＝例外／展延今天還沒過期（2026-10-19 起：已過期的不算已核准，同分解樹 H=0）
+    _smap = _pm
+    _bkt = {f.id: apply_bucket(f, today, _smap) for f in open_}
+    applied = [f for f in open_ if _bkt[f.id] == BUCKET_APP]
+    submitted = [f for f in open_ if _bkt[f.id] == BUCKET_SUB]
+    need_apply = [f for f in open_ if _bkt[f.id] == BUCKET_NEED]
+    no_due_rows = [f for f in open_ if _bkt[f.id] == BUCKET_NODUE]   # 缺期限・待確認（V2.108）
+    overdue = [f for f in open_ if _is_overdue(f, today)]
+    # 如期＝有期限且未逾期；沒有期限的不能叫「如期」（GPT 檢核 #18，V2.108）
+    on_track = [f for f in open_ if f.effective_due and not _is_overdue(f, today)]
+
+    # 處置落點：每筆目前「真正到期日」是落在哪一關(原始修補 / 首次展延 / 例外管理)。
+    # 落點日期＝effective_due(已套備註閘門)；這裡給各關計數與日期區間,細節可下鑽 stage 看。
+    def _stage_block(stg):
+        items = [f for f in open_ if f.stage == stg]
+        dues = sorted(f.effective_due for f in items if f.effective_due)
+        return {
+            "count": len(items),
+            "overdue": sum(1 for f in items if _is_overdue(f, today)),
+            "earliest_due": dues[0].isoformat() if dues else None,
+            "latest_due": dues[-1].isoformat() if dues else None,
+        }
+    stages = {
+        "original": _stage_block(STAGE_ORIGINAL),
+        "extension": _stage_block(STAGE_EXTENSION),
+        "exception": _stage_block(STAGE_EXCEPTION),
+    }
+    stage_known = sum(stages[k]["count"] for k in stages)
+    stages["other"] = {"count": len(open_) - stage_known, "overdue": None,
+                       "earliest_due": None, "latest_due": None}
+
+    # 嚴重度分佈(未結案)＋到期倒數桶：供主管週報「總覽」畫圓餅/長條(一眼看風險結構與近期壓力)
+    sev_dist = {k: 0 for k in SEVERITIES}
+    for f in open_:
+        if f.severity in sev_dist:
+            sev_dist[f.severity] += 1
+    due_buckets = {"overdue": 0, "d30": 0, "d31_60": 0, "d61_90": 0, "d90plus": 0, "no_due": 0}
+    for f in open_:
+        if not f.effective_due:
+            due_buckets["no_due"] += 1; continue
+        d = (f.effective_due - today).days
+        if d < 0: due_buckets["overdue"] += 1
+        elif d <= 30: due_buckets["d30"] += 1
+        elif d <= 60: due_buckets["d31_60"] += 1
+        elif d <= 90: due_buckets["d61_90"] += 1
+        else: due_buckets["d90plus"] += 1
+    # 細分版（跟下鑽到期篩選同一套 14/30/60/90/120/180/360，使用者 2026-10-07）：各段互斥、相加＝未結
+    due_fine = {"overdue": 0, "d14": 0, "d30": 0, "d60": 0, "d90": 0, "d120": 0, "d180": 0, "d360": 0,
+                "d360plus": 0, "no_due": 0}
+    for f in open_:
+        if not f.effective_due:
+            due_fine["no_due"] += 1; continue
+        d = (f.effective_due - today).days
+        k = ("overdue" if d < 0 else "d14" if d <= 14 else "d30" if d <= 30 else "d60" if d <= 60 else
+             "d90" if d <= 90 else "d120" if d <= 120 else "d180" if d <= 180 else "d360" if d <= 360 else "d360plus")
+        due_fine[k] += 1
+
+    # 需申請母體＝應申請未申請 + 送審中（等核准） + 已核准(都曾需要申請決策) + 缺期限・待確認(V2.108)
+    universe = need_apply + submitted + applied + no_due_rows
+    with_target = [f for f in universe if _target(f)]
+    no_target = [f for f in universe if not _target(f)]
+    target_overdue = [f for f in with_target if _target(f) < today]
+    target_soon = [f for f in with_target
+                   if 0 <= (_target(f) - today).days <= SOON_DAYS]
+
+    # 處理進度分佈(管理人手動標的)：各類計數 + 需追查(⚠️待查/可疑)總數
+    pcount = {PROGRESS_WIP: 0, PROGRESS_APPLY_EXT: 0, PROGRESS_APPLY_EXC: 0, PROGRESS_RESCAN: 0,
+              PROGRESS_SUBMIT_EXT: 0, PROGRESS_SUBMIT_EXC: 0}
+    flagged = 0
+    for f in open_:
+        c = _c(f)
+        p = c.status if (c and c.status in PROGRESS_VALUES) else ""
+        if p in pcount:
+            pcount[p] += 1
+    # 待追查的母體＝系統未結＋資安已確認待更新（確認逾期未更新也要追，2026-10-28）
+    _flag_base = open_ + sec_conf
+    for f in _flag_base:
+        c = _c(f)
+        p = c.status if (c and c.status in PROGRESS_VALUES) else ""
+        st = classify_progress(p, f.close_status == CLOSE_DONE, f.stage,
+                               (c.status_changed_at if c else None), imported, _sd,
+                               approval_expired=approval_expired(f, today),
+                               confirm_date=(c.confirm_date if c else None), confirm_stale_days=_cd)
+        if st in FLAGGED_STATES:
+            flagged += 1
+
+    # 要申請·送審中清單(管理人標了要申請展延/例外的)；需追查清單(⚠️的，主管要盯)
+    apply_intent = [f for f in open_ if _progress(f) in (PROGRESS_APPLY_EXT, PROGRESS_APPLY_EXC)]
+    flagged_rows = [d for d in (_detail(f) for f in _flag_base) if d["progress_state"] in FLAGGED_STATES]
+    # 資安已確認（待 Excel 更新）清單；其中確認逾期未更新(超過 confirm_stale_days 天 Excel 仍未結)另計
+    confirmed_rows = [_detail(f) for f in sec_conf]
+    confirmed_stale = sum(1 for d in confirmed_rows if d["progress_state"] == CONFIRM_STALE)
+    # 送審中（等核准）清單；其中送審逾時(超過 submit_stale_days 天資安仍未核准)另計
+    submitted_rows = [_detail(f) for f in submitted]
+    submitted_stale = sum(1 for d in submitted_rows if d["progress_state"] == SUBMIT_STALE)
+
+    return {
+        "department": department or "全部",
+        "owner": owner,
+        "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "today": today.isoformat(),
+        "freshness": {
+            "imported_at": imported.isoformat() if imported else None,
+            "days_ago": (today - imported.date()).days if imported else None,
+        },
+        "unresolved": len(open_),
+        "overdue": len(overdue),
+        "on_track": len(on_track),
+        "high_risk": sum(1 for f in open_ if f.severity in HIGH_RISK),
+        "high_risk_overdue": sum(1 for f in overdue if f.severity in HIGH_RISK),  # 主管最在意:高風險且逾期
+        "soon": sum(1 for f in open_ if f.effective_due and 0 <= (f.effective_due - today).days <= SOON_DAYS),
+        # 一致性自檢用（V2.110）：未結各筆「距到期天數」加總。筆數剛好相同、但到期日不同（A 變不逾期、B 變逾期）也抓得到
+        "due_days_sum": sum((f.effective_due - today).days for f in open_ if f.effective_due),
+        "batch_id": _b.id if _b else None,   # 一致性自檢：同一批才比（V2.110）
+        "row_sig": row_sig(open_),           # 逐筆到期日指紋（兩列到期日對調也抓得到；前端 sheets.js rowSig 同算法）
+        "high_risk_only": sum(1 for f in open_ if _is_high_only(f, today)),   # 與總覽「高風險未結」同口徑
+        "change": change,                          # 本週變化(週對週):prev/now/delta/new/resolved
+
+        # 申請面
+        "need_apply_count": len(need_apply),      # 應申請未申請(要催；不含已標送審中)
+        "submitted_count": len(submitted),        # 送審中（等核准）：承辦已送、資安未核准
+        "submitted_stale_count": submitted_stale,  # 其中送審逾時
+        "submit_stale_days": _sd,                 # 送審逾時門檻(天)
+        "applied_count": len(applied),            # 已申請處置中
+        # 資安已確認結案（待 Excel 更新）：系統當已結、不在上面任何一個數字裡（2026-10-28）
+        "excel_unresolved": len(open_) + len(sec_conf),   # Excel 未結＝系統未結＋資安已確認
+        "sec_confirmed_count": len(sec_conf),
+        "sec_confirmed_stale_count": confirmed_stale,
+        "confirm_stale_days": _cd,
+        "no_due_count": len(no_due_rows),         # 缺期限・待確認：未結但沒有可用到期日（V2.108）
+        "apply_universe": len(universe),          # 需申請母體＝應申請未申請＋送審中＋已核准＋缺期限
+        "stages": stages,                         # 處置落點：原始/首次展延/例外管理各計數與到期區間
+        "severity": sev_dist,                     # 嚴重度分佈(未結案)：供圓餅
+        "due_buckets": due_buckets,
+        "due_fine": due_fine,               # 到期倒數桶(未結案,真正到期日)：供長條
+        # 處理進度分佈(管理人手動標)：要申請展延/例外、處理中、等複掃，及需追查(⚠️)總數
+        "progress": {
+            "wip": pcount[PROGRESS_WIP],
+            "apply_ext": pcount[PROGRESS_APPLY_EXT],
+            "apply_exc": pcount[PROGRESS_APPLY_EXC],
+            "rescan": pcount[PROGRESS_RESCAN],
+            "submit_ext": pcount[PROGRESS_SUBMIT_EXT],   # 標展延送審中(含已反映、尚未自動解除的)
+            "submit_exc": pcount[PROGRESS_SUBMIT_EXC],
+            "submitted": len(submitted),                  # 送審中（等核准）＝submitted_count
+            "submitted_stale": submitted_stale,
+            "sec_confirmed": len(sec_conf),
+            "sec_confirmed_stale": confirmed_stale,
+            "flagged": flagged,
+            "reported": sum(1 for f in open_ if _is_reported(_c(f))),
+            "note_no_progress": sum(1 for f in open_ if _note_no_progress(_c(f))),   # ⚠ 備註有寫、進度未設   # 已回報(進度/預計完成日/備註任一)
+        },
+        # 預計完成彙總(僅母體)
+        "target": {
+            "with_target": len(with_target),
+            "no_target": len(no_target),          # 未回報預計完成日(要催)
+            "target_overdue": len(target_overdue),  # 已過自己承諾的完成日
+            "target_soon": len(target_soon),      # 預計 30 天內完成
+        },
+        # 清單(主管要催/要盯的幾類)
+        "need_apply_list": sorted(
+            (_detail(f) for f in need_apply),
+            key=lambda r: ((r["overdue_days"] is None), -(r["overdue_days"] or 0))),
+        "overdue_list": sorted(
+            (_detail(f) for f in overdue),
+            key=lambda r: -(r["overdue_days"] or 0)),
+        "submitted_list": sorted(
+            submitted_rows, key=lambda r: (-(r["submit_days"] or 0), (r["overdue_days"] is None), -(r["overdue_days"] or 0))),
+        # 缺期限・待確認清單（V2.109：自動盤點週報要列給窗口，請負責人向資安確認到期日）
+        "no_due_list": sorted(
+            (_detail(f) for f in no_due_rows), key=lambda r: ((r["owner"] or ""), r["host"] or "")),
+        "sec_confirmed_list": sorted(
+            confirmed_rows, key=lambda r: (-(r["confirm_days"] or 0), r["owner"] or "")),
+        "apply_intent_list": sorted(
+            (_detail(f) for f in apply_intent),
+            key=lambda r: ((r["overdue_days"] is None), -(r["overdue_days"] or 0))),
+        "flagged_list": sorted(
+            flagged_rows, key=lambda r: ((r["overdue_days"] is None), -(r["overdue_days"] or 0))),
+    }
+
+
+def sla(session: Session, department: Optional[str] = None,
+        today: Optional[dt.date] = None) -> list[dict]:
+    """各嚴重度 SLA 達成率（未結案中未逾期比率，政策天數見設定）。"""
+    today = today or dt.date.today()
+    open_ = _open_findings(session, department)
+    out = []
+    for sev in SEVERITIES:
+        items = [f for f in open_ if f.severity == sev]
+        od = [f for f in items if _is_overdue(f, today)]
+        out.append({
+            "severity": sev,
+            "policy_days": SLA_POLICY_DAYS.get(sev),
+            "unresolved": len(items),
+            "overdue": len(od),
+            "met_rate": round((len(items) - len(od)) / len(items) * 100, 1) if items else 100.0,
+        })
+    return out

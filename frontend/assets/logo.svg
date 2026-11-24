@@ -1,0 +1,6 @@
+<svg viewBox="0 0 214 44" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="國泰證券">
+  <rect x="2" y="4" width="36" height="36" rx="9" fill="#009142"/>
+  <path d="M20 11 l9 3.5 v6 c0 5.5 -3.8 9.4 -9 11.5 c-5.2 -2.1 -9 -6 -9 -11.5 v-6 z" fill="#ffffff" opacity="0.96"/>
+  <path d="M15.5 22.5 l3.2 3.2 l6.3 -6.8" fill="none" stroke="#009142" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="50" y="30" font-family="'Microsoft JhengHei','PingFang TC','Noto Sans TC',sans-serif" font-size="24" font-weight="800" fill="#00703a" letter-spacing="1">國泰證券</text>
+</svg>
