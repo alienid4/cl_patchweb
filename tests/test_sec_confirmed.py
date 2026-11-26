@@ -209,7 +209,7 @@ def test_reimport_keeps_then_excel_close_clears(client, session):
     assert _case_of(session, "10.50.0.2").status == CONF
 
 
-def test_stale_and_setting(client, session):
+def test_stale_and_setting(client, session, super_login):
     _imp(client, _batch(), "a.xlsx")
     ids = _ids(client)
     assert _confirm(client, ids["10.50.0.1"], ev=dict(EV, confirm_date=d(-20))).status_code == 200

@@ -1604,6 +1604,7 @@
       }
       if (!st.active) { hint.style.color = '#b9770e'; hint.textContent = '⚠ ' + (st.warning || '尚未匯入 AD 名單，負責人無法驗證'); return; }
       var v = input.value.trim();
+      if (st.stale_warning && !picked && !v) { hint.style.color = '#b9770e'; hint.textContent = '⚠ ' + st.stale_warning; return; }
       hint.textContent = picked ? ('已選：' + picked.name + '｜' + (picked.department || '—') + (picked.kind === 'group' ? '｜群組' : (picked.employee_id ? '｜員編末4碼 ' + picked.employee_id.slice(-4) : ''))) :
         (!v || v === initial ? (v ? '（未變更）' : '') : '⚠ 請從清單點選一筆（不能自由輸入）');
       hint.style.color = (!picked && v && v !== initial) ? '#c0392b' : '#6b7a73';
@@ -1622,7 +1623,7 @@
       if (my !== seq || input.value.trim() !== q) return;   // 只認最後一次搜尋（中途改字的舊結果丟掉）
       items = (j.items || []).filter(function (it) { return opts.groups !== false || it.kind !== 'group'; });
       list.innerHTML = ''; hi = -1;
-      if (!items.length) list.appendChild(U.el('div', { style: 'padding:6px 10px;color:#888', text: '名錄查無「' + q + '」' }));
+      if (!items.length) list.appendChild(U.el('div', { style: 'padding:6px 10px;color:#888', text: (st.not_found_hint || '名錄查無此人。新進同仁：請他用 AD 登入一次，或請最高管理員在員工名錄手動新增') + '（搜尋：' + q + '）' }));
       items.forEach(function (it, i) {
         var line = it.kind === 'group' ? (it.name + '｜' + (it.department || '—') + '｜群組信箱') :
           (it.name + '｜' + (it.department || '—') + '｜' + (it.employee_id ? it.employee_id.slice(-4) : '—'));
@@ -2641,6 +2642,7 @@
     var nameAttr = fld(ag, '顯示名屬性（對 Excel 負責人名）', U.el('input', { value: cfg.name_attr || 'displayName' }));
     var deptAttr = fld(ag, '部門屬性', U.el('input', { value: cfg.dept_attr || 'department' }));
     var loginAttr = fld(ag, '員編比對屬性（搜尋用）', U.el('input', { value: cfg.login_attr || 'sAMAccountName' }));
+    var empAttr = fld(ag, '員編屬性（AD 登入時寫進員工名錄；讀不到就不寫，「測試連線」會顯示讀到的員編）', U.el('input', { value: cfg.emp_attr || 'employeeID' }));
 
     // ⑤ 權限 / 對照
     var sg = section('權限與對照');
@@ -2652,7 +2654,7 @@
       var m = {}; empmap.value.split(/\n/).forEach(function (l) { var i = l.indexOf('='); if (i > 0) { var k = l.slice(0, i).trim(), v = l.slice(i + 1).trim(); if (k) m[k] = v; } });
       return { enabled: enabled.checked, servers: servers.value.split(/[,\s]+/).filter(Boolean),
         encryption: enc.value, bind_style: bindStyle.value, upn_suffix: upn.value.trim(), nt_domain: ntd.value.trim(),
-        base_dn: baseDn.value.trim(), name_attr: nameAttr.value.trim(), dept_attr: deptAttr.value.trim(), login_attr: loginAttr.value.trim(),
+        base_dn: baseDn.value.trim(), name_attr: nameAttr.value.trim(), dept_attr: deptAttr.value.trim(), login_attr: loginAttr.value.trim(), emp_attr: empAttr.value.trim(),
         super_admins: supers.value.split(/[,\s]+/).filter(Boolean), emp_to_owner: m,
         presets: presetInputs.map(function (p) { return { site: p.site, ips: p.el.value.split(/[,\s]+/).filter(Boolean) }; }) };
     }
@@ -2765,7 +2767,7 @@
       try {
         var parsed = await readAdFile(f);
         if (ver !== _adReadVer) return;   // 期間又換了檔：丟掉舊結果
-        cur = { ver: ver, name: f.name, parsed: parsed };
+        cur = { ver: ver, name: f.name, parsed: parsed, mtime: f.lastModified ? new Date(f.lastModified).toISOString() : null };
         info.style.color = '#1a7f4b';
         info.textContent = '檔案「' + f.name + '」工作表「' + parsed.sheet + '」：讀到 ' + parsed.rows.length + ' 列，按「預覽」。';
         go.disabled = !parsed.rows.length;
@@ -2774,7 +2776,7 @@
     go.addEventListener('click', async function () {
       var c = cur; if (!c || c.ver !== _adReadVer) return;
       go.disabled = true; go.textContent = '計算中…';
-      var body = { file_name: c.name, sheet: c.parsed.sheet, columns: c.parsed.columns, rows: c.parsed.rows, apply: false };
+      var body = { file_name: c.name, sheet: c.parsed.sheet, columns: c.parsed.columns, rows: c.parsed.rows, apply: false, file_time: c.mtime };
       try {
         var pv = await adPost(body);
         UI.closeModal();
@@ -2837,7 +2839,8 @@
     var dirInfo = rep.directory || {}, toDis = dirInfo.to_disable || [];
     var T = [
       ['摘要', null], ['收件人變動', chg], ['已對上', matched], ['同名／部門待確認', amb], ['身分衝突', cf], ['查無', nf],
-      ['名單缺席', ab], ['在職但無信箱', nm], ['已停用（清信箱）', dep], ['主管對應', mgr], ['資料錯誤', errs], ['部門對應', dmap], ['部門變動且有開週報', wchg], ['名錄將停用', toDis]];
+      ['名單缺席', ab], ['在職但無信箱', nm], ['已停用（清信箱）', dep], ['主管對應', mgr], ['資料錯誤', errs], ['部門對應', dmap], ['部門變動且有開週報', wchg], ['名錄將停用', toDis],
+      ['手動新增／AD 登入名錄', (dirInfo.manual_confirmed || []).concat(dirInfo.manual_absent || [], dirInfo.login_absent || [])]];
     var tabs = T.map(function (t, ti) {
       return { label: t[1] ? t[0] + '（' + (ti === 9 ? mgrOk + '/' + mgr.length : t[1].length) + '）' : t[0], render: function (h) {
         if (ti === 0) {
@@ -2901,6 +2904,15 @@
               ['建議部門', function (r) { return r.suggestion; }], ['AD 部門', function (r) { return r.ad_department; }]], dsug));
           }
         }
+        if (ti === 14) {
+          var mc = dirInfo.manual_confirmed || [], ma = dirInfo.manual_absent || [], la = dirInfo.login_absent || [];
+          [['手動新增已由 AD 確認', mc, 'H'], ['手動新增、AD 名單查無（不自動停用）', ma, 'J'], ['AD 登入加入、AD 名單查無（不自動停用）', la, 'L']].forEach(function (sec) {
+            h.appendChild(U.el('div', { style: 'margin:10px 0 4px;font-weight:700;color:#1a7f4b' }, [U.el('span', { text: sec[0] + '（' + sec[1].length + '）' })]));
+            if (sec[1].length) h.appendChild(amTable([['項次', function (r, i) { return sec[2] + (i + 1); }], ['姓名', function (r) { return r.name; }],
+              ['員編', function (r) { return r.employee_id; }]], sec[1]));
+            else h.appendChild(U.el('p', { class: 'empty-hint', text: '沒有。' }));
+          });
+        }
         if (ti === 13) {
           h.appendChild(U.el('p', { class: 'empty-hint', text: '名錄裡在職、但這次檔案沒有的人（套用後標停用，不刪）。上限 ' + (dirInfo.disable_limit || 0) + ' 人；超過要勾「確認停用」才會停用。' }));
           h.appendChild(amTable([['項次', function (r, i) { return 'Y' + (i + 1); }], ['姓名', function (r) { return r.name; }],
@@ -2918,6 +2930,19 @@
     renderTabs(host, tabs, null);
     if ((opt.history || []).length > 1) box.appendChild(U.el('p', { class: 'empty-hint', text: '最近匯入：' + opt.history.slice().reverse().map(function (x) { return '#' + x.batch_id + ' ' + (x.at || '').replace('T', ' ') + ' ' + (x.by || '') + ' ' + (x.file || ''); }).join('　|　') }));
     var foot = null;
+    if (preview && (dirInfo.identity_conflicts || []).length) {   // 手動／登入加入的人跟 AD 名單同員編、名字不同
+      var cid = U.el('input', { type: 'checkbox' }); cid.checked = !!dirInfo.identity_confirmed;
+      cid.addEventListener('change', async function () {
+        try {
+          var nb = Object.assign({}, opt.body, { apply: false, confirm_identity: cid.checked });
+          var pv2 = await adPost(nb);
+          UI.closeModal(); showAdReport(pv2, { preview: true, body: nb });
+        } catch (e) { UI.toast('重新預覽失敗：' + (e.message || e), 'error'); cid.checked = !cid.checked; }
+      });
+      box.insertBefore(U.el('div', { style: 'color:#c0392b;font-weight:700;margin:6px 0' }, [
+        U.el('label', { style: 'display:flex;gap:6px;align-items:center' }, [cid, U.el('span', { text: '確認合併：以下 ' + dirInfo.identity_conflicts.length + ' 位同員編但名字不同，以 AD 名單為準' })]),
+        U.el('div', { style: 'font-weight:400;font-size:13px', text: dirInfo.identity_conflicts.map(function (x, i) { return (i + 1) + '. ' + x.employee_id + '：' + x.old_name + ' → ' + x.new_name; }).join('　') })]), host);
+    }
     if (preview && dirInfo.needs_confirm) {   // 將停用人數超過上限：要勾才停用（勾選會重新預覽，綁進確認碼）
       var cdis = U.el('input', { type: 'checkbox' }); cdis.checked = !!dirInfo.confirmed;
       cdis.addEventListener('change', async function () {
@@ -2978,6 +3003,34 @@
       });
       UI.openModal(g.id ? '編輯群組信箱' : '新增群組信箱', fb, { footer: go, stack: true, sticky: true });
     }
+    function personForm(x) {
+      x = x || {};
+      var FS = 'display:block;width:100%;margin:4px 0 10px;padding:7px;border:1px solid #cdd5dd;border-radius:6px;font-size:14px';
+      var nm = U.el('input', { value: x.name || '', placeholder: '中文姓名（只填中文；外籍同仁可填純英文名，需跟 Excel 負責人完全相同）', style: FS });
+      var ep = U.el('input', { value: x.employee_id || '', placeholder: '員編（英數字，不可重複；建立後不能改）', style: FS });
+      if (x.id) ep.disabled = true;
+      var em = U.el('input', { value: x.email || '', placeholder: '信箱（一個）', style: FS });
+      var dc = deptChooser(x.department || ''); dc.el.style.cssText = FS;
+      var en = U.el('input', { type: 'checkbox' }); en.checked = x.enabled !== false;
+      var fb = U.el('div', {}, [U.el('p', { class: 'empty-hint', text: '新進同仁還沒出現在 AD 匯出檔時用。下次匯入 AD 名單有同員編的人，會自動改成以 AD 為準。' }),
+        U.el('label', { text: '姓名' }), nm, U.el('label', { text: '員編' }), ep, U.el('label', { text: '部門' }), dc.el,
+        U.el('label', { text: '信箱' }), em, U.el('label', { style: 'display:flex;gap:6px;align-items:center' }, [en, U.el('span', { text: '在職（取消＝停用）' })])]);
+      var go = U.el('button', { class: 'btn btn-primary', text: '儲存' });
+      go.addEventListener('click', async function () {
+        var payload = { id: x.id || null, name: nm.value, employee_id: ep.value.trim(), department: dc.value(), email: em.value, enabled: en.checked };
+        var r = await fetch('/api/directory/persons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        var j = await r.json().catch(function () { return {}; });
+        if (r.status === 409) {   // 既有同名在職者：講清楚影響，確認才存
+          if (!confirm((j.detail || '既有同名') + '\n\n確定還是要存？')) return;
+          payload.confirm_same_name = true;
+          r = await fetch('/api/directory/persons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          j = await r.json().catch(function () { return {}; });
+        }
+        if (!r.ok) { UI.toast(typeof j.detail === 'string' ? j.detail : '儲存失敗', 'error'); return; }
+        UI.toast('已儲存名錄人員 ' + j.name, 'success'); UI.closeModal(); UI.closeModal(); openDirectoryAdmin();
+      });
+      UI.openModal(x.id ? '編輯名錄人員（手動新增）' : '手動新增名錄人員', fb, { footer: go, stack: true, sticky: true });
+    }
     renderTabs(host, [
       { label: '群組信箱（' + groups.length + '）', render: function (h) {
         h.appendChild(U.el('p', { class: 'empty-hint', text: '弱點的負責人是群組名（如 DBA、主機組）時，催辦信寄到這裡設定的群組信箱（找不到本人時、轉部門窗口之前）。' }));
@@ -3000,11 +3053,30 @@
           }]], groups));
       } },
       { label: '員工名錄（' + persons.length + '）', render: function (h) {
-        h.appendChild(U.el('p', { class: 'empty-hint', text: '由「匯入 AD 名單」確認套用時自動刷新（含停用者）；不存電話／分機。負責人與部門窗口只能從這裡的人挑。' }));
+        var ds = _dirStatus || {};
+        h.appendChild(U.el('p', { class: 'empty-hint', text: '由「匯入 AD 名單」確認套用時自動刷新（含停用者）；AD 登入過的人也會自動加入；不存電話／分機。負責人與部門窗口只能從這裡的人挑。'
+          + (ds.last_import_at ? '　上次匯入 AD 名單：' + ds.last_import_at.replace('T', ' ') : '　尚未匯入 AD 名單') }));
+        if (ds.stale_warning) h.appendChild(U.el('p', { style: 'color:#b9770e;font-weight:700', text: '⚠ ' + ds.stale_warning }));
+        if (ds.login_write_failures) h.appendChild(U.el('p', { style: 'color:#c0392b;font-weight:700', text: '⚠ AD 登入寫入名錄失敗 ' + ds.login_write_failures + ' 次（最近：' + (ds.login_write_last_error || '') + '）' }));
+        var conf = persons.filter(function (x) { return x.login_conflict; });
+        if (conf.length) h.appendChild(U.el('p', { style: 'color:#b9770e;font-weight:700', text: '⚠ ' + conf.length + ' 位 AD 登入與名錄對不上（看「待確認」欄）' }));
+        var addP = U.el('button', { class: 'btn btn-primary btn-sm', text: '手動新增名錄人員' });
+        addP.addEventListener('click', function () { personForm(null); });
+        h.appendChild(addP);
         h.appendChild(amTable([['項次', function (x, i) { return 'E' + (i + 1); }], ['員編', function (x) { return x.employee_id; }],
           ['姓名', function (x) { return x.name; }], ['部門', function (x) { return x.department || '—'; }], ['AD 部門', function (x) { return x.ad_department || ''; }],
           ['信箱', function (x) { return x.email || '（無）'; }], ['主管', function (x) { return x.manager_name || ''; }],
-          ['狀態', function (x) { return x.enabled ? '在職' : '停用'; }], ['更新', function (x) { return (x.updated_at || '').replace('T', ' '); }]], persons));
+          ['狀態', function (x) { return x.enabled ? '在職' : '停用'; }],
+          ['來源', function (x) { return { ad_import: 'AD 名單', ad_login: 'AD 登入', manual: '手動新增' }[x.source] || (x.source || ''); }],
+          ['最近 AD 登入', function (x) { return (x.last_seen || '').replace('T', ' '); }],
+          ['待確認', function (x) { return [x.login_conflict || '', x.same_name ? '同名在職另有 ' + x.same_name + ' 位（催辦轉窗口）' : '',
+            !x.enabled && x.disabled_reason ? '停用原因：' + ({ ad_disabled: 'AD 名單停用', absent: '名單缺席', manual: '管理者停用' }[x.disabled_reason] || x.disabled_reason) : ''].filter(Boolean).join('；'); }],
+          ['更新', function (x) { return (x.updated_at || '').replace('T', ' '); }],
+          ['操作', function (x) {
+            if (x.source !== 'manual') return '';
+            var b = U.el('button', { class: 'btn btn-sm btn-secondary', text: '編輯' }); b.addEventListener('click', function () { personForm(x); });
+            return b;
+          }]], persons));
       } }], null);
     UI.openModal('群組信箱／員工名錄', box, { wide: true, sticky: true, stack: true });
   }
@@ -3889,13 +3961,28 @@
     box.appendChild(U.el('div', { style: 'margin:14px 0 6px;font-weight:700;color:#1a7f4b' }, [U.el('span', { text: '資安已確認逾期天數' })]));
     var cstale = U.el('input', { type: 'number', min: '1', max: '180', value: String(cfg.confirm_stale_days || 14) }); cstale.style.cssText = FS;
     box.appendChild(U.el('div', { style: 'display:flex;gap:10px;align-items:center' }, [cstale, U.el('span', { class: 'empty-hint', style: 'margin:0', text: '天（資安已確認結案超過這麼多天 Excel 仍未結案 → 標「確認逾期未更新」、列入待追查；1～180，預設 14）' })]));
+    // 員工名錄過舊提醒（V2.114）：超過幾天沒匯入 AD 名單，負責人挑選器與員工名錄頁提醒
+    box.appendChild(U.el('div', { style: 'margin:14px 0 6px;font-weight:700;color:#1a7f4b' }, [U.el('span', { text: '員工名錄過舊提醒天數' })]));
+    var dstale = U.el('input', { type: 'number', min: '1', max: '365', value: String(cfg.directory_stale_days || 30) }); dstale.style.cssText = FS;
+    box.appendChild(U.el('div', { style: 'display:flex;gap:10px;align-items:center' }, [dstale, U.el('span', { class: 'empty-hint', style: 'margin:0', text: '天（超過這麼多天沒匯入 AD 名單 → 挑負責人時提醒「新進同仁可請其 AD 登入一次或由管理員手動新增」；1～365，預設 30）' })]));
+    // 允許的信箱網域（V2.114）：手動新增名錄、群組信箱、部門窗口只能用這些網域
+    box.appendChild(U.el('div', { style: 'margin:14px 0 6px;font-weight:700;color:#1a7f4b' }, [U.el('span', { text: '允許的信箱網域' })]));
+    var doms = U.el('input', { type: 'text', value: (cfg.allowed_email_domains == null ? (cfg.allowed_email_domains_effective || []) : cfg.allowed_email_domains).join(', '), placeholder: '例：corp.test（多個用逗號）' });
+    doms.style.cssText = FS + ';width:320px';
+    var domWarn = U.el('span', { class: 'empty-hint', style: 'margin:0' });
+    function updDomWarn() { domWarn.textContent = doms.value.trim() ? '（手動新增名錄、群組信箱、部門窗口只能用這些網域）' : '⚠ 空白＝不限制網域，手動新增可能打錯成外部信箱'; domWarn.style.color = doms.value.trim() ? '' : '#c0392b'; }
+    doms.addEventListener('input', updDomWarn); updDomWarn();
+    box.appendChild(U.el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' }, [doms, domWarn]));
     var save = U.el('button', { class: 'btn btn-primary btn-sm', text: '儲存', style: 'margin-top:8px' });
     save.addEventListener('click', async function () {
       var r = await fetch('/api/general-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_ttl_hours: parseInt(ttl.value, 10) || 12, submit_stale_days: parseInt(stale.value, 10) || 14,
-          confirm_stale_days: parseInt(cstale.value, 10) || 14 }) });
-      if (r.ok) { var j = await r.json().catch(function () { return null; }); if (j) { ttl.value = String(j.session_ttl_hours); stale.value = String(j.submit_stale_days); cstale.value = String(j.confirm_stale_days); } }
-      UI.toast(r.ok ? '已儲存' : '儲存失敗', r.ok ? 'success' : 'error');
+          confirm_stale_days: parseInt(cstale.value, 10) || 14, directory_stale_days: parseInt(dstale.value, 10) || 35,
+          allowed_email_domains: doms.value }) });
+      var j = await r.json().catch(function () { return null; });
+      if (r.ok && j) { ttl.value = String(j.session_ttl_hours); stale.value = String(j.submit_stale_days); cstale.value = String(j.confirm_stale_days); dstale.value = String(j.directory_stale_days); doms.value = (j.allowed_email_domains || []).join(', '); updDomWarn(); }
+      if (r.ok) ensureDir(true);   // 名錄過舊提醒跟著新門檻更新
+      UI.toast(r.ok ? '已儲存' : ('儲存失敗：' + ((j && j.detail) || r.status)), r.ok ? 'success' : 'error');
     });
     box.appendChild(save);
 

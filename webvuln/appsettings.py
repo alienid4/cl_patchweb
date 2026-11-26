@@ -51,6 +51,7 @@ AD_DEFAULTS: dict[str, Any] = {
     "dept_attr": "department",
     "mail_attr": "mail",
     "login_attr": "sAMAccountName",
+    "emp_attr": "employeeID",   # 員編屬性（V2.114）：AD 登入時讀這個屬性當員編寫進名錄；讀不到就不寫
     "super_admins": [],
     "emp_to_owner": {},
 }
@@ -91,10 +92,15 @@ GENERAL_DEFAULTS: dict[str, Any] = {
     "session_ttl_hours": 12,
     "submit_stale_days": 14,
     "confirm_stale_days": 14,   # 資安已確認結案超過幾天 Excel 仍未結案 → 確認逾期未更新（2026-10-28；1～180）
+    "directory_stale_days": 35,  # 員工名錄超過幾天沒匯入 AD 名單 → 挑選器提醒（V2.114；1～365）
+    # 允許的信箱網域（V2.114）：手動新增名錄、群組信箱、部門窗口只能用這些網域。
+    # None＝沒設定過 → 用名錄（AD 匯入）現有信箱的網域；[]＝不限制（設定畫面會警告）
+    "allowed_email_domains": None,
 }
 
 # 各數值設定的合理範圍（防誤填 0 或天文數字）
-_GENERAL_RANGES = {"session_ttl_hours": (1, 720), "submit_stale_days": (1, 180), "confirm_stale_days": (1, 180)}
+_GENERAL_RANGES = {"session_ttl_hours": (1, 720), "submit_stale_days": (1, 180), "confirm_stale_days": (1, 180),
+                   "directory_stale_days": (1, 365)}
 
 
 def _clamp_general(cfg: dict) -> dict:
@@ -177,10 +183,32 @@ def get_general_config(session: Session) -> dict:
     return _clamp_general(cfg)
 
 
+_DOMAIN_RE = __import__("re").compile(r"^(?=.{1,200}$)[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)+$")
+
+
+def clean_domains(v) -> list:
+    """「允許的信箱網域」：逗號／空白分隔或清單 → 小寫網域清單；格式錯就丟 ValueError。"""
+    if v is None:
+        return []
+    items = v if isinstance(v, list) else __import__("re").split(r"[,;\s]+", str(v))
+    out = []
+    for d in items:
+        d = str(d or "").strip().lstrip("@").lower()
+        if not d:
+            continue
+        if not _DOMAIN_RE.match(d):
+            raise ValueError("信箱網域格式不正確：%s" % d)
+        if d not in out:
+            out.append(d)
+    return out[:50]
+
+
 def set_general_config(session: Session, patch: dict) -> dict:
     cfg = get_general_config(session)
     for k, v in (patch or {}).items():
-        if k in GENERAL_DEFAULTS:
+        if k == "allowed_email_domains":
+            cfg[k] = clean_domains(v)
+        elif k in GENERAL_DEFAULTS:
             cfg[k] = v
     clean = _clamp_general({k: cfg[k] for k in GENERAL_DEFAULTS})
     set_json(session, "general", clean)

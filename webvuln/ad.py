@@ -77,6 +77,13 @@ def _bind(cfg: dict, login: str, password: str):
         return False, None, "無法連線 LDAP 伺服器"
 
 
+def _esc(v) -> str:
+    """LDAP 篩選值跳脫（RFC 4515）。"""
+    s = "" if v is None else str(v)
+    return (s.replace("\\", "\\5c").replace("*", "\\2a").replace("(", "\\28").replace(")", "\\29")
+            .replace("\x00", "\\00"))
+
+
 def _lookup_attrs(cfg: dict, conn, login: str) -> dict:
     """綁定後以員編搜尋，取 displayName／部門。取不到就回空（用員編當名）。"""
     base = cfg.get("base_dn") or ""
@@ -86,18 +93,21 @@ def _lookup_attrs(cfg: dict, conn, login: str) -> dict:
     dept_attr = cfg.get("dept_attr") or "department"
     mail_attr = cfg.get("mail_attr") or "mail"
     login_attr = cfg.get("login_attr") or "sAMAccountName"
+    emp_attr = cfg.get("emp_attr") or "employeeID"
     try:
-        flt = f"({login_attr}={login})"
-        conn.search(base, flt, attributes=[name_attr, dept_attr, mail_attr])
+        flt = f"({login_attr}={_esc(login)})"   # 登入字串跳脫，避免改寫 LDAP 篩選條件（檢核 #14）
+        conn.search(base, flt, attributes=[name_attr, dept_attr, mail_attr, emp_attr])
         if conn.entries:
             e = conn.entries[0]
-            out = {}
+            out = {"_matches": len(conn.entries)}
             if name_attr in e and e[name_attr].value:
                 out["name"] = str(e[name_attr].value)
             if dept_attr in e and e[dept_attr].value:
                 out["department"] = str(e[dept_attr].value)
             if mail_attr in e and e[mail_attr].value:
                 out["email"] = str(e[mail_attr].value)
+            if emp_attr in e and e[emp_attr].value:
+                out["employee_id"] = str(e[emp_attr].value)
             return out
     except Exception:  # noqa: BLE001
         pass
@@ -117,9 +127,11 @@ def test_connection(cfg: dict, login: str, password: str) -> dict:
         msg += f"；displayName＝{attrs['name']}"
     if attrs.get("department"):
         msg += f"；部門＝{attrs['department']}"
+    msg += "；員編＝%s" % (attrs.get("employee_id") or "（讀不到，AD 登入不會寫進名錄，請檢查「員編屬性」）")
     if not attrs:
         msg += "（但 base_dn 搜尋不到屬性，請確認 base_dn／屬性名）"
-    return {"ok": True, "message": msg, "name": attrs.get("name"), "department": attrs.get("department")}
+    return {"ok": True, "message": msg, "name": attrs.get("name"), "department": attrs.get("department"),
+            "employee_id": attrs.get("employee_id")}
 
 
 def fetch_mails_by_names(cfg: dict, login: str, password: str, names: list) -> dict:
@@ -206,4 +218,5 @@ def authenticate_ad_ex(session: Session, cfg: dict, login: str, password: str):
             u.role = config.ROLE_SUPER
     session.commit()
     session.refresh(u)
+    u._ad_attrs = dict(attrs)   # 名錄同步在 api_login 做（有 IP 可記稽核；失敗不影響登入）
     return u, "ok"   # 一律回 (User|None, 原因)；V2.62 漏改這兩條路，AD 登入成功反而 500

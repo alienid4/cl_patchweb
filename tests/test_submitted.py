@@ -165,7 +165,7 @@ def test_reimport_auto_resolves_and_lands_in_applied(client, session):
     _check_partition(client)
 
 
-def test_staleness_and_setting(client, session):
+def test_staleness_and_setting(client, session, super_login):
     _imp(client, _batch1(), "a.xlsx")
     ids = _ids(client)
     _mark(client, ids["10.40.0.1"], "例外送審中")

@@ -57,6 +57,9 @@ _ENSURE_COLUMNS = {
                  ("department_source", "VARCHAR(20)")],   # V2.112 部門自動對應（deptmap.py）
     # row_key：每一列的穩定識別碼（2026-10-05，見 rowkey.py）
     "finding": [("row_key", "VARCHAR(500)")],
+    # 員工名錄（V2.113 新表；V2.114 加 AD 登入時間）
+    "directory_person": [("last_seen", "DATETIME"), ("created_at", "DATETIME"), ("disabled_reason", "VARCHAR(20)"),
+                         ("absent_count", "INTEGER DEFAULT 0"), ("login_conflict", "VARCHAR(300)")],
     # rules_version／import_report：規則版本與匯入檢核報告（V2.110，見 importcheck.py）
     "import_batch": [("rules_version", "VARCHAR(40)"), ("import_report", "JSON")],
 }

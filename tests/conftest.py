@@ -80,3 +80,16 @@ def _rules_gate(request, monkeypatch):
         return
     from webvuln import automail
     monkeypatch.setattr(automail, "_rules_stale", lambda db: None)
+
+
+@pytest.fixture
+def super_login(client, engine):
+    """真的登入的最高管理員（一般系統設定等端點不接受免登入匿名，V2.114）。"""
+    from sqlalchemy.orm import Session, sessionmaker
+
+    from webvuln import security
+    fac = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    with fac() as s:
+        security.create_user(s, "su_fixture", "pw12345", role="super_admin", display_name="測試管理員")
+    assert client.post("/api/login", json={"username": "su_fixture", "password": "pw12345"}).status_code == 200
+    return client

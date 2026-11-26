@@ -232,6 +232,15 @@ def api_login(body: LoginIn, request: Request, response: Response, db: Session =
         secure=config.COOKIE_SECURE, max_age=security.session_ttl_hours(db) * 3600,
     )
     security.log_audit(db, username=user.username, action="login", ip=_client_ip(request))
+    attrs = getattr(user, "_ad_attrs", None)
+    if attrs is not None:   # AD 登入 → 員工名錄同步（V2.114）；失敗記 log＋計數，不擋登入
+        try:
+            directory.sync_login(db, attrs, user.username, _client_ip(request))
+        except Exception as e:  # noqa: BLE001
+            db.rollback()
+            import logging
+            logging.getLogger("webvuln.directory").exception("AD 登入寫名錄失敗：%s", user.username)
+            directory.record_login_failure(db, "%s：%r" % (user.username, e))
     return {"username": user.username, "display_name": user.display_name, "role": user.role}
 
 
@@ -1171,17 +1180,24 @@ def api_mail_log(limit: int = 300, db: Session = Depends(get_db), user: User = D
 
 # ── 一般系統設定（Super Admin）：session 時數等 ──
 @app.get("/api/general-settings")
-def api_get_general_settings(db: Session = Depends(get_db), user: User = Depends(require_super)):
-    return appsettings.get_general_config(db)
+def api_get_general_settings(db: Session = Depends(get_db), user: User = Depends(require_real_super)):
+    cfg = dict(appsettings.get_general_config(db))
+    cfg["allowed_email_domains_effective"] = directory.allowed_domains(db) or []
+    return cfg
 
 
 @app.post("/api/general-settings")
 def api_set_general_settings(body: dict, request: Request, db: Session = Depends(get_db),
-                             user: User = Depends(require_super)):
-    cfg = appsettings.set_general_config(db, body or {})
+                             user: User = Depends(require_real_super)):
+    """一般系統設定：要實際登入的最高管理員（免登入匿名不行，檢核 #17）。"""
+    try:
+        cfg = appsettings.set_general_config(db, body or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     security.log_audit(db, username=getattr(user, "username", None), action="general_settings",
-                       detail="session_ttl_hours=%s submit_stale_days=%s confirm_stale_days=%s" % (
-                           cfg.get("session_ttl_hours"), cfg.get("submit_stale_days"), cfg.get("confirm_stale_days")),
+                       detail="session_ttl_hours=%s submit_stale_days=%s confirm_stale_days=%s directory_stale_days=%s domains=%s" % (
+                           cfg.get("session_ttl_hours"), cfg.get("submit_stale_days"), cfg.get("confirm_stale_days"),
+                           cfg.get("directory_stale_days"), cfg.get("allowed_email_domains")),
                        ip=_client_ip(request))
     return cfg
 
@@ -1224,17 +1240,21 @@ def api_fetch_ad_mails(body: FetchMailsIn, request: Request, db: Session = Depen
 
 # ── 匯入 AD 名單（V2.111）：負責人從沒登入也收得到催辦信 ──
 _S256 = Annotated[str, StringConstraints(max_length=256)]
+# 欄位長度＝資料庫欄位大小（檢核 #16）
+_S50 = Annotated[str, StringConstraints(max_length=50)]
+_S100 = Annotated[str, StringConstraints(max_length=100)]
+_S200 = Annotated[str, StringConstraints(max_length=200)]
 
 
 class AdRowIn(BaseModel):
     """只收這 7 欄（＋列號）；其他欄位（電話／分機…）一律拒收。每欄最長 256 字。"""
     model_config = ConfigDict(extra="forbid")
     row_no: int | None = None
-    employeeID: _S256 | int | float | None          # 數字＝xlsx 數字格式（開頭 0 可能已掉）→ 列錯誤，不猜
-    DisplayName: _S256 | None
-    mail: _S256 | None
+    employeeID: _S50 | int | float | None           # 數字＝xlsx 數字格式（開頭 0 可能已掉）→ 列錯誤，不猜
+    DisplayName: _S200 | None
+    mail: _S200 | None
     Enabled: _S256 | bool | None
-    SamAccountName: _S256 | None = None
+    SamAccountName: _S100 | None = None
     department: _S256 | None = None
     manager: _S256 | None = None
 
@@ -1247,6 +1267,8 @@ class AdImportIn(BaseModel):
     rows: list[AdRowIn]
     apply: bool = False                  # False＝預覽（不寫入）；True＝套用（要帶預覽的 token）
     confirm_disable: bool = False        # 名錄缺席人數超過上限時，管理者勾「確認停用」（綁進 token）
+    confirm_identity: bool = False       # 手動／登入加入的人跟 AD 名單同員編但名字不同 → 勾「確認合併」
+    file_time: _S50 | None = None        # 檔案修改時間（ISO；判斷手動／登入加入的人是不是比檔案新）
     token: _S256 | None = None
 
 
@@ -1274,8 +1296,14 @@ async def api_ad_import(request: Request, db: Session = Depends(get_db), user: U
     rows = [r.model_dump() for r in body.rows]
     who = getattr(user, "username", None)
     try:
+        ft = None
+        if body.file_time:
+            try:
+                ft = dt.datetime.fromisoformat(body.file_time.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="檔案時間格式不符")
         rep = adimport.run_import(db, rows, body.file_name, who, apply=body.apply, token=body.token, sheet=body.sheet,
-                                  confirm_disable=body.confirm_disable)
+                                  confirm_disable=body.confirm_disable, confirm_identity=body.confirm_identity, file_time=ft)
     except adimport.ImportError_ as e:
         if str(e) == "STALE":
             raise HTTPException(status_code=409, detail="預覽之後名單或帳號資料有變動，請重新預覽再套用")
@@ -1322,7 +1350,7 @@ def _is_super(user) -> bool:
 
 @app.get("/api/directory/status")
 def api_directory_status(db: Session = Depends(get_db), user: User = Depends(require_view)):
-    return directory.status(db)
+    return directory.status(db, is_super=_is_super(user) and not isinstance(user, _AnonUser))
 
 
 _SEARCH_HITS: dict = {}
@@ -1356,9 +1384,9 @@ def api_directory_list(db: Session = Depends(get_db), user: User = Depends(requi
 class GroupIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: int | None = None
-    name: _S256
-    email: _S256
-    department: _S256 | None = None
+    name: _S100
+    email: _S200
+    department: _S200 | None = None
     enabled: bool = True
 
 
@@ -1378,6 +1406,48 @@ def api_directory_group_save(body: GroupIn, request: Request, db: Session = Depe
                        target="group:%s" % g.chinese_name, detail="email=%s dept=%s enabled=%s" % (g.email, g.department, g.enabled),
                        ip=_client_ip(request))
     return {"id": g.id, "name": g.chinese_name, "email": g.email, "department": g.department, "enabled": g.enabled}
+
+
+class PersonIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int | None = None
+    name: _S100
+    employee_id: _S50
+    department: _S200
+    email: _S200
+    enabled: bool = True
+    confirm_same_name: bool = False   # 既有同名在職者時，要明確確認（存檔後這個名字的催辦轉部門窗口）
+
+
+@app.post("/api/directory/persons")
+def api_directory_person_save(body: PersonIn, request: Request, db: Session = Depends(get_db),
+                              user: User = Depends(require_real_super)):
+    """手動新增／編輯名錄人員（V2.114；新進同仁還沒進 AD 匯出檔時用）。只有實際登入的最高管理員。"""
+    from sqlalchemy.exc import IntegrityError
+    try:
+        before = None
+        if body.id:
+            from .models import DirectoryEntry as _DE
+            _o = db.get(_DE, body.id)
+            before = None if _o is None else {"name": _o.chinese_name, "department": _o.department, "email": _o.email,
+                                              "enabled": _o.enabled}
+        e = directory.save_manual_person(db, body.id, body.name, body.employee_id, body.department, body.email,
+                                         body.enabled, dt.datetime.now(), confirm_same_name=body.confirm_same_name)
+    except directory.SameNameError as ex:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(ex))
+    except ValueError as ex:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(ex))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="員編已存在")
+    security.log_audit(db, username=user.username, action="directory_person_save", target="person:%s" % e.employee_id,
+                       detail="%s before=%s after=%s" % ("edit" if body.id else "add", before, {
+                           "name": e.chinese_name, "department": e.department, "email": e.email, "enabled": e.enabled}),
+                       ip=_client_ip(request))
+    return {"id": e.id, "name": e.chinese_name, "employee_id": e.employee_id, "department": e.department,
+            "email": e.email, "enabled": e.enabled, "source": e.source}
 
 
 @app.delete("/api/directory/groups/{gid}")
@@ -1470,7 +1540,7 @@ class WindowIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     employee_id: Annotated[str, StringConstraints(max_length=50)] | None = None   # 既有窗口
     dir_id: int | None = None                                                   # 新挑的名錄列
-    name: _S256 | None = None
+    name: _S100 | None = None
 
 
 @app.put("/api/auto-mail")

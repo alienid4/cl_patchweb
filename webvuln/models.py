@@ -102,7 +102,12 @@ class DirectoryEntry(Base):
     manager_name: Mapped[str | None] = mapped_column(String(100))
     manager_email: Mapped[str | None] = mapped_column(String(200))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    source: Mapped[str | None] = mapped_column(String(20))               # ad_import／manual
+    source: Mapped[str | None] = mapped_column(String(20))               # ad_import／ad_login／manual
+    last_seen: Mapped[dt.datetime | None] = mapped_column(DateTime)      # 最近一次 AD 登入（V2.114）
+    created_at: Mapped[dt.datetime | None] = mapped_column(DateTime, default=dt.datetime.now)
+    disabled_reason: Mapped[str | None] = mapped_column(String(20))      # ad_disabled／absent／manual
+    absent_count: Mapped[int | None] = mapped_column(Integer, default=0)  # 連續幾次匯入名單沒有這人
+    login_conflict: Mapped[str | None] = mapped_column(String(300))      # AD 登入與名錄對不上（給管理者看）
     updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime, default=dt.datetime.now)
 
 

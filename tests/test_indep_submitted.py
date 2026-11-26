@@ -329,7 +329,7 @@ def test_indep_stale_clock(client, session):
     assert (dt.datetime.now() - age("s0").status_changed_at).days == 0
 
 
-def test_indep_stale_boundary_and_settings(client, session):
+def test_indep_stale_boundary_and_settings(client, session, super_login):
     fs = [dict(sheet_key="s1", plugin_id="1", name="n", host="b1", severity="High",
                remediation_due=d(5), close_status="未結案")]
     _imp(client, fs)

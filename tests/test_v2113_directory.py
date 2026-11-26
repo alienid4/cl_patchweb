@@ -313,8 +313,8 @@ def test_bulk_overlay_counts_and_rejects(client, session, engine, monkeypatch):
 
 def test_free_text_when_directory_empty(client, session):
     _batch(session)
-    assert client.get("/api/directory/status").json() == {"persons": 0, "groups": 0, "active": False,
-                                                          "warning": "尚未匯入 AD 名單，負責人無法驗證"}
+    st = client.get("/api/directory/status").json()
+    assert (st["persons"], st["groups"], st["active"], st["warning"]) == (0, 0, False, "尚未匯入 AD 名單，負責人無法驗證")
     fid = _ids(session)["h0"]
     assert client.post("/api/findings/%d/overlay" % fid, json={"set_owner": True, "owner": "隨便打"}).status_code == 200
     assert client.post("/api/findings/%d/overlay" % fid, json={"set_department": True, "department": "新部門"}).status_code == 200

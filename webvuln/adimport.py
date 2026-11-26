@@ -342,26 +342,30 @@ def _recipient_view(db: Session, key: str) -> dict:
     return {"to": "", "cc": "", "why": ident["reason"] or "轉部門窗口", "cc_why": "部門設定（升級時；To 轉窗口時不用 AD 主管）"}
 
 
-def token_for(db: Session, rows: list, confirm_disable: bool = False) -> tuple[str, str]:
+def token_for(db: Session, rows: list, confirm_disable: bool = False, confirm_identity: bool = False,
+              file_time: Optional[dt.datetime] = None) -> tuple[str, str]:
     """確認碼＝名單＋帳號／名錄狀態＋「確認停用」勾選（勾選也綁進來，套用時不能偷換）。"""
     from .models import DirectoryEntry
     rh = rows_hash(rows)
     sv = state_version(db, [k for k, _ in _owners(db)])
-    dv = hashlib.sha256(json.dumps(sorted((e.id, e.employee_id, e.chinese_name, e.enabled, e.email, e.kind) for e in
+    dv = hashlib.sha256(json.dumps(sorted((e.id, e.employee_id, e.chinese_name, e.enabled, e.email, e.kind, e.source,
+                                           e.disabled_reason, e.absent_count) for e in
                                           db.execute(select(DirectoryEntry)).scalars().all()), default=str,
                                    ensure_ascii=False).encode()).hexdigest()
-    return rh, hashlib.sha256((rh + "|" + sv + "|" + dv + "|" + ("C" if confirm_disable else "")).encode()).hexdigest()
+    flags = ("C" if confirm_disable else "") + ("I" if confirm_identity else "") + "|" + (file_time.isoformat() if file_time else "")
+    return rh, hashlib.sha256((rh + "|" + sv + "|" + dv + "|" + flags).encode()).hexdigest()
 
 
 def run_import(db: Session, rows: list, file_name: Optional[str], who: Optional[str], apply: bool = False,
                token: Optional[str] = None, sheet: Optional[str] = None, now: Optional[dt.datetime] = None,
-               confirm_disable: bool = False) -> dict:
+               confirm_disable: bool = False, confirm_identity: bool = False,
+               file_time: Optional[dt.datetime] = None) -> dict:
     """apply=False：預覽（算完整套變更後 rollback，不寫入）；apply=True：token 必須等於預覽那次的 token。"""
     now = now or dt.datetime.now()
     idx = build_index(rows)
     if not idx["counts"][ST_OK]:
         raise ImportError_("名單裡沒有可用的列（啟用＋員編＋有效信箱＋中文名），未匯入")
-    rh, tok = token_for(db, rows, confirm_disable)
+    rh, tok = token_for(db, rows, confirm_disable, confirm_identity, file_time)
     if apply and token != tok:
         raise ImportError_("STALE")
     owners = _owners(db)
@@ -501,18 +505,24 @@ def run_import(db: Session, rows: list, file_name: Optional[str], who: Optional[
     # 員工名錄（V2.113）：檔案裡有員編＋中文名的人全部刷新（含停用）；名單疑似不完整時不標停用
     from . import directory
     from .models import DirectoryEntry
-    in_file = {p["employee_id"] for p in idx["all"] if p.get("employee_id") and p.get("status") != ST_ERROR}
+    in_file = {p["employee_id"] for p in idx["all"] if p.get("employee_id")}
     enabled_now = [e for e in db.execute(select(DirectoryEntry).where(DirectoryEntry.kind == directory.KIND_PERSON,
                                                                      DirectoryEntry.enabled.is_(True))).scalars().all()]
-    absent_people = [e for e in enabled_now if e.employee_id not in in_file]
+    ft = file_time or directory.last_import_at(db)   # 檔案時間（前端帶檔案修改時間；沒有就用上次匯入時間）
+    absent_people, _exempt = directory.absent_candidates(db, in_file, ft)
     n_absent = len(absent_people)
     limit = max(DIR_DISABLE_MIN, int(len(enabled_now) * DIR_DISABLE_RATIO))
     over = n_absent > limit
     allow = (not over) or bool(confirm_disable)
-    rep["directory"] = directory.refresh_from_import(db, idx, known, blocked, now, allow_disable=allow)
+    rep["directory"] = directory.refresh_from_import(db, idx, known, blocked, now, allow_disable=allow, file_time=ft,
+                                                     confirm_identity=confirm_identity, who=who)
+    if rep["directory"]["identity_needs_confirm"]:
+        rep.setdefault("warnings", []).append("有 %d 位手動新增／AD 登入加入的人，AD 名單同員編但名字不同：沒勾「確認合併」就不合併"
+                                              % len(rep["directory"]["identity_conflicts"]))
     rep["directory"].update({"to_disable": [{"name": e.chinese_name, "employee_id": e.employee_id,
                                              "department": e.department or e.ad_department or ""} for e in absent_people],
-                             "disable_limit": limit, "needs_confirm": over, "confirmed": bool(confirm_disable)})
+                             "disable_limit": limit, "needs_confirm": over, "confirmed": bool(confirm_disable),
+                             "identity_confirmed": bool(confirm_identity)})
     if over and not confirm_disable:
         rep.setdefault("warnings", []).append("名錄裡有 %d 人這次檔案沒有（上限 %d），可能是部分名單：沒勾「確認停用」就不標停用" % (n_absent, limit))
     rep["token"] = tok

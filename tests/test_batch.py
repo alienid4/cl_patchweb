@@ -76,7 +76,7 @@ def test_my_activity_records_actions(client):
 
 
 # ── 一般設定：session 時數影響新登入的到期 ──
-def test_general_settings_session_ttl(client, engine, monkeypatch):
+def test_general_settings_session_ttl(client, engine, monkeypatch, super_login):
     r = client.post("/api/general-settings", json={"session_ttl_hours": 8})
     assert r.status_code == 200 and r.json()["session_ttl_hours"] == 8
     from sqlalchemy.orm import Session, sessionmaker

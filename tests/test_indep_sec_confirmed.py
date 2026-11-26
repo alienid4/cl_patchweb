@@ -376,7 +376,7 @@ def test_permissions(client, engine, monkeypatch):
 
 
 # ───────────────────────── 4. 逾期 ─────────────────────────
-def test_stale_boundary_and_setting(client):
+def test_stale_boundary_and_setting(client, super_login):
     _setup(client)
     rep = client.get("/api/report").json()
     st = {x["host"]: x["progress_state"] for x in rep["sec_confirmed_list"]}
